@@ -327,6 +327,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "outcome_stakes"
+                      },
+                      "val": {
+                        "map": []
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "resolution_deadline"
                       },
                       "val": {

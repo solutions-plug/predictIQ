@@ -1,4 +1,4 @@
-use soroban_sdk::{Env, Address, Symbol, String, Vec, contracttype};
+use soroban_sdk::{Env, Address, Symbol, String, Vec, contracttype, Map};
 use crate::types::{Market, MarketStatus, OracleConfig};
 use crate::errors::ErrorCode;
 
@@ -33,6 +33,7 @@ pub fn create_market(
         winning_outcome: None,
         oracle_config,
         total_staked: 0,
+        outcome_stakes: Map::new(e),
     };
 
     e.storage().persistent().set(&DataKey::Market(count), &market);

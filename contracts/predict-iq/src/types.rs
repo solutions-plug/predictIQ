@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, String, Vec};
+use soroban_sdk::{contracttype, Address, String, Vec, Map};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -23,6 +23,7 @@ pub struct Market {
     pub winning_outcome: Option<u32>,
     pub oracle_config: OracleConfig,
     pub total_staked: i128,
+    pub outcome_stakes: Map<u32, i128>,
 }
 
 #[contracttype]

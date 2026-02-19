@@ -25,4 +25,7 @@ pub enum ErrorCode {
     MarketNotDisputed = 118,
     MarketNotPendingResolution = 119,
     AdminNotSet = 120,
+    BetNotFound = 121,
+    AlreadyClaimed = 122,
+    NotWinningOutcome = 123,
 }

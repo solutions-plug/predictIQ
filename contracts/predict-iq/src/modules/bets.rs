@@ -50,6 +50,9 @@ pub fn place_bet(
 
     existing_bet.amount += amount;
     market.total_staked += amount;
+    
+    let outcome_stake = market.outcome_stakes.get(outcome).unwrap_or(0);
+    market.outcome_stakes.set(outcome, outcome_stake + amount);
 
     e.storage().persistent().set(&bet_key, &existing_bet);
     markets::update_market(e, market);
@@ -65,4 +68,49 @@ pub fn place_bet(
 
 pub fn get_bet(e: &Env, market_id: u64, bettor: Address) -> Option<Bet> {
     e.storage().persistent().get(&DataKey::Bet(market_id, bettor))
+}
+
+pub fn claim_winnings(
+    e: &Env,
+    bettor: Address,
+    market_id: u64,
+    token_address: Address,
+) -> Result<i128, ErrorCode> {
+    bettor.require_auth();
+
+    let market = markets::get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
+    
+    if market.status != MarketStatus::Resolved {
+        return Err(ErrorCode::MarketStillActive);
+    }
+
+    let bet_key = DataKey::Bet(market_id, bettor.clone());
+    let bet: Bet = e.storage().persistent().get(&bet_key).ok_or(ErrorCode::BetNotFound)?;
+
+    let winning_outcome = market.winning_outcome.ok_or(ErrorCode::MarketStillActive)?;
+    
+    if bet.outcome != winning_outcome {
+        return Err(ErrorCode::NotWinningOutcome);
+    }
+
+    let winning_stake = market.outcome_stakes.get(winning_outcome).unwrap_or(0);
+    if winning_stake == 0 {
+        return Err(ErrorCode::NotWinningOutcome);
+    }
+
+    let fee = crate::modules::fees::calculate_fee(e, market.total_staked);
+    let net_pool = market.total_staked - fee;
+    let payout = (bet.amount * net_pool) / winning_stake;
+
+    e.storage().persistent().remove(&bet_key);
+
+    let client = token::Client::new(e, &token_address);
+    client.transfer(&e.current_contract_address(), &bettor, &payout);
+
+    e.events().publish(
+        (Symbol::new(e, "winnings_claimed"), market_id, bettor),
+        payout,
+    );
+
+    Ok(payout)
 }
