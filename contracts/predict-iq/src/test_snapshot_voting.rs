@@ -51,6 +51,7 @@ fn test_snapshot_voting_with_balance_change() {
         &1000,
         &2000,
         &oracle_config,
+        &token_address,
     );
 
     // Setup voter with initial balance
@@ -113,6 +114,7 @@ fn test_zero_balance_at_snapshot() {
         &1000,
         &2000,
         &oracle_config,
+        &token_address,
     );
 
     // File dispute first
@@ -164,6 +166,7 @@ fn test_token_locking_fallback() {
         &1000,
         &2000,
         &oracle_config,
+        &token_address,
     );
 
     // Setup voter with balance
@@ -239,6 +242,7 @@ fn test_insufficient_balance_for_vote_weight() {
         &1000,
         &2000,
         &oracle_config,
+        &token_address,
     );
 
     // Setup voter with insufficient balance
@@ -267,6 +271,11 @@ fn test_dispute_captures_ledger_sequence() {
 
     client.initialize(&admin, &1000);
 
+    // Setup token
+    let token_admin = Address::generate(&e);
+    let token_id = e.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_address = token_id.address();
+
     // Create market
     let creator = Address::generate(&e);
     let oracle_config = OracleConfig {
@@ -282,6 +291,7 @@ fn test_dispute_captures_ledger_sequence() {
         &1000,
         &2000,
         &oracle_config,
+        &token_address,
     );
 
     // Get current ledger sequence

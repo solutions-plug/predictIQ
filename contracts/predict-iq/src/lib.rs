@@ -7,6 +7,7 @@ mod modules;
 mod test;
 mod test_snapshot_voting;
 mod test_resolution_state_machine;
+mod test_multi_token;
 
 use crate::types::{ConfigKey, CircuitBreakerState};
 use crate::modules::admin;
@@ -40,6 +41,7 @@ impl PredictIQ {
         deadline: u64,
         resolution_deadline: u64,
         oracle_config: crate::types::OracleConfig,
+        token_address: Address,
     ) -> Result<u64, ErrorCode> {
         crate::modules::markets::create_market(
             &e,
@@ -49,6 +51,7 @@ impl PredictIQ {
             deadline,
             resolution_deadline,
             oracle_config,
+            token_address,
         )
     }
 
@@ -67,9 +70,8 @@ impl PredictIQ {
         e: Env,
         bettor: Address,
         market_id: u64,
-        token_address: Address,
     ) -> Result<i128, ErrorCode> {
-        crate::modules::bets::claim_winnings(&e, bettor, market_id, token_address)
+        crate::modules::bets::claim_winnings(&e, bettor, market_id)
     }
 
     pub fn get_market(e: Env, id: u64) -> Option<crate::types::Market> {

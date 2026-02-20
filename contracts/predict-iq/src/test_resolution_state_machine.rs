@@ -34,7 +34,11 @@ fn create_test_market(
         min_responses: 1,
     };
 
-    client.create_market(&creator, &description, &options, &100, &resolution_deadline, &oracle_config)
+    let token_admin = Address::generate(e);
+    let token_id = e.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_address = token_id.address();
+
+    client.create_market(&creator, &description, &options, &100, &resolution_deadline, &oracle_config, &token_address)
 }
 
 #[test]
@@ -277,7 +281,7 @@ fn test_stage4_no_majority_requires_admin() {
 
 #[test]
 fn test_payouts_blocked_until_resolved() {
-    let (e, admin, contract_id, client) = setup_test_env();
+    let (e, _admin, _contract_id, client) = setup_test_env();
     
     // Setup token
     let token_admin = Address::generate(&e);
@@ -286,7 +290,21 @@ fn test_payouts_blocked_until_resolved() {
     let token_client = token::StellarAssetClient::new(&e, &token_address);
     
     let resolution_deadline = 2000;
-    let market_id = create_test_market(&client, &e, resolution_deadline);
+    
+    // Create market with the same token we'll use for betting
+    let creator = Address::generate(&e);
+    let description = String::from_str(&e, "Test Market");
+    let mut options = Vec::new(&e);
+    options.push_back(String::from_str(&e, "Yes"));
+    options.push_back(String::from_str(&e, "No"));
+
+    let oracle_config = types::OracleConfig {
+        oracle_address: Address::generate(&e),
+        feed_id: String::from_str(&e, "test"),
+        min_responses: 1,
+    };
+
+    let market_id = client.create_market(&creator, &description, &options, &100, &resolution_deadline, &oracle_config, &token_address);
     
     // Place bet
     let bettor = Address::generate(&e);
@@ -303,7 +321,7 @@ fn test_payouts_blocked_until_resolved() {
     client.attempt_oracle_resolution(&market_id);
     
     // Try to claim while PendingResolution - should fail
-    let result = client.try_claim_winnings(&bettor, &market_id, &token_address);
+    let result = client.try_claim_winnings(&bettor, &market_id);
     assert!(result.is_err());
     
     // Finalize
@@ -314,6 +332,6 @@ fn test_payouts_blocked_until_resolved() {
     client.finalize_resolution(&market_id);
     
     // Now claim should work
-    let payout = client.claim_winnings(&bettor, &market_id, &token_address);
+    let payout = client.claim_winnings(&bettor, &market_id);
     assert!(payout > 0);
 }

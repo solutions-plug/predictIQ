@@ -27,6 +27,7 @@ pub struct Market {
     pub dispute_snapshot_ledger: Option<u32>,
     pub pending_resolution_timestamp: Option<u64>,
     pub dispute_timestamp: Option<u64>,
+    pub token_address: Address,
 }
 
 #[contracttype]

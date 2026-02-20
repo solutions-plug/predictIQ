@@ -31,12 +31,17 @@ fn test_market_lifecycle() {
         max_confidence_bps: 200, // 2%
     };
 
-    let market_id = client.create_market(&creator, &description, &options, &deadline, &resolution_deadline, &oracle_config);
+    let token_admin = Address::generate(&e);
+    let token_id = e.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_address = token_id.address();
+
+    let market_id = client.create_market(&creator, &description, &options, &deadline, &resolution_deadline, &oracle_config, &token_address);
     assert_eq!(market_id, 1);
 
     let market = client.get_market(&market_id).unwrap();
     assert_eq!(market.id, 1);
     assert_eq!(market.status, types::MarketStatus::Active);
+    assert_eq!(market.token_address, token_address);
 }
 
 #[test]
@@ -78,7 +83,7 @@ fn test_claim_winnings_three_winners() {
         min_responses: 1,
     };
 
-    let market_id = client.create_market(&creator, &description, &options, &100, &200, &oracle_config);
+    let market_id = client.create_market(&creator, &description, &options, &100, &200, &oracle_config, &token_address);
 
     client.place_bet(&bettor1, &market_id, &0, &1000, &token_address);
     client.place_bet(&bettor2, &market_id, &0, &2000, &token_address);
@@ -96,17 +101,17 @@ fn test_claim_winnings_three_winners() {
     let net_pool = total_staked - fee;
     let winning_stake = 6000_i128;
 
-    let payout1 = client.claim_winnings(&bettor1, &market_id, &token_address);
+    let payout1 = client.claim_winnings(&bettor1, &market_id);
     let expected1 = (1000 * net_pool) / winning_stake;
     assert_eq!(payout1, expected1);
     assert_eq!(token_std_client.balance(&bettor1), expected1);
 
-    let payout2 = client.claim_winnings(&bettor2, &market_id, &token_address);
+    let payout2 = client.claim_winnings(&bettor2, &market_id);
     let expected2 = (2000 * net_pool) / winning_stake;
     assert_eq!(payout2, expected2);
     assert_eq!(token_std_client.balance(&bettor2), expected2);
 
-    let payout3 = client.claim_winnings(&bettor3, &market_id, &token_address);
+    let payout3 = client.claim_winnings(&bettor3, &market_id);
     let expected3 = (3000 * net_pool) / winning_stake;
     assert_eq!(payout3, expected3);
     assert_eq!(token_std_client.balance(&bettor3), expected3);
@@ -145,10 +150,10 @@ fn test_claim_winnings_double_claim() {
         min_responses: 1,
     };
 
-    let market_id = client.create_market(&creator, &description, &options, &100, &200, &oracle_config);
+    let market_id = client.create_market(&creator, &description, &options, &100, &200, &oracle_config, &token_address);
     client.place_bet(&bettor, &market_id, &0, &1000, &token_address);
     client.resolve_market(&market_id, &0);
 
-    client.claim_winnings(&bettor, &market_id, &token_address);
-    client.claim_winnings(&bettor, &market_id, &token_address);
+    client.claim_winnings(&bettor, &market_id);
+    client.claim_winnings(&bettor, &market_id);
 }

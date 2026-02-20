@@ -32,6 +32,11 @@ pub fn place_bet(
         return Err(ErrorCode::InvalidOutcome);
     }
 
+    // Validate token_address matches market's configured asset
+    if token_address != market.token_address {
+        return Err(ErrorCode::InvalidBetAmount);
+    }
+
     // Transfer tokens from bettor to contract
     let client = token::Client::new(e, &token_address);
     client.transfer(&bettor, &e.current_contract_address(), &amount);
@@ -74,7 +79,6 @@ pub fn claim_winnings(
     e: &Env,
     bettor: Address,
     market_id: u64,
-    token_address: Address,
 ) -> Result<i128, ErrorCode> {
     bettor.require_auth();
 
@@ -104,7 +108,7 @@ pub fn claim_winnings(
 
     e.storage().persistent().remove(&bet_key);
 
-    let client = token::Client::new(e, &token_address);
+    let client = token::Client::new(e, &market.token_address);
     client.transfer(&e.current_contract_address(), &bettor, &payout);
 
     e.events().publish(

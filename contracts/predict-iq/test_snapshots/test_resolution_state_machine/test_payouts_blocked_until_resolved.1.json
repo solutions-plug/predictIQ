@@ -83,6 +83,9 @@
                       }
                     }
                   ]
+                },
+                {
+                  "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
                 }
               ]
             }
@@ -213,9 +216,6 @@
                 },
                 {
                   "u64": 1
-                },
-                {
-                  "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
                 }
               ]
             }
@@ -679,6 +679,14 @@
                             "symbol": "Resolved"
                           }
                         ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "token_address"
+                      },
+                      "val": {
+                        "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
                       }
                     },
                     {

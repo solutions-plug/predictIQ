@@ -16,6 +16,7 @@ pub fn create_market(
     deadline: u64,
     resolution_deadline: u64,
     oracle_config: OracleConfig,
+    token_address: Address,
 ) -> Result<u64, ErrorCode> {
     creator.require_auth();
 
@@ -37,6 +38,7 @@ pub fn create_market(
         dispute_snapshot_ledger: None,
         pending_resolution_timestamp: None,
         dispute_timestamp: None,
+        token_address,
     };
 
     e.storage().persistent().set(&DataKey::Market(count), &market);

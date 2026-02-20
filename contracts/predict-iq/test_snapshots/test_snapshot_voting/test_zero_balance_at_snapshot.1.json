@@ -102,6 +102,9 @@
                       }
                     }
                   ]
+                },
+                {
+                  "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
                 }
               ]
             }
@@ -530,6 +533,14 @@
                             "symbol": "Disputed"
                           }
                         ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "token_address"
+                      },
+                      "val": {
+                        "address": "CCABDO7UZXYE4W6GVSEGSNNZTKSLFQGKXXQTH6OX7M7GKZ4Z6CUJNGZN"
                       }
                     },
                     {
