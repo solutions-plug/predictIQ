@@ -23,6 +23,14 @@ pub struct Market {
     pub winning_outcome: Option<u32>,
     pub oracle_config: OracleConfig,
     pub total_staked: i128,
+    pub payout_mode: PayoutMode, // New: determines push vs pull payouts
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PayoutMode {
+    Push,  // Contract distributes to all winners (small markets)
+    Pull,  // Winners claim individually (large markets)
 }
 
 #[contracttype]
@@ -48,8 +56,12 @@ pub struct Vote {
 pub struct OracleConfig {
     pub oracle_address: Address,
     pub feed_id: String,
-    pub min_responses: u32,
+    pub min_responses: Option<u32>, // Optimized: None defaults to 1
 }
+
+// Gas optimization constants
+pub const MAX_PUSH_PAYOUT_WINNERS: u32 = 50; // Threshold for switching to pull mode
+pub const MAX_OUTCOMES_PER_MARKET: u32 = 100; // Limit to prevent excessive iteration
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]

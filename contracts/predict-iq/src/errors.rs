@@ -27,4 +27,7 @@ pub enum ErrorCode {
     AdminNotSet = 120,
     ContractPaused = 121,
     GuardianNotSet = 122,
+    TooManyOutcomes = 123,
+    TooManyWinners = 124,
+    PayoutModeNotSupported = 125,
 }

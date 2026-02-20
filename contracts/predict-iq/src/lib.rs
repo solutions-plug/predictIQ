@@ -1,7 +1,7 @@
 #![no_std]
 use soroban_sdk::{contract, contractimpl, Env, Address, String, Vec};
 
-mod types;
+pub mod types;
 mod errors;
 mod modules;
 mod test;
@@ -130,5 +130,22 @@ impl PredictIQ {
         token_address: Address,
     ) -> Result<i128, ErrorCode> {
         crate::modules::bets::withdraw_refund(&e, bettor, market_id, token_address)
+    }
+
+    pub fn resolve_market(
+        e: Env,
+        market_id: u64,
+        winning_outcome: u32,
+    ) -> Result<(), ErrorCode> {
+        crate::modules::admin::require_admin(&e)?;
+        crate::modules::disputes::resolve_market(&e, market_id, winning_outcome)
+    }
+
+    pub fn get_resolution_metrics(
+        e: Env,
+        market_id: u64,
+        outcome: u32,
+    ) -> crate::modules::disputes::ResolutionMetrics {
+        crate::modules::disputes::get_resolution_metrics(&e, market_id, outcome)
     }
 }
