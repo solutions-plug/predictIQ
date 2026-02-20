@@ -35,6 +35,8 @@ pub fn create_market(
         total_staked: 0,
         outcome_stakes: Map::new(e),
         dispute_snapshot_ledger: None,
+        pending_resolution_timestamp: None,
+        dispute_timestamp: None,
     };
 
     e.storage().persistent().set(&DataKey::Market(count), &market);

@@ -11,15 +11,19 @@ pub fn file_dispute(e: &Env, disciplinarian: Address, market_id: u64) -> Result<
     if market.status != MarketStatus::PendingResolution {
         return Err(ErrorCode::MarketNotPendingResolution);
     }
+    
+    // Check if still within 24h dispute window
+    let pending_ts = market.pending_resolution_timestamp.ok_or(ErrorCode::ResolutionNotReady)?;
+    if e.ledger().timestamp() >= pending_ts + 86400 {
+        return Err(ErrorCode::DisputeWindowClosed);
+    }
 
     market.status = MarketStatus::Disputed;
     market.dispute_snapshot_ledger = Some(e.ledger().sequence());
-    // Extend resolution deadline for voting period
-    market.resolution_deadline += 86400 * 3; // 3 days extension
+    market.dispute_timestamp = Some(e.ledger().timestamp());
 
     markets::update_market(e, market);
 
-    // Event format: (Topic, MarketID, SubjectAddr, Data)
     e.events().publish(
         (Symbol::new(e, "market_disputed"), market_id, disciplinarian),
         (),
@@ -29,7 +33,7 @@ pub fn file_dispute(e: &Env, disciplinarian: Address, market_id: u64) -> Result<
 }
 
 pub fn resolve_market(e: &Env, market_id: u64, winning_outcome: u32) -> Result<(), ErrorCode> {
-    // This would ideally be called by an admin or triggered by oracle/consensus
+    // Admin override for NoMajorityReached cases
     let mut market = markets::get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
     
     market.status = MarketStatus::Resolved;
@@ -37,7 +41,6 @@ pub fn resolve_market(e: &Env, market_id: u64, winning_outcome: u32) -> Result<(
 
     markets::update_market(e, market);
 
-    // Event format: (Topic, MarketID, SubjectAddr, Data)
     e.events().publish(
         (Symbol::new(e, "market_resolved"), market_id),
         winning_outcome,

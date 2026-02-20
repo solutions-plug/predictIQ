@@ -30,4 +30,7 @@ pub enum ErrorCode {
     NotWinningOutcome = 123,
     InsufficientVotingWeight = 124,
     GovernanceTokenNotSet = 125,
+    DisputeWindowStillOpen = 126,
+    ResolutionNotReady = 127,
+    NoMajorityReached = 128,
 }

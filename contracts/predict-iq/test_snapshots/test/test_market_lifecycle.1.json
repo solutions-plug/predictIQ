@@ -277,6 +277,12 @@
                     },
                     {
                       "key": {
+                        "symbol": "dispute_timestamp"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
                         "symbol": "id"
                       },
                       "val": {
@@ -338,6 +344,12 @@
                       "val": {
                         "map": []
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "pending_resolution_timestamp"
+                      },
+                      "val": "void"
                     },
                     {
                       "key": {

@@ -6,6 +6,7 @@ mod errors;
 mod modules;
 mod test;
 mod test_snapshot_voting;
+mod test_resolution_state_machine;
 
 use crate::types::{ConfigKey, CircuitBreakerState};
 use crate::modules::admin;
@@ -121,5 +122,15 @@ impl PredictIQ {
 
     pub fn unlock_tokens(e: Env, voter: Address, market_id: u64) -> Result<(), ErrorCode> {
         crate::modules::voting::unlock_tokens(&e, voter, market_id)
+    }
+
+    pub fn attempt_oracle_resolution(e: Env, market_id: u64) -> Result<(), ErrorCode> {
+        crate::modules::circuit_breaker::require_closed(&e)?;
+        crate::modules::resolution::attempt_oracle_resolution(&e, market_id)
+    }
+
+    pub fn finalize_resolution(e: Env, market_id: u64) -> Result<(), ErrorCode> {
+        crate::modules::circuit_breaker::require_closed(&e)?;
+        crate::modules::resolution::finalize_resolution(&e, market_id)
     }
 }

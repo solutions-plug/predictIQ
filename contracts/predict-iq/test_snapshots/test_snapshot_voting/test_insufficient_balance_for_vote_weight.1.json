@@ -459,6 +459,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "dispute_timestamp"
+                      },
+                      "val": {
+                        "u64": 0
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "id"
                       },
                       "val": {
@@ -523,10 +531,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "pending_resolution_timestamp"
+                      },
+                      "val": {
+                        "u64": 0
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "resolution_deadline"
                       },
                       "val": {
-                        "u64": 261200
+                        "u64": 2000
                       }
                     },
                     {

@@ -10,6 +10,7 @@ fn set_market_to_pending_resolution(e: &Env, contract_id: &Address, market_id: u
     e.as_contract(contract_id, || {
         let mut market: Market = e.storage().persistent().get(&DataKey::Market(market_id)).unwrap();
         market.status = MarketStatus::PendingResolution;
+        market.pending_resolution_timestamp = Some(e.ledger().timestamp());
         e.storage().persistent().set(&DataKey::Market(market_id), &market);
     });
 }

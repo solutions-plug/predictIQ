@@ -25,6 +25,8 @@ pub struct Market {
     pub total_staked: i128,
     pub outcome_stakes: Map<u32, i128>,
     pub dispute_snapshot_ledger: Option<u32>,
+    pub pending_resolution_timestamp: Option<u64>,
+    pub dispute_timestamp: Option<u64>,
 }
 
 #[contracttype]
