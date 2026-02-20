@@ -57,6 +57,7 @@ pub enum ConfigKey {
     Admin,
     MarketAdmin,
     FeeAdmin,
+    GuardianAccount,
     BaseFee,
     CircuitBreakerState,
 }
@@ -67,4 +68,5 @@ pub enum CircuitBreakerState {
     Closed,
     Open,
     HalfOpen,
+    Paused, // Emergency pause state - blocks high-risk operations
 }

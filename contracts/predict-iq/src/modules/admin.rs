@@ -35,3 +35,19 @@ pub fn set_fee_admin(e: &Env, admin: Address) -> Result<(), ErrorCode> {
 pub fn get_fee_admin(e: &Env) -> Option<Address> {
     e.storage().persistent().get(&ConfigKey::FeeAdmin)
 }
+
+pub fn set_guardian(e: &Env, guardian: Address) -> Result<(), ErrorCode> {
+    require_admin(e)?;
+    e.storage().persistent().set(&ConfigKey::GuardianAccount, &guardian);
+    Ok(())
+}
+
+pub fn get_guardian(e: &Env) -> Option<Address> {
+    e.storage().persistent().get(&ConfigKey::GuardianAccount)
+}
+
+pub fn require_guardian(e: &Env) -> Result<(), ErrorCode> {
+    let guardian: Address = get_guardian(e).ok_or(ErrorCode::GuardianNotSet)?;
+    guardian.require_auth();
+    Ok(())
+}

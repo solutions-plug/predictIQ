@@ -18,6 +18,9 @@ pub fn place_bet(
 ) -> Result<(), ErrorCode> {
     bettor.require_auth();
 
+    // Check if contract is paused - high-risk operation
+    crate::modules::circuit_breaker::require_not_paused_for_high_risk(e)?;
+
     let mut market = markets::get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
     
     if market.status != MarketStatus::Active {
@@ -65,4 +68,79 @@ pub fn place_bet(
 
 pub fn get_bet(e: &Env, market_id: u64, bettor: Address) -> Option<Bet> {
     e.storage().persistent().get(&DataKey::Bet(market_id, bettor))
+}
+
+pub fn claim_winnings(
+    e: &Env,
+    bettor: Address,
+    market_id: u64,
+    token_address: Address,
+) -> Result<i128, ErrorCode> {
+    bettor.require_auth();
+
+    let market = markets::get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
+    
+    if market.status != MarketStatus::Resolved {
+        return Err(ErrorCode::MarketNotPendingResolution);
+    }
+
+    let winning_outcome = market.winning_outcome.ok_or(ErrorCode::MarketNotPendingResolution)?;
+    
+    let bet_key = DataKey::Bet(market_id, bettor.clone());
+    let bet: Bet = e.storage().persistent().get(&bet_key).ok_or(ErrorCode::MarketNotFound)?;
+
+    if bet.outcome != winning_outcome {
+        return Err(ErrorCode::InvalidOutcome);
+    }
+
+    // Calculate winnings (simplified - in production would calculate based on pool ratios)
+    let winnings = bet.amount;
+
+    // Transfer winnings to bettor
+    let client = token::Client::new(e, &token_address);
+    client.transfer(&e.current_contract_address(), &bettor, &winnings);
+
+    // Remove bet record
+    e.storage().persistent().remove(&bet_key);
+
+    e.events().publish(
+        (Symbol::new(e, "winnings_claimed"), market_id, bettor),
+        winnings,
+    );
+
+    Ok(winnings)
+}
+
+pub fn withdraw_refund(
+    e: &Env,
+    bettor: Address,
+    market_id: u64,
+    token_address: Address,
+) -> Result<i128, ErrorCode> {
+    bettor.require_auth();
+
+    let market = markets::get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
+    
+    if market.status != MarketStatus::Cancelled {
+        return Err(ErrorCode::MarketNotActive);
+    }
+
+    let bet_key = DataKey::Bet(market_id, bettor.clone());
+    let bet: Bet = e.storage().persistent().get(&bet_key).ok_or(ErrorCode::MarketNotFound)?;
+
+    let refund_amount = bet.amount;
+
+    // Transfer refund to bettor
+    let client = token::Client::new(e, &token_address);
+    client.transfer(&e.current_contract_address(), &bettor, &refund_amount);
+
+    // Remove bet record
+    e.storage().persistent().remove(&bet_key);
+
+    e.events().publish(
+        (Symbol::new(e, "refund_withdrawn"), market_id, bettor),
+        refund_amount,
+    );
+
+    Ok(refund_amount)
 }

@@ -97,4 +97,38 @@ impl PredictIQ {
         crate::modules::monitoring::reset_monitoring(&e);
         Ok(())
     }
+
+    pub fn set_guardian(e: Env, guardian: Address) -> Result<(), ErrorCode> {
+        crate::modules::admin::set_guardian(&e, guardian)
+    }
+
+    pub fn get_guardian(e: Env) -> Option<Address> {
+        crate::modules::admin::get_guardian(&e)
+    }
+
+    pub fn pause(e: Env) -> Result<(), ErrorCode> {
+        crate::modules::circuit_breaker::pause(&e)
+    }
+
+    pub fn unpause(e: Env) -> Result<(), ErrorCode> {
+        crate::modules::circuit_breaker::unpause(&e)
+    }
+
+    pub fn claim_winnings(
+        e: Env,
+        bettor: Address,
+        market_id: u64,
+        token_address: Address,
+    ) -> Result<i128, ErrorCode> {
+        crate::modules::bets::claim_winnings(&e, bettor, market_id, token_address)
+    }
+
+    pub fn withdraw_refund(
+        e: Env,
+        bettor: Address,
+        market_id: u64,
+        token_address: Address,
+    ) -> Result<i128, ErrorCode> {
+        crate::modules::bets::withdraw_refund(&e, bettor, market_id, token_address)
+    }
 }
