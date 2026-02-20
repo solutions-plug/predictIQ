@@ -8,6 +8,7 @@ mod test;
 mod test_snapshot_voting;
 mod test_resolution_state_machine;
 mod test_multi_token;
+mod test_cancellation;
 
 use crate::types::{ConfigKey, CircuitBreakerState};
 use crate::modules::admin;
@@ -134,5 +135,17 @@ impl PredictIQ {
     pub fn finalize_resolution(e: Env, market_id: u64) -> Result<(), ErrorCode> {
         crate::modules::circuit_breaker::require_closed(&e)?;
         crate::modules::resolution::finalize_resolution(&e, market_id)
+    }
+
+    pub fn cancel_market_admin(e: Env, market_id: u64) -> Result<(), ErrorCode> {
+        crate::modules::cancellation::cancel_market_admin(&e, market_id)
+    }
+
+    pub fn cancel_market_vote(e: Env, market_id: u64) -> Result<(), ErrorCode> {
+        crate::modules::cancellation::cancel_market_vote(&e, market_id)
+    }
+
+    pub fn withdraw_refund(e: Env, bettor: Address, market_id: u64) -> Result<i128, ErrorCode> {
+        crate::modules::cancellation::withdraw_refund(&e, bettor, market_id)
     }
 }

@@ -4,6 +4,7 @@ use crate::modules::markets;
 use crate::errors::ErrorCode;
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
     Bet(u64, Address), // market_id, bettor
 }

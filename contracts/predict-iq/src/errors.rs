@@ -33,4 +33,5 @@ pub enum ErrorCode {
     DisputeWindowStillOpen = 126,
     ResolutionNotReady = 127,
     NoMajorityReached = 128,
+    MarketNotCancelled = 129,
 }
