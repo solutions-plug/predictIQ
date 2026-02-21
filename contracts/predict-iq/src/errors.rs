@@ -30,4 +30,5 @@ pub enum ErrorCode {
     TooManyOutcomes = 123,
     TooManyWinners = 124,
     PayoutModeNotSupported = 125,
+    InsufficientDeposit = 126,
 }

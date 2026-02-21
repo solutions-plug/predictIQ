@@ -38,6 +38,8 @@ impl PredictIQ {
         deadline: u64,
         resolution_deadline: u64,
         oracle_config: crate::types::OracleConfig,
+        tier: crate::types::MarketTier,
+        native_token: Address,
     ) -> Result<u64, ErrorCode> {
         crate::modules::markets::create_market(
             &e,
@@ -47,6 +49,8 @@ impl PredictIQ {
             deadline,
             resolution_deadline,
             oracle_config,
+            tier,
+            native_token,
         )
     }
 
@@ -147,5 +151,29 @@ impl PredictIQ {
         outcome: u32,
     ) -> crate::modules::disputes::ResolutionMetrics {
         crate::modules::disputes::get_resolution_metrics(&e, market_id, outcome)
+    }
+
+    pub fn set_creator_reputation(
+        e: Env,
+        creator: Address,
+        reputation: crate::types::CreatorReputation,
+    ) -> Result<(), ErrorCode> {
+        crate::modules::markets::set_creator_reputation(&e, creator, reputation)
+    }
+
+    pub fn get_creator_reputation(e: Env, creator: Address) -> crate::types::CreatorReputation {
+        crate::modules::markets::get_creator_reputation(&e, &creator)
+    }
+
+    pub fn set_creation_deposit(e: Env, amount: i128) -> Result<(), ErrorCode> {
+        crate::modules::markets::set_creation_deposit(&e, amount)
+    }
+
+    pub fn get_creation_deposit(e: Env) -> i128 {
+        crate::modules::markets::get_creation_deposit(&e)
+    }
+
+    pub fn release_creation_deposit(e: Env, market_id: u64, native_token: Address) -> Result<(), ErrorCode> {
+        crate::modules::markets::release_creation_deposit(&e, market_id, native_token)
     }
 }

@@ -24,6 +24,8 @@ pub struct Market {
     pub oracle_config: OracleConfig,
     pub total_staked: i128,
     pub payout_mode: PayoutMode, // New: determines push vs pull payouts
+    pub tier: MarketTier,
+    pub creation_deposit: i128,
 }
 
 #[contracttype]
@@ -31,6 +33,23 @@ pub struct Market {
 pub enum PayoutMode {
     Push,  // Contract distributes to all winners (small markets)
     Pull,  // Winners claim individually (large markets)
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MarketTier {
+    Basic,
+    Pro,
+    Institutional,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CreatorReputation {
+    None,
+    Basic,
+    Pro,
+    Institutional,
 }
 
 #[contracttype]
@@ -72,6 +91,7 @@ pub enum ConfigKey {
     GuardianAccount,
     BaseFee,
     CircuitBreakerState,
+    CreationDeposit,
 }
 
 #[contracttype]

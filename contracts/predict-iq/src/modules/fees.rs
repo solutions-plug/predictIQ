@@ -1,5 +1,5 @@
 use soroban_sdk::{Env, Address, Symbol, contracttype};
-use crate::types::ConfigKey;
+use crate::types::{ConfigKey, MarketTier};
 use crate::modules::admin;
 use crate::errors::ErrorCode;
 
@@ -23,6 +23,19 @@ pub fn calculate_fee(e: &Env, amount: i128) -> i128 {
     let base_fee = get_base_fee(e);
     // base_fee is in basis points (1/10000)
     (amount * base_fee) / 10000
+}
+
+pub fn calculate_tiered_fee(e: &Env, amount: i128, tier: &MarketTier) -> i128 {
+    let base_fee = get_base_fee(e);
+    
+    // Apply tier multiplier: Basic=100%, Pro=75%, Institutional=50%
+    let adjusted_fee = match tier {
+        MarketTier::Basic => base_fee,
+        MarketTier::Pro => (base_fee * 75) / 100,
+        MarketTier::Institutional => (base_fee * 50) / 100,
+    };
+    
+    (amount * adjusted_fee) / 10000
 }
 
 pub fn collect_fee(e: &Env, token: Address, amount: i128) {

@@ -46,7 +46,9 @@ fn bench_create_market_10_outcomes() {
     
     let options = create_options(&env, 10);
     let oracle_config = create_oracle_config(&env);
+    let native_token = Address::generate(&env);
     
+    let native_token = Address::generate(&env);
     let result = client.try_create_market(
         &admin,
         &String::from_str(&env, "10 Outcome Market"),
@@ -54,6 +56,10 @@ fn bench_create_market_10_outcomes() {
         &1000,
         &2000,
         &oracle_config,
+        &predict_iq::types::MarketTier::Basic,
+        &native_token,
+        &predict_iq::types::MarketTier::Basic,
+        &native_token,
     );
     
     println!("=== 10 Outcome Market ===");
@@ -70,6 +76,7 @@ fn bench_create_market_50_outcomes() {
     let options = create_options(&env, 50);
     let oracle_config = create_oracle_config(&env);
     
+    let native_token = Address::generate(&env);
     let result = client.try_create_market(
         &admin,
         &String::from_str(&env, "50 Outcome Market"),
@@ -77,6 +84,8 @@ fn bench_create_market_50_outcomes() {
         &1000,
         &2000,
         &oracle_config,
+        &predict_iq::types::MarketTier::Basic,
+        &native_token,
     );
     
     println!("=== 50 Outcome Market ===");
@@ -93,6 +102,7 @@ fn bench_create_market_100_outcomes() {
     let options = create_options(&env, 100);
     let oracle_config = create_oracle_config(&env);
     
+    let native_token = Address::generate(&env);
     let result = client.try_create_market(
         &admin,
         &String::from_str(&env, "100 Outcome Market"),
@@ -100,6 +110,8 @@ fn bench_create_market_100_outcomes() {
         &1000,
         &2000,
         &oracle_config,
+        &predict_iq::types::MarketTier::Basic,
+        &native_token,
     );
     
     println!("=== 100 Outcome Market ===");
@@ -116,6 +128,7 @@ fn bench_place_multiple_bets() {
     let options = create_options(&env, 10);
     let oracle_config = create_oracle_config(&env);
     
+    let native_token = Address::generate(&env);
     let market_id = client.create_market(
         &admin,
         &String::from_str(&env, "Bet Test Market"),
@@ -123,6 +136,8 @@ fn bench_place_multiple_bets() {
         &1000,
         &2000,
         &oracle_config,
+        &predict_iq::types::MarketTier::Basic,
+        &native_token,
     );
     
     let token = Address::generate(&env);
@@ -145,6 +160,7 @@ fn bench_resolve_market() {
     let options = create_options(&env, 50);
     let oracle_config = create_oracle_config(&env);
     
+    let native_token = Address::generate(&env);
     let market_id = client.create_market(
         &admin,
         &String::from_str(&env, "Resolution Test Market"),
@@ -152,6 +168,8 @@ fn bench_resolve_market() {
         &1000,
         &2000,
         &oracle_config,
+        &predict_iq::types::MarketTier::Basic,
+        &native_token,
     );
     
     let result = client.try_resolve_market(&market_id, &0);
@@ -171,6 +189,7 @@ fn bench_get_resolution_metrics() {
     let options = create_options(&env, 50);
     let oracle_config = create_oracle_config(&env);
     
+    let native_token = Address::generate(&env);
     let market_id = client.create_market(
         &admin,
         &String::from_str(&env, "Metrics Test Market"),
@@ -178,6 +197,8 @@ fn bench_get_resolution_metrics() {
         &1000,
         &2000,
         &oracle_config,
+        &predict_iq::types::MarketTier::Basic,
+        &native_token,
     );
     
     let _ = client.try_resolve_market(&market_id, &0);
@@ -200,6 +221,7 @@ fn bench_reject_excessive_outcomes() {
     let options = create_options(&env, 101);
     let oracle_config = create_oracle_config(&env);
     
+    let native_token = Address::generate(&env);
     let result = client.try_create_market(
         &admin,
         &String::from_str(&env, "Too Many Outcomes"),
@@ -207,6 +229,8 @@ fn bench_reject_excessive_outcomes() {
         &1000,
         &2000,
         &oracle_config,
+        &predict_iq::types::MarketTier::Basic,
+        &native_token,
     );
     
     println!("=== Excessive Outcomes Test ===");
@@ -227,6 +251,7 @@ fn bench_full_market_lifecycle() {
     let options = create_options(&env, 10);
     let oracle_config = create_oracle_config(&env);
     
+    let native_token = Address::generate(&env);
     let market_id = client.create_market(
         &admin,
         &String::from_str(&env, "Lifecycle Test"),
@@ -234,6 +259,8 @@ fn bench_full_market_lifecycle() {
         &1000,
         &2000,
         &oracle_config,
+        &predict_iq::types::MarketTier::Basic,
+        &native_token,
     );
     println!("1. Market created: {}", market_id);
     

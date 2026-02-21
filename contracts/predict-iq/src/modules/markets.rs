@@ -1,11 +1,12 @@
-use soroban_sdk::{Env, Address, Symbol, String, Vec, contracttype};
-use crate::types::{Market, MarketStatus, OracleConfig};
+use soroban_sdk::{Env, Address, Symbol, String, Vec, contracttype, token};
+use crate::types::{Market, MarketStatus, OracleConfig, MarketTier, CreatorReputation, ConfigKey};
 use crate::errors::ErrorCode;
 
 #[contracttype]
 pub enum DataKey {
     Market(u64),
     MarketCount,
+    CreatorReputation(Address),
 }
 
 pub fn create_market(
@@ -16,12 +17,32 @@ pub fn create_market(
     deadline: u64,
     resolution_deadline: u64,
     oracle_config: OracleConfig,
+    tier: MarketTier,
+    native_token: Address,
 ) -> Result<u64, ErrorCode> {
     creator.require_auth();
 
     // Gas optimization: Limit number of outcomes to prevent excessive iteration
     if options.len() > crate::types::MAX_OUTCOMES_PER_MARKET {
         return Err(ErrorCode::TooManyOutcomes);
+    }
+
+    let reputation = get_creator_reputation(e, &creator);
+    let creation_deposit = get_creation_deposit(e);
+    
+    // Check if deposit is required based on reputation
+    let deposit_required = !matches!(reputation, CreatorReputation::Pro | CreatorReputation::Institutional);
+    
+    if deposit_required && creation_deposit > 0 {
+        let token_client = token::Client::new(e, &native_token);
+        let balance = token_client.balance(&creator);
+        
+        if balance < creation_deposit {
+            return Err(ErrorCode::InsufficientDeposit);
+        }
+        
+        // Lock deposit
+        token_client.transfer(&creator, &e.current_contract_address(), &creation_deposit);
     }
 
     let mut count: u64 = e.storage().instance().get(&DataKey::MarketCount).unwrap_or(0);
@@ -38,7 +59,9 @@ pub fn create_market(
         winning_outcome: None,
         oracle_config,
         total_staked: 0,
-        payout_mode: crate::types::PayoutMode::Pull, // Default to pull for safety
+        payout_mode: crate::types::PayoutMode::Pull,
+        tier,
+        creation_deposit: if deposit_required { creation_deposit } else { 0 },
     };
 
     e.storage().persistent().set(&DataKey::Market(count), &market);
@@ -85,4 +108,39 @@ pub fn count_bets_for_outcome(e: &Env, market_id: u64, _outcome: u32) -> u32 {
     } else {
         0
     }
+}
+
+pub fn get_creator_reputation(e: &Env, creator: &Address) -> CreatorReputation {
+    e.storage().persistent().get(&DataKey::CreatorReputation(creator.clone())).unwrap_or(CreatorReputation::None)
+}
+
+pub fn set_creator_reputation(e: &Env, creator: Address, reputation: CreatorReputation) -> Result<(), ErrorCode> {
+    crate::modules::admin::require_admin(e)?;
+    e.storage().persistent().set(&DataKey::CreatorReputation(creator), &reputation);
+    Ok(())
+}
+
+pub fn get_creation_deposit(e: &Env) -> i128 {
+    e.storage().persistent().get(&ConfigKey::CreationDeposit).unwrap_or(0)
+}
+
+pub fn set_creation_deposit(e: &Env, amount: i128) -> Result<(), ErrorCode> {
+    crate::modules::admin::require_admin(e)?;
+    e.storage().persistent().set(&ConfigKey::CreationDeposit, &amount);
+    Ok(())
+}
+
+pub fn release_creation_deposit(e: &Env, market_id: u64, native_token: Address) -> Result<(), ErrorCode> {
+    let market = get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
+    
+    if market.status != MarketStatus::Resolved {
+        return Err(ErrorCode::MarketNotActive);
+    }
+    
+    if market.creation_deposit > 0 {
+        let token_client = token::Client::new(e, &native_token);
+        token_client.transfer(&e.current_contract_address(), &market.creator, &market.creation_deposit);
+    }
+    
+    Ok(())
 }
