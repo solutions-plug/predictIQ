@@ -85,10 +85,10 @@ fn test_claim_winnings_three_winners() {
 
     let market_id = client.create_market(&creator, &description, &options, &100, &200, &oracle_config, &token_address);
 
-    client.place_bet(&bettor1, &market_id, &0, &1000, &token_address);
-    client.place_bet(&bettor2, &market_id, &0, &2000, &token_address);
-    client.place_bet(&bettor3, &market_id, &0, &3000, &token_address);
-    client.place_bet(&loser, &market_id, &1, &4000, &token_address);
+    client.place_bet(&bettor1, &market_id, &0, &1000, &token_address, &None);
+    client.place_bet(&bettor2, &market_id, &0, &2000, &token_address, &None);
+    client.place_bet(&bettor3, &market_id, &0, &3000, &token_address, &None);
+    client.place_bet(&loser, &market_id, &1, &4000, &token_address, &None);
 
     client.resolve_market(&market_id, &0);
 
@@ -151,7 +151,7 @@ fn test_claim_winnings_double_claim() {
     };
 
     let market_id = client.create_market(&creator, &description, &options, &100, &200, &oracle_config, &token_address);
-    client.place_bet(&bettor, &market_id, &0, &1000, &token_address);
+    client.place_bet(&bettor, &market_id, &0, &1000, &token_address, &None);
     client.resolve_market(&market_id, &0);
 
     client.claim_winnings(&bettor, &market_id);

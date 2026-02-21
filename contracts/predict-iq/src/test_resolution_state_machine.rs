@@ -309,7 +309,7 @@ fn test_payouts_blocked_until_resolved() {
     // Place bet
     let bettor = Address::generate(&e);
     token_client.mint(&bettor, &1000);
-    client.place_bet(&bettor, &market_id, &0, &1000, &token_address);
+    client.place_bet(&bettor, &market_id, &0, &1000, &token_address, &None);
     
     // Set oracle result
     client.set_oracle_result(&market_id, &0);
