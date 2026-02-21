@@ -9,6 +9,7 @@ mod test_snapshot_voting;
 mod test_resolution_state_machine;
 mod test_multi_token;
 mod test_cancellation;
+mod test_referral;
 
 use crate::types::{ConfigKey, CircuitBreakerState};
 use crate::modules::admin;
@@ -63,8 +64,9 @@ impl PredictIQ {
         outcome: u32,
         amount: i128,
         token_address: Address,
+        referrer: Option<Address>,
     ) -> Result<(), ErrorCode> {
-        crate::modules::bets::place_bet(&e, bettor, market_id, outcome, amount, token_address)
+        crate::modules::bets::place_bet(&e, bettor, market_id, outcome, amount, token_address, referrer)
     }
 
     pub fn claim_winnings(
@@ -99,6 +101,10 @@ impl PredictIQ {
 
     pub fn get_revenue(e: Env, token: Address) -> i128 {
         crate::modules::fees::get_revenue(&e, token)
+    }
+
+    pub fn claim_referral_rewards(e: Env, address: Address, token: Address) -> Result<i128, ErrorCode> {
+        crate::modules::fees::claim_referral_rewards(&e, &address, &token)
     }
 
     pub fn set_oracle_result(e: Env, market_id: u64, outcome: u32) -> Result<(), ErrorCode> {

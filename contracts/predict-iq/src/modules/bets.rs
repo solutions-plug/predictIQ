@@ -16,6 +16,7 @@ pub fn place_bet(
     outcome: u32,
     amount: i128,
     token_address: Address,
+    referrer: Option<Address>,
 ) -> Result<(), ErrorCode> {
     bettor.require_auth();
 
@@ -62,6 +63,12 @@ pub fn place_bet(
 
     e.storage().persistent().set(&bet_key, &existing_bet);
     markets::update_market(e, market);
+
+    // Process referral reward if referrer provided
+    if let Some(ref_addr) = referrer {
+        let fee = crate::modules::fees::calculate_fee(e, amount);
+        crate::modules::fees::add_referral_reward(e, &ref_addr, fee);
+    }
 
     // Event format: (Topic, MarketID, SubjectAddr, Data)
     e.events().publish(

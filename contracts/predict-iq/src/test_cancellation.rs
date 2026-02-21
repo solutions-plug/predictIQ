@@ -50,7 +50,7 @@ fn test_admin_cancel_market() {
         &token_address,
     );
     
-    client.place_bet(&user1, &market_id, &0, &1000, &token_address);
+    client.place_bet(&user1, &market_id, &0, &1000, &token_address, &None);
     
     client.cancel_market_admin(&market_id);
     
@@ -83,8 +83,8 @@ fn test_withdraw_refund_full_amount() {
     let bet_amount_user1 = 1000i128;
     let bet_amount_user2 = 2000i128;
     
-    client.place_bet(&user1, &market_id, &0, &bet_amount_user1, &token_address);
-    client.place_bet(&user2, &market_id, &1, &bet_amount_user2, &token_address);
+    client.place_bet(&user1, &market_id, &0, &bet_amount_user1, &token_address, &None);
+    client.place_bet(&user2, &market_id, &1, &bet_amount_user2, &token_address, &None);
     
     let user1_balance_before = token_client.balance(&user1);
     let user2_balance_before = token_client.balance(&user2);
@@ -122,7 +122,7 @@ fn test_refund_no_fee_collected() {
         &token_address,
     );
     
-    client.place_bet(&user1, &market_id, &0, &1000, &token_address);
+    client.place_bet(&user1, &market_id, &0, &1000, &token_address, &None);
     
     let revenue_before = client.get_revenue(&token_address);
     
@@ -156,7 +156,7 @@ fn test_refund_only_on_cancelled_market() {
         &token_address,
     );
     
-    client.place_bet(&user1, &market_id, &0, &1000, &token_address);
+    client.place_bet(&user1, &market_id, &0, &1000, &token_address, &None);
     
     client.withdraw_refund(&user1, &market_id);
 }
@@ -183,7 +183,7 @@ fn test_refund_only_once() {
         &token_address,
     );
     
-    client.place_bet(&user1, &market_id, &0, &1000, &token_address);
+    client.place_bet(&user1, &market_id, &0, &1000, &token_address, &None);
     
     client.cancel_market_admin(&market_id);
     client.withdraw_refund(&user1, &market_id);

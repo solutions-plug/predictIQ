@@ -50,8 +50,8 @@ fn test_usdc_market_6_decimals() {
     usdc_client.mint(&bettor2, &500_000_000);
 
     // Place bets
-    client.place_bet(&bettor1, &market_id, &0, &1_000_000_000, &usdc_address);
-    client.place_bet(&bettor2, &market_id, &1, &500_000_000, &usdc_address);
+    client.place_bet(&bettor1, &market_id, &0, &1_000_000_000, &usdc_address, &None);
+    client.place_bet(&bettor2, &market_id, &1, &500_000_000, &usdc_address, &None);
 
     // Verify total_staked
     let market = client.get_market(&market_id).unwrap();
@@ -107,8 +107,8 @@ fn test_xlm_market_7_decimals() {
     xlm_client.mint(&bettor2, &10_000_000_000);
 
     // Place bets
-    client.place_bet(&bettor1, &market_id, &0, &20_000_000_000, &xlm_address);
-    client.place_bet(&bettor2, &market_id, &1, &10_000_000_000, &xlm_address);
+    client.place_bet(&bettor1, &market_id, &0, &20_000_000_000, &xlm_address, &None);
+    client.place_bet(&bettor2, &market_id, &1, &10_000_000_000, &xlm_address, &None);
 
     // Verify total_staked
     let market = client.get_market(&market_id).unwrap();
@@ -167,9 +167,9 @@ fn test_usdc_payout_precision() {
     usdc_client.mint(&loser, &500_000_000);     // 500 USDC
 
     // Place bets
-    client.place_bet(&winner1, &market_id, &0, &1_000_000_000, &usdc_address);
-    client.place_bet(&winner2, &market_id, &0, &500_000_000, &usdc_address);
-    client.place_bet(&loser, &market_id, &1, &500_000_000, &usdc_address);
+    client.place_bet(&winner1, &market_id, &0, &1_000_000_000, &usdc_address, &None);
+    client.place_bet(&winner2, &market_id, &0, &500_000_000, &usdc_address, &None);
+    client.place_bet(&loser, &market_id, &1, &500_000_000, &usdc_address, &None);
 
     // Resolve market
     e.ledger().with_mut(|li| li.timestamp = 2500);
@@ -237,9 +237,9 @@ fn test_xlm_payout_precision() {
     xlm_client.mint(&loser, &50_000_000_0);   // 5.0 XLM
 
     // Place bets
-    client.place_bet(&winner1, &market_id, &0, &33_333_333_3, &xlm_address);
-    client.place_bet(&winner2, &market_id, &0, &16_666_666_7, &xlm_address);
-    client.place_bet(&loser, &market_id, &1, &50_000_000_0, &xlm_address);
+    client.place_bet(&winner1, &market_id, &0, &33_333_333_3, &xlm_address, &None);
+    client.place_bet(&winner2, &market_id, &0, &16_666_666_7, &xlm_address, &None);
+    client.place_bet(&loser, &market_id, &1, &50_000_000_0, &xlm_address, &None);
 
     // Resolve market
     e.ledger().with_mut(|li| li.timestamp = 2500);
@@ -299,7 +299,7 @@ fn test_wrong_token_rejected() {
     let xlm_address = xlm_id.address();
     
     let bettor = Address::generate(&e);
-    let result = client.try_place_bet(&bettor, &market_id, &0, &1_000_000, &xlm_address);
+    let result = client.try_place_bet(&bettor, &market_id, &0, &1_000_000, &xlm_address, &None);
     
     // Should fail with InvalidBetAmount error
     assert_eq!(result, Err(Ok(ErrorCode::InvalidBetAmount)));
