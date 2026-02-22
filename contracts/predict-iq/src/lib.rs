@@ -87,6 +87,10 @@ impl PredictIQ {
         crate::modules::fees::set_base_fee(&e, amount)
     }
 
+    pub fn get_base_fee(e: Env) -> i128 {
+        crate::modules::fees::get_base_fee(&e)
+    }
+
     pub fn get_revenue(e: Env, token: Address) -> i128 {
         crate::modules::fees::get_revenue(&e, token)
     }
@@ -175,5 +179,47 @@ impl PredictIQ {
 
     pub fn release_creation_deposit(e: Env, market_id: u64, native_token: Address) -> Result<(), ErrorCode> {
         crate::modules::markets::release_creation_deposit(&e, market_id, native_token)
+    }
+
+    // Governance and Upgrade Functions
+    pub fn initialize_guardians(e: Env, guardians: Vec<crate::types::Guardian>) -> Result<(), ErrorCode> {
+        crate::modules::admin::require_admin(&e)?;
+        crate::modules::governance::initialize_guardians(&e, guardians)
+    }
+
+    pub fn add_guardian(e: Env, guardian: crate::types::Guardian) -> Result<(), ErrorCode> {
+        crate::modules::governance::add_guardian(&e, guardian)
+    }
+
+    pub fn remove_guardian(e: Env, address: Address) -> Result<(), ErrorCode> {
+        crate::modules::governance::remove_guardian(&e, address)
+    }
+
+    pub fn get_guardians(e: Env) -> Vec<crate::types::Guardian> {
+        crate::modules::governance::get_guardians(&e)
+    }
+
+    pub fn initiate_upgrade(e: Env, wasm_hash: String) -> Result<(), ErrorCode> {
+        crate::modules::governance::initiate_upgrade(&e, wasm_hash)
+    }
+
+    pub fn vote_for_upgrade(e: Env, voter: Address, vote_for: bool) -> Result<bool, ErrorCode> {
+        crate::modules::governance::vote_for_upgrade(&e, voter, vote_for)
+    }
+
+    pub fn execute_upgrade(e: Env) -> Result<String, ErrorCode> {
+        crate::modules::governance::execute_upgrade(&e)
+    }
+
+    pub fn get_pending_upgrade(e: Env) -> Option<crate::types::PendingUpgrade> {
+        crate::modules::governance::get_pending_upgrade(&e)
+    }
+
+    pub fn get_upgrade_votes(e: Env) -> Result<(u32, u32), ErrorCode> {
+        crate::modules::governance::get_upgrade_votes(&e)
+    }
+
+    pub fn is_timelock_satisfied(e: Env) -> Result<bool, ErrorCode> {
+        crate::modules::governance::is_timelock_satisfied(&e)
     }
 }

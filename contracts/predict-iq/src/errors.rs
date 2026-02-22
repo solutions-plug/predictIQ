@@ -31,4 +31,10 @@ pub enum ErrorCode {
     TooManyWinners = 124,
     PayoutModeNotSupported = 125,
     InsufficientDeposit = 126,
+    TimelockActive = 127,
+    UpgradeNotInitiated = 128,
+    InsufficientVotes = 129,
+    AlreadyVotedOnUpgrade = 130,
+    InvalidWasmHash = 131,
+    UpgradeFailed = 132,
 }

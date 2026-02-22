@@ -1,4 +1,4 @@
-use soroban_sdk::{Env, Address, Symbol, contracttype};
+use soroban_sdk::{Env, Address, contracttype};
 use crate::types::{ConfigKey, MarketTier};
 use crate::modules::admin;
 use crate::errors::ErrorCode;
@@ -48,9 +48,10 @@ pub fn collect_fee(e: &Env, token: Address, amount: i128) {
     overall += amount; // Simplified overall tracking (assuming normalized units for analytics)
     e.storage().persistent().set(&DataKey::TotalFeesCollected, &overall);
 
-    // Event format: (Topic, MarketID, SubjectAddr, Data) - no market_id for fee collection
+    // Emit standardized fee collection event using soroban_sdk
+    use soroban_sdk::symbol_short;
     e.events().publish(
-        (Symbol::new(e, "fee_collected"),),
+        (symbol_short!("fee_colct"),),
         amount,
     );
 }

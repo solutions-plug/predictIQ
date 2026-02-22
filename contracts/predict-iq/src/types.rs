@@ -92,6 +92,9 @@ pub enum ConfigKey {
     BaseFee,
     CircuitBreakerState,
     CreationDeposit,
+    GuardianSet,
+    PendingUpgrade,
+    UpgradeVotes,
 }
 
 #[contracttype]
@@ -102,3 +105,25 @@ pub enum CircuitBreakerState {
     HalfOpen,
     Paused, // Emergency pause state - blocks high-risk operations
 }
+
+// Governance and Upgrade Types
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Guardian {
+    pub address: Address,
+    pub voting_power: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingUpgrade {
+    pub wasm_hash: String,
+    pub initiated_at: u64,
+    pub votes_for: Vec<Address>,
+    pub votes_against: Vec<Address>,
+}
+
+// Constants for upgrade governance
+pub const TIMELOCK_DURATION: u64 = 48 * 60 * 60; // 48 hours in seconds
+pub const MAJORITY_THRESHOLD_PERCENT: u32 = 51; // 51% for majority
+

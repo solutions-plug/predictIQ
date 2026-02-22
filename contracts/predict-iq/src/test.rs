@@ -310,3 +310,375 @@ fn test_only_guardian_can_unpause() {
     let result = client.try_place_bet(&bettor, &market_id, &0, &1000, &token_address);
     assert_ne!(result, Err(Ok(ErrorCode::ContractPaused)));
 }
+
+// ===================== Governance & Upgrade Tests =====================
+
+#[test]
+fn test_initialize_guardians() {
+    let (e, admin, _contract_id, client) = setup_test_env();
+
+    let guardian1 = Address::generate(&e);
+    let guardian2 = Address::generate(&e);
+
+    let mut guardians = Vec::new(&e);
+    guardians.push_back(types::Guardian {
+        address: guardian1.clone(),
+        voting_power: 1,
+    });
+    guardians.push_back(types::Guardian {
+        address: guardian2.clone(),
+        voting_power: 1,
+    });
+
+    let result = client.try_initialize_guardians(&guardians);
+    assert!(result.is_ok());
+
+    // Verify guardians are set
+    let stored_guardians = client.get_guardians();
+    assert_eq!(stored_guardians.len(), 2);
+}
+
+#[test]
+fn test_initialize_guardians_already_initialized() {
+    let (e, admin, _contract_id, client) = setup_test_env();
+
+    let guardian1 = Address::generate(&e);
+    let mut guardians = Vec::new(&e);
+    guardians.push_back(types::Guardian {
+        address: guardian1.clone(),
+        voting_power: 1,
+    });
+
+    client.initialize_guardians(&guardians);
+
+    // Try to initialize again - should fail
+    let mut guardians2 = Vec::new(&e);
+    guardians2.push_back(types::Guardian {
+        address: Address::generate(&e),
+        voting_power: 1,
+    });
+
+    let result = client.try_initialize_guardians(&guardians2);
+    assert_eq!(result, Err(Ok(ErrorCode::AlreadyInitialized)));
+}
+
+#[test]
+fn test_add_guardian() {
+    let (e, admin, _contract_id, client) = setup_test_env();
+
+    let guardian1 = Address::generate(&e);
+    let mut guardians = Vec::new(&e);
+    guardians.push_back(types::Guardian {
+        address: guardian1.clone(),
+        voting_power: 1,
+    });
+
+    client.initialize_guardians(&guardians);
+
+    let guardian2 = Address::generate(&e);
+    let result = client.try_add_guardian(&types::Guardian {
+        address: guardian2.clone(),
+        voting_power: 1,
+    });
+
+    assert!(result.is_ok());
+
+    let stored_guardians = client.get_guardians();
+    assert_eq!(stored_guardians.len(), 2);
+}
+
+#[test]
+fn test_initiate_upgrade_starts_timelock() {
+    let (e, admin, _contract_id, client) = setup_test_env();
+
+    let guardian = Address::generate(&e);
+    let mut guardians = Vec::new(&e);
+    guardians.push_back(types::Guardian {
+        address: guardian.clone(),
+        voting_power: 1,
+    });
+
+    client.initialize_guardians(&guardians);
+
+    let wasm_hash = String::from_str(&e, "abcd1234");
+
+    // Set initial ledger time
+    e.ledger().with_mut(|li| li.timestamp = 1000);
+
+    let result = client.try_initiate_upgrade(&wasm_hash);
+    assert!(result.is_ok());
+
+    // Verify pending upgrade is set
+    let pending = client.get_pending_upgrade().unwrap();
+    assert_eq!(pending.wasm_hash, wasm_hash);
+    assert_eq!(pending.initiated_at, 1000);
+}
+
+#[test]
+fn test_execute_upgrade_before_timelock_fails() {
+    let (e, admin, _contract_id, client) = setup_test_env();
+
+    let guardian = Address::generate(&e);
+    let mut guardians = Vec::new(&e);
+    guardians.push_back(types::Guardian {
+        address: guardian.clone(),
+        voting_power: 1,
+    });
+
+    client.initialize_guardians(&guardians);
+
+    let wasm_hash = String::from_str(&e, "abcd1234");
+    e.ledger().with_mut(|li| li.timestamp = 1000);
+
+    client.initiate_upgrade(&wasm_hash);
+
+    // Vote for upgrade immediately
+    client.vote_for_upgrade(&guardian, &true);
+
+    // Try to execute immediately - should fail with TimelockActive
+    let result = client.try_execute_upgrade();
+    assert_eq!(result, Err(Ok(ErrorCode::TimelockActive)));
+}
+
+#[test]
+fn test_execute_upgrade_after_timelock_succeeds() {
+    let (e, admin, _contract_id, client) = setup_test_env();
+
+    let guardian = Address::generate(&e);
+    let mut guardians = Vec::new(&e);
+    guardians.push_back(types::Guardian {
+        address: guardian.clone(),
+        voting_power: 1,
+    });
+
+    client.initialize_guardians(&guardians);
+
+    let wasm_hash = String::from_str(&e, "abcd1234");
+    e.ledger().with_mut(|li| li.timestamp = 1000);
+
+    client.initiate_upgrade(&wasm_hash);
+
+    // Vote for upgrade
+    client.vote_for_upgrade(&guardian, &true);
+
+    // Advance time past 48 hours (172800 seconds)
+    e.ledger().with_mut(|li| li.timestamp = 1000 + 172800 + 1);
+
+    // Now execute should succeed
+    let result = client.try_execute_upgrade();
+    assert!(result.is_ok());
+
+    let _returned_hash = result.unwrap();
+    // Verify pending upgrade is cleared after execution
+    let pending = client.get_pending_upgrade();
+    assert!(pending.is_none());
+}
+
+#[test]
+fn test_insufficient_votes_to_execute() {
+    let (e, admin, _contract_id, client) = setup_test_env();
+
+    let guardian1 = Address::generate(&e);
+    let guardian2 = Address::generate(&e);
+    let guardian3 = Address::generate(&e);
+
+    let mut guardians = Vec::new(&e);
+    guardians.push_back(types::Guardian {
+        address: guardian1.clone(),
+        voting_power: 1,
+    });
+    guardians.push_back(types::Guardian {
+        address: guardian2.clone(),
+        voting_power: 1,
+    });
+    guardians.push_back(types::Guardian {
+        address: guardian3.clone(),
+        voting_power: 1,
+    });
+
+    client.initialize_guardians(&guardians);
+
+    let wasm_hash = String::from_str(&e, "abcd1234");
+    e.ledger().with_mut(|li| li.timestamp = 1000);
+
+    client.initiate_upgrade(&wasm_hash);
+
+    // Only guardian1 votes for (1/3 = 33% < 51% needed)
+    client.vote_for_upgrade(&guardian1, &true);
+
+    // Advance time past 48 hours
+    e.ledger().with_mut(|li| li.timestamp = 1000 + 172800 + 1);
+
+    // Execute should fail - insufficient votes
+    let result = client.try_execute_upgrade();
+    assert_eq!(result, Err(Ok(ErrorCode::InsufficientVotes)));
+}
+
+#[test]
+fn test_majority_vote_required() {
+    let (e, admin, _contract_id, client) = setup_test_env();
+
+    let guardian1 = Address::generate(&e);
+    let guardian2 = Address::generate(&e);
+    let guardian3 = Address::generate(&e);
+
+    let mut guardians = Vec::new(&e);
+    guardians.push_back(types::Guardian {
+        address: guardian1.clone(),
+        voting_power: 1,
+    });
+    guardians.push_back(types::Guardian {
+        address: guardian2.clone(),
+        voting_power: 1,
+    });
+    guardians.push_back(types::Guardian {
+        address: guardian3.clone(),
+        voting_power: 1,
+    });
+
+    client.initialize_guardians(&guardians);
+
+    let wasm_hash = String::from_str(&e, "abcd1234");
+    e.ledger().with_mut(|li| li.timestamp = 1000);
+
+    client.initiate_upgrade(&wasm_hash);
+
+    // Two guardians vote for (2/3 = 66% > 51% needed)
+    client.vote_for_upgrade(&guardian1, &true);
+    client.vote_for_upgrade(&guardian2, &true);
+
+    // Advance time past 48 hours
+    e.ledger().with_mut(|li| li.timestamp = 1000 + 172800 + 1);
+
+    // Execute should succeed with majority
+    let result = client.try_execute_upgrade();
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_cannot_vote_twice() {
+    let (e, admin, _contract_id, client) = setup_test_env();
+
+    let guardian = Address::generate(&e);
+    let mut guardians = Vec::new(&e);
+    guardians.push_back(types::Guardian {
+        address: guardian.clone(),
+        voting_power: 1,
+    });
+
+    client.initialize_guardians(&guardians);
+
+    let wasm_hash = String::from_str(&e, "abcd1234");
+    e.ledger().with_mut(|li| li.timestamp = 1000);
+
+    client.initiate_upgrade(&wasm_hash);
+
+    // Vote for
+    client.vote_for_upgrade(&guardian, &true);
+
+    // Try to vote again - should fail
+    let result = client.try_vote_for_upgrade(&guardian, &false);
+    assert_eq!(result, Err(Ok(ErrorCode::AlreadyVotedOnUpgrade)));
+}
+
+#[test]
+fn test_only_guardians_can_vote() {
+    let (e, admin, _contract_id, client) = setup_test_env();
+
+    let guardian = Address::generate(&e);
+    let non_guardian = Address::generate(&e);
+
+    let mut guardians = Vec::new(&e);
+    guardians.push_back(types::Guardian {
+        address: guardian.clone(),
+        voting_power: 1,
+    });
+
+    client.initialize_guardians(&guardians);
+
+    let wasm_hash = String::from_str(&e, "abcd1234");
+    e.ledger().with_mut(|li| li.timestamp = 1000);
+
+    client.initiate_upgrade(&wasm_hash);
+
+    // Non-guardian tries to vote - should fail
+    let result = client.try_vote_for_upgrade(&non_guardian, &true);
+    assert_eq!(result, Err(Ok(ErrorCode::NotAuthorized)));
+}
+
+#[test]
+fn test_get_upgrade_votes() {
+    let (e, admin, _contract_id, client) = setup_test_env();
+
+    let guardian1 = Address::generate(&e);
+    let guardian2 = Address::generate(&e);
+
+    let mut guardians = Vec::new(&e);
+    guardians.push_back(types::Guardian {
+        address: guardian1.clone(),
+        voting_power: 1,
+    });
+    guardians.push_back(types::Guardian {
+        address: guardian2.clone(),
+        voting_power: 1,
+    });
+
+    client.initialize_guardians(&guardians);
+
+    let wasm_hash = String::from_str(&e, "abcd1234");
+    e.ledger().with_mut(|li| li.timestamp = 1000);
+
+    client.initiate_upgrade(&wasm_hash);
+
+    // Initial votes should be (0, 0)
+    let (for_count, against_count) = client.get_upgrade_votes();
+    assert_eq!(for_count, 0);
+    assert_eq!(against_count, 0);
+
+    // One guardian votes for
+    client.vote_for_upgrade(&guardian1, &true);
+
+    let (for_count, against_count) = client.get_upgrade_votes();
+    assert_eq!(for_count, 1);
+    assert_eq!(against_count, 0);
+
+    // Another votes against
+    client.vote_for_upgrade(&guardian2, &false);
+
+    let (for_count, against_count) = client.get_upgrade_votes();
+    assert_eq!(for_count, 1);
+    assert_eq!(against_count, 1);
+}
+
+#[test]
+fn test_persistent_state_preserved_on_upgrade() {
+    let (e, admin, _contract_id, client) = setup_test_env();
+
+    let guardian = Address::generate(&e);
+    let mut guardians = Vec::new(&e);
+    guardians.push_back(types::Guardian {
+        address: guardian.clone(),
+        voting_power: 1,
+    });
+
+    client.initialize_guardians(&guardians);
+
+    // Set some state (admin, base fee, guardians, etc.)
+    client.set_base_fee(&100);
+    let stored_fee = client.get_base_fee();
+    assert_eq!(stored_fee, 100);
+
+    // Initiate upgrade
+    let wasm_hash = String::from_str(&e, "abcd1234");
+    e.ledger().with_mut(|li| li.timestamp = 1000);
+    client.initiate_upgrade(&wasm_hash);
+
+    // Verify state is still accessible after initiating upgrade
+    let stored_fee_after = client.get_base_fee();
+    assert_eq!(stored_fee_after, 100);
+
+    // Admin should still be set
+    let stored_admin = client.get_admin().unwrap();
+    assert_eq!(stored_admin, admin);
+}
+

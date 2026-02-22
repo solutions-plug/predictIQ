@@ -1,4 +1,4 @@
-use soroban_sdk::{Env, Address, Symbol, Vec, contracttype};
+use soroban_sdk::{Env, Address, contracttype};
 use crate::types::{MarketStatus, PayoutMode};
 use crate::modules::markets;
 use crate::errors::ErrorCode;
@@ -23,13 +23,17 @@ pub fn file_dispute(e: &Env, disciplinarian: Address, market_id: u64) -> Result<
     market.status = MarketStatus::Disputed;
     // Extend resolution deadline for voting period
     market.resolution_deadline += 86400 * 3; // 3 days extension
+    let new_deadline = market.resolution_deadline;
 
     markets::update_market(e, market);
 
-    // Event format: (Topic, MarketID, SubjectAddr, Data)
-    e.events().publish(
-        (Symbol::new(e, "market_disputed"), market_id, disciplinarian),
-        (),
+    // Emit standardized DisputeFiled event
+    // Topics: [DisputeFiled, market_id, disciplinarian]
+    crate::modules::events::emit_dispute_filed(
+        e,
+        market_id,
+        disciplinarian,
+        new_deadline,
     );
     
     Ok(())
@@ -59,10 +63,15 @@ pub fn resolve_market(e: &Env, market_id: u64, winning_outcome: u32) -> Result<(
 
     markets::update_market(e, market);
 
-    // Event format: (Topic, MarketID, SubjectAddr, Data)
-    e.events().publish(
-        (Symbol::new(e, "market_resolved"), market_id),
+    // Emit standardized ResolutionFinalized event
+    // Topics: [ResolutionFinalized, market_id, resolver (admin)]
+    let admin = crate::modules::admin::get_admin(e).unwrap_or(e.current_contract_address());
+    crate::modules::events::emit_resolution_finalized(
+        e,
+        market_id,
+        admin,
         winning_outcome,
+        0, // Total payout tracked separately by indexer
     );
     
     Ok(())
