@@ -7,3 +7,4 @@ pub mod fees;
 pub mod oracles;
 pub mod circuit_breaker;
 pub mod monitoring;
+pub mod governance;
