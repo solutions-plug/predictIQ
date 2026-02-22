@@ -1,4 +1,4 @@
-use soroban_sdk::{Env, Symbol, contracttype};
+use soroban_sdk::{Env, contracttype};
 use crate::types::OracleConfig;
 use crate::errors::ErrorCode;
 
@@ -20,11 +20,10 @@ pub fn set_oracle_result(e: &Env, market_id: u64, outcome: u32) -> Result<(), Er
     e.storage().persistent().set(&OracleData::Result(market_id, 0), &outcome);
     e.storage().persistent().set(&OracleData::LastUpdate(market_id, 0), &e.ledger().timestamp());
     
-    // Event format: (Topic, MarketID, SubjectAddr, Data)
-    e.events().publish(
-        (Symbol::new(e, "oracle_update"), market_id),
-        outcome,
-    );
+    // Emit standardized OracleResultSet event
+    // Topics: [OracleResultSet, market_id, oracle_address]
+    let oracle_addr = e.current_contract_address();
+    crate::modules::events::emit_oracle_result_set(e, market_id, oracle_addr, outcome);
     
     Ok(())
 }

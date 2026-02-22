@@ -1,4 +1,4 @@
-use soroban_sdk::{Env, Address, Symbol, String, Vec, contracttype, token};
+use soroban_sdk::{Env, Address, String, Vec, contracttype, token};
 use crate::types::{Market, MarketStatus, OracleConfig, MarketTier, CreatorReputation, ConfigKey};
 use crate::errors::ErrorCode;
 
@@ -48,6 +48,8 @@ pub fn create_market(
     let mut count: u64 = e.storage().instance().get(&DataKey::MarketCount).unwrap_or(0);
     count += 1;
 
+    let num_outcomes = options.len() as u32;
+
     let market = Market {
         id: count,
         creator: creator.clone(),
@@ -67,10 +69,15 @@ pub fn create_market(
     e.storage().persistent().set(&DataKey::Market(count), &market);
     e.storage().instance().set(&DataKey::MarketCount, &count);
 
-    // Event format: (Topic, MarketID, SubjectAddr, Data)
-    e.events().publish(
-        (Symbol::new(e, "market_created"), count, creator),
-        (),
+    // Emit standardized MarketCreated event
+    // Topics: [MarketCreated, market_id, creator]
+    crate::modules::events::emit_market_created(
+        e,
+        count,
+        creator.clone(),
+        market.description.clone(),
+        num_outcomes,
+        deadline,
     );
 
     Ok(count)
