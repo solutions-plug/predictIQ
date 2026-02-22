@@ -1,4 +1,4 @@
-use soroban_sdk::{Env, Address, Symbol, contracttype};
+use soroban_sdk::{Env, Address, contracttype};
 use crate::types::{Vote, MarketStatus};
 use crate::modules::markets;
 use crate::errors::ErrorCode;
@@ -47,11 +47,9 @@ pub fn cast_vote(
     current_tally += weight;
     e.storage().persistent().set(&tally_key, &current_tally);
 
-    // Event format: (Topic, MarketID, SubjectAddr, Data)
-    e.events().publish(
-        (Symbol::new(e, "vote_cast"), market_id, voter),
-        outcome,
-    );
+    // Emit standardized VoteCast event
+    // Topics: [VoteCast, market_id, voter]
+    crate::modules::events::emit_vote_cast(e, market_id, voter, outcome, weight);
     
     Ok(())
 }

@@ -346,10 +346,18 @@
           "v0": {
             "topics": [
               {
-                "symbol": "contract_paused"
+                "symbol": "cb_state"
+              },
+              {
+                "u64": 0
+              },
+              {
+                "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
               }
             ],
-            "data": "void"
+            "data": {
+              "string": "paused"
+            }
           }
         }
       },

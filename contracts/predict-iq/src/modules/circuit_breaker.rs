@@ -1,4 +1,4 @@
-use soroban_sdk::{Env, Symbol};
+use soroban_sdk::Env;
 use crate::types::{ConfigKey, CircuitBreakerState};
 use crate::modules::admin;
 use crate::errors::ErrorCode;
@@ -7,11 +7,16 @@ pub fn set_state(e: &Env, state: CircuitBreakerState) -> Result<(), ErrorCode> {
     admin::require_admin(e)?;
     e.storage().persistent().set(&ConfigKey::CircuitBreakerState, &state);
 
-    // Event format: (Topic, MarketID, SubjectAddr, Data) - no market_id for global state
-    e.events().publish(
-        (Symbol::new(e, "circuit_breaker_updated"),),
-        state,
-    );
+    // Emit standardized CircuitBreakerTriggered event
+    // Topics: [CircuitBreakerTriggered, 0, contract_address]
+    let contract_addr = e.current_contract_address();
+    let state_str = match state {
+        CircuitBreakerState::Closed => soroban_sdk::String::from_str(e, "closed"),
+        CircuitBreakerState::Open => soroban_sdk::String::from_str(e, "open"),
+        CircuitBreakerState::HalfOpen => soroban_sdk::String::from_str(e, "half_open"),
+        CircuitBreakerState::Paused => soroban_sdk::String::from_str(e, "paused"),
+    };
+    crate::modules::events::emit_circuit_breaker_triggered(e, contract_addr, state_str);
     
     Ok(())
 }
@@ -35,9 +40,12 @@ pub fn pause(e: &Env) -> Result<(), ErrorCode> {
     admin::require_guardian(e)?;
     e.storage().persistent().set(&ConfigKey::CircuitBreakerState, &CircuitBreakerState::Paused);
     
-    e.events().publish(
-        (Symbol::new(e, "contract_paused"),),
-        (),
+    // Emit standardized CircuitBreakerTriggered event
+    let contract_addr = e.current_contract_address();
+    crate::modules::events::emit_circuit_breaker_triggered(
+        e,
+        contract_addr,
+        soroban_sdk::String::from_str(e, "paused"),
     );
     
     Ok(())
@@ -47,9 +55,12 @@ pub fn unpause(e: &Env) -> Result<(), ErrorCode> {
     admin::require_guardian(e)?;
     e.storage().persistent().set(&ConfigKey::CircuitBreakerState, &CircuitBreakerState::Closed);
     
-    e.events().publish(
-        (Symbol::new(e, "contract_unpaused"),),
-        (),
+    // Emit standardized CircuitBreakerTriggered event
+    let contract_addr = e.current_contract_address();
+    crate::modules::events::emit_circuit_breaker_triggered(
+        e,
+        contract_addr,
+        soroban_sdk::String::from_str(e, "closed"),
     );
     
     Ok(())

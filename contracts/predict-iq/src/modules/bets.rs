@@ -1,4 +1,4 @@
-use soroban_sdk::{Env, Address, Symbol, contracttype, token};
+use soroban_sdk::{Env, Address, contracttype, token};
 use crate::types::{Bet, MarketStatus};
 use crate::modules::markets;
 use crate::errors::ErrorCode;
@@ -57,11 +57,9 @@ pub fn place_bet(
     e.storage().persistent().set(&bet_key, &existing_bet);
     markets::update_market(e, market);
 
-    // Event format: (Topic, MarketID, SubjectAddr, Data)
-    e.events().publish(
-        (Symbol::new(e, "bet_placed"), market_id, bettor),
-        amount,
-    );
+    // Emit standardized BetPlaced event
+    // Topics: [BetPlaced, market_id, bettor]
+    crate::modules::events::emit_bet_placed(e, market_id, bettor, outcome, amount);
     
     Ok(())
 }
@@ -103,10 +101,9 @@ pub fn claim_winnings(
     // Remove bet record
     e.storage().persistent().remove(&bet_key);
 
-    e.events().publish(
-        (Symbol::new(e, "winnings_claimed"), market_id, bettor),
-        winnings,
-    );
+    // Emit standardized RewardsClaimed event
+    // Topics: [RewardsClaimed, market_id, bettor]
+    crate::modules::events::emit_rewards_claimed(e, market_id, bettor, winnings, false);
 
     Ok(winnings)
 }
@@ -137,10 +134,9 @@ pub fn withdraw_refund(
     // Remove bet record
     e.storage().persistent().remove(&bet_key);
 
-    e.events().publish(
-        (Symbol::new(e, "refund_withdrawn"), market_id, bettor),
-        refund_amount,
-    );
+    // Emit standardized RewardsClaimed event (refund variant)
+    // Topics: [RewardsClaimed, market_id, bettor]
+    crate::modules::events::emit_rewards_claimed(e, market_id, bettor, refund_amount, true);
 
     Ok(refund_amount)
 }
