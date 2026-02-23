@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, String, Vec};
+use soroban_sdk::{contracttype, Address, String, Vec, Map};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -70,6 +70,15 @@ pub struct Vote {
     pub voter: Address,
     pub outcome: u32,
     pub weight: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LockedTokens {
+    pub voter: Address,
+    pub market_id: u64,
+    pub amount: i128,
+    pub unlock_time: u64,
 }
 
 #[contracttype]

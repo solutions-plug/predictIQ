@@ -68,8 +68,17 @@ impl PredictIQ {
         outcome: u32,
         amount: i128,
         token_address: Address,
+        referrer: Option<Address>,
     ) -> Result<(), ErrorCode> {
-        crate::modules::bets::place_bet(&e, bettor, market_id, outcome, amount, token_address)
+        crate::modules::bets::place_bet(&e, bettor, market_id, outcome, amount, token_address, referrer)
+    }
+
+    pub fn claim_winnings(
+        e: Env,
+        bettor: Address,
+        market_id: u64,
+    ) -> Result<i128, ErrorCode> {
+        crate::modules::bets::claim_winnings(&e, bettor, market_id)
     }
 
     pub fn get_market(e: Env, id: u64) -> Option<crate::types::Market> {
@@ -111,9 +120,18 @@ impl PredictIQ {
         crate::modules::fees::get_revenue(&e, token)
     }
 
+    pub fn claim_referral_rewards(e: Env, address: Address, token: Address) -> Result<i128, ErrorCode> {
+        crate::modules::fees::claim_referral_rewards(&e, &address, &token)
+    }
+
     pub fn set_oracle_result(e: Env, market_id: u64, outcome: u32) -> Result<(), ErrorCode> {
         crate::modules::admin::require_admin(&e)?;
         crate::modules::oracles::set_oracle_result(&e, market_id, outcome)
+    }
+
+    pub fn resolve_market(e: Env, market_id: u64, winning_outcome: u32) -> Result<(), ErrorCode> {
+        crate::modules::admin::require_admin(&e)?;
+        crate::modules::disputes::resolve_market(&e, market_id, winning_outcome)
     }
 
     pub fn reset_monitoring(e: Env) -> Result<(), ErrorCode> {

@@ -1,10 +1,9 @@
 {
   "generators": {
-    "address": 6,
+    "address": 7,
     "nonce": 0
   },
   "auth": [
-    [],
     [],
     [
       [
@@ -25,6 +24,7 @@
         }
       ]
     ],
+    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
@@ -38,7 +38,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
                 },
                 {
-                  "string": "Will BTC reach $100k?"
+                  "string": "Test Market"
                 },
                 {
                   "vec": [
@@ -63,7 +63,7 @@
                         "symbol": "feed_id"
                       },
                       "val": {
-                        "string": "btc_price"
+                        "string": "test"
                       }
                     },
                     {
@@ -95,7 +95,7 @@
                         "symbol": "oracle_address"
                       },
                       "val": {
-                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                       }
                     }
                   ]
@@ -365,7 +365,7 @@
                         "symbol": "description"
                       },
                       "val": {
-                        "string": "Will BTC reach $100k?"
+                        "string": "Test Market"
                       }
                     },
                     {
@@ -414,7 +414,7 @@
                               "symbol": "feed_id"
                             },
                             "val": {
-                              "string": "btc_price"
+                              "string": "test"
                             }
                           },
                           {
@@ -446,7 +446,7 @@
                               "symbol": "oracle_address"
                             },
                             "val": {
-                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
                             }
                           }
                         ]

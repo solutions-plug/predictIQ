@@ -4,6 +4,7 @@ use crate::types::{Bet, MarketStatus};
 use soroban_sdk::{contracttype, token, Address, Env};
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
     Bet(u64, Address), // market_id, bettor
 }
@@ -15,6 +16,7 @@ pub fn place_bet(
     outcome: u32,
     amount: i128,
     token_address: Address,
+    referrer: Option<Address>,
 ) -> Result<(), ErrorCode> {
     bettor.require_auth();
 
@@ -54,9 +56,13 @@ pub fn place_bet(
         return Err(ErrorCode::InvalidOutcome);
     }
 
-    // Transfer tokens from bettor to contract
-    let client = token::Client::new(e, &token_address);
-    client.transfer(&bettor, &e.current_contract_address(), &amount);
+    // Validate token_address matches market's configured asset
+    if token_address != market.token_address {
+        return Err(ErrorCode::InvalidBetAmount);
+    }
+
+    // Transfer tokens from bettor to contract using SAC-safe transfer
+    sac::safe_transfer(e, &token_address, &bettor, &e.current_contract_address(), &amount)?;
 
     let bet_key = DataKey::Bet(market_id, bettor.clone());
     let mut existing_bet: Bet = e.storage().persistent().get(&bet_key).unwrap_or(Bet {
@@ -72,6 +78,9 @@ pub fn place_bet(
 
     existing_bet.amount += amount;
     market.total_staked += amount;
+    
+    let outcome_stake = market.outcome_stakes.get(outcome).unwrap_or(0);
+    market.outcome_stakes.set(outcome, outcome_stake + amount);
 
     e.storage().persistent().set(&bet_key, &existing_bet);
     markets::update_market(e, market);
@@ -170,4 +179,48 @@ pub fn withdraw_refund(
     crate::modules::events::emit_rewards_claimed(e, market_id, bettor, refund_amount, true);
 
     Ok(refund_amount)
+}
+
+pub fn claim_winnings(
+    e: &Env,
+    bettor: Address,
+    market_id: u64,
+) -> Result<i128, ErrorCode> {
+    bettor.require_auth();
+
+    let market = markets::get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
+    
+    if market.status != MarketStatus::Resolved {
+        return Err(ErrorCode::MarketStillActive);
+    }
+
+    let bet_key = DataKey::Bet(market_id, bettor.clone());
+    let bet: Bet = e.storage().persistent().get(&bet_key).ok_or(ErrorCode::BetNotFound)?;
+
+    let winning_outcome = market.winning_outcome.ok_or(ErrorCode::MarketStillActive)?;
+    
+    if bet.outcome != winning_outcome {
+        return Err(ErrorCode::NotWinningOutcome);
+    }
+
+    let winning_stake = market.outcome_stakes.get(winning_outcome).unwrap_or(0);
+    if winning_stake == 0 {
+        return Err(ErrorCode::NotWinningOutcome);
+    }
+
+    let fee = crate::modules::fees::calculate_fee(e, market.total_staked);
+    let net_pool = market.total_staked - fee;
+    let payout = (bet.amount * net_pool) / winning_stake;
+
+    e.storage().persistent().remove(&bet_key);
+
+    // Use SAC-safe transfer for payout
+    sac::safe_transfer(e, &market.token_address, &e.current_contract_address(), &bettor, &payout)?;
+
+    e.events().publish(
+        (Symbol::new(e, "winnings_claimed"), market_id, bettor),
+        payout,
+    );
+
+    Ok(payout)
 }
