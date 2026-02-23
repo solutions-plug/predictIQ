@@ -35,4 +35,10 @@ pub enum ErrorCode {
     NoMajorityReached = 128,
     MarketNotCancelled = 129,
     IdentityVerificationRequired = 130,
+    ProtocolLocked = 131,
+    OracleUpdateTooRecent = 132,
+    InsufficientGuardians = 133,
+    RecoveryNotActive = 134,
+    RecoveryTimelockNotExpired = 135,
+    RecoveryAlreadyActive = 136,
 }

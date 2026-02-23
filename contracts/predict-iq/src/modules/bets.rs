@@ -1,6 +1,6 @@
 use soroban_sdk::{Env, Address, Symbol, contracttype, token};
 use crate::types::{Bet, MarketStatus};
-use crate::modules::markets;
+use crate::modules::{markets, reentrancy};
 use crate::errors::ErrorCode;
 
 #[contracttype]
@@ -18,7 +18,13 @@ pub fn place_bet(
     token_address: Address,
     referrer: Option<Address>,
 ) -> Result<(), ErrorCode> {
+    // Reentrancy guard
+    let _guard = reentrancy::ReentrancyGuard::new(e)?;
+    
     bettor.require_auth();
+    
+    // Check oracle freshness - prevent same-ledger manipulation
+    reentrancy::check_oracle_freshness(e, market_id)?;
     
     // Enforce identity verification
     crate::modules::identity::require_verified(e, &bettor)?;
@@ -42,10 +48,6 @@ pub fn place_bet(
         return Err(ErrorCode::InvalidBetAmount);
     }
 
-    // Transfer tokens from bettor to contract
-    let client = token::Client::new(e, &token_address);
-    client.transfer(&bettor, &e.current_contract_address(), &amount);
-
     let bet_key = DataKey::Bet(market_id, bettor.clone());
     let mut existing_bet: Bet = e.storage().persistent().get(&bet_key).unwrap_or(Bet {
         market_id,
@@ -64,14 +66,19 @@ pub fn place_bet(
     let outcome_stake = market.outcome_stakes.get(outcome).unwrap_or(0);
     market.outcome_stakes.set(outcome, outcome_stake + amount);
 
-    e.storage().persistent().set(&bet_key, &existing_bet);
-    markets::update_market(e, market);
-
     // Process referral reward if referrer provided
     if let Some(ref_addr) = referrer {
         let fee = crate::modules::fees::calculate_fee(e, amount);
         crate::modules::fees::add_referral_reward(e, &ref_addr, fee);
     }
+
+    // All storage writes BEFORE token transfer
+    e.storage().persistent().set(&bet_key, &existing_bet);
+    markets::update_market(e, market);
+
+    // Token transfer MUST be last (reentrancy protection)
+    let client = token::Client::new(e, &token_address);
+    client.transfer(&bettor, &e.current_contract_address(), &amount);
 
     // Event format: (Topic, MarketID, SubjectAddr, Data)
     e.events().publish(
@@ -91,6 +98,9 @@ pub fn claim_winnings(
     bettor: Address,
     market_id: u64,
 ) -> Result<i128, ErrorCode> {
+    // Reentrancy guard
+    let _guard = reentrancy::ReentrancyGuard::new(e)?;
+    
     bettor.require_auth();
 
     let market = markets::get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
@@ -117,8 +127,15 @@ pub fn claim_winnings(
     let net_pool = market.total_staked - fee;
     let payout = (bet.amount * net_pool) / winning_stake;
 
+    // Storage write BEFORE token transfer
     e.storage().persistent().remove(&bet_key);
 
+    e.events().publish(
+        (Symbol::new(e, "winnings_claimed"), market_id, bettor.clone()),
+        payout,
+    );
+
+    // Token transfer MUST be last (reentrancy protection)
     let client = token::Client::new(e, &market.token_address);
     client.transfer(&e.current_contract_address(), &bettor, &payout);
 

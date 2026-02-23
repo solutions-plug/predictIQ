@@ -49,6 +49,9 @@ pub fn resolve_with_pyth(e: &Env, market_id: u64, config: &OracleConfig) -> Resu
     // Convert price to outcome (implementation depends on market logic)
     let outcome = determine_outcome(&price);
     
+    // Record oracle update for manipulation prevention
+    crate::modules::reentrancy::record_oracle_update(e, market_id);
+    
     // Store result
     e.storage().persistent().set(&OracleData::Result(market_id, 0), &outcome);
     e.storage().persistent().set(&OracleData::LastUpdate(market_id, 0), &(price.publish_time as u64));
@@ -72,6 +75,9 @@ pub fn get_oracle_result(e: &Env, market_id: u64, _config: &OracleConfig) -> Opt
 }
 
 pub fn set_oracle_result(e: &Env, market_id: u64, outcome: u32) -> Result<(), ErrorCode> {
+    // Record oracle update for manipulation prevention
+    crate::modules::reentrancy::record_oracle_update(e, market_id);
+    
     // Manual override for testing
     e.storage().persistent().set(&OracleData::Result(market_id, 0), &outcome);
     e.storage().persistent().set(&OracleData::LastUpdate(market_id, 0), &e.ledger().timestamp());
