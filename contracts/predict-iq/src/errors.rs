@@ -34,4 +34,10 @@ pub enum ErrorCode {
     ResolutionNotReady = 127,
     NoMajorityReached = 128,
     MarketNotCancelled = 129,
+    InsufficientGuardians = 130,
+    RecoveryNotActive = 131,
+    RecoveryTimelockNotExpired = 132,
+    RecoveryAlreadyActive = 133,
+    StalePrice = 134,
+    ConfidenceTooLow = 135,
 }

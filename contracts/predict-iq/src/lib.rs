@@ -10,6 +10,7 @@ mod test_resolution_state_machine;
 mod test_multi_token;
 mod test_cancellation;
 mod test_referral;
+mod test_guardians;
 
 use crate::types::{ConfigKey, CircuitBreakerState};
 use crate::modules::admin;
@@ -153,5 +154,27 @@ impl PredictIQ {
 
     pub fn withdraw_refund(e: Env, bettor: Address, market_id: u64) -> Result<i128, ErrorCode> {
         crate::modules::cancellation::withdraw_refund(&e, bettor, market_id)
+    }
+
+    // Guardian Governance Functions
+    pub fn set_guardians(e: Env, guardians: Vec<Address>) -> Result<(), ErrorCode> {
+        crate::modules::admin::require_admin(&e)?;
+        crate::modules::guardians::set_guardians(&e, guardians)
+    }
+
+    pub fn sign_reset_admin(e: Env, guardian: Address, new_admin: Address) -> Result<(), ErrorCode> {
+        crate::modules::guardians::sign_reset_admin(&e, guardian, new_admin)
+    }
+
+    pub fn get_recovery_state(e: Env) -> Option<crate::modules::guardians::RecoveryState> {
+        crate::modules::guardians::get_recovery_state(&e)
+    }
+
+    pub fn is_recovery_active(e: Env) -> bool {
+        crate::modules::guardians::is_recovery_active(&e)
+    }
+
+    pub fn finalize_recovery(e: Env) -> Result<Address, ErrorCode> {
+        crate::modules::guardians::finalize_recovery(&e)
     }
 }
