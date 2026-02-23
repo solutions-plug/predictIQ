@@ -11,6 +11,7 @@ mod test_resolution_state_machine;
 mod test_multi_token;
 mod test_cancellation;
 mod test_referral;
+mod test_optimization;
 mod mock_identity;
 mod test_identity;
 
@@ -245,6 +246,27 @@ impl PredictIQ {
 
     pub fn verify_pool_invariant(e: Env, market_id: u64, outcome: u32) -> bool {
         crate::modules::amm::verify_invariant(&e, market_id, outcome).unwrap_or(false)
+    }
+
+    // Storage Optimization Functions
+    pub fn garbage_collect_bet(e: Env, caller: Address, market_id: u64, bettor: Address) -> Result<i128, ErrorCode> {
+        crate::modules::gc::garbage_collect_bet(&e, caller, market_id, bettor)
+    }
+
+    pub fn get_market_description(e: Env, market_id: u64) -> String {
+        if let Some(market) = crate::modules::markets::get_market(&e, market_id) {
+            crate::modules::compression::decompress_description(&e, &market.metadata)
+        } else {
+            String::from_str(&e, "")
+        }
+    }
+
+    pub fn get_market_options(e: Env, market_id: u64) -> Vec<String> {
+        if let Some(market) = crate::modules::markets::get_market(&e, market_id) {
+            crate::modules::compression::decompress_options(&e, &market.metadata)
+        } else {
+            Vec::new(&e)
+        }
     }
 
     pub fn set_identity_contract(e: Env, contract: Address) -> Result<(), ErrorCode> {
