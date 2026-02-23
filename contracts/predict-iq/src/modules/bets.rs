@@ -19,6 +19,9 @@ pub fn place_bet(
     referrer: Option<Address>,
 ) -> Result<(), ErrorCode> {
     bettor.require_auth();
+    
+    // Enforce identity verification
+    crate::modules::identity::require_verified(e, &bettor)?;
 
     let mut market = markets::get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
     

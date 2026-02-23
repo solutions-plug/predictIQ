@@ -10,6 +10,7 @@ pub mod oracles;
 pub mod circuit_breaker;
 pub mod monitoring;
 pub mod cancellation;
+pub mod identity;
 
 #[cfg(test)]
 mod oracles_test;

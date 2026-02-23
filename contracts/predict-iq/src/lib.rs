@@ -1,8 +1,8 @@
 #![no_std]
 use soroban_sdk::{contract, contractimpl, Env, Address, String, Vec};
 
-mod types;
-mod errors;
+pub mod types;
+pub mod errors;
 mod modules;
 mod test;
 mod test_amm;
@@ -11,6 +11,8 @@ mod test_resolution_state_machine;
 mod test_multi_token;
 mod test_cancellation;
 mod test_referral;
+mod mock_identity;
+mod test_identity;
 
 use crate::types::{ConfigKey, CircuitBreakerState};
 use crate::modules::admin;
@@ -221,5 +223,11 @@ impl PredictIQ {
 
     pub fn verify_pool_invariant(e: Env, market_id: u64, outcome: u32) -> bool {
         crate::modules::amm::verify_invariant(&e, market_id, outcome).unwrap_or(false)
+    }
+
+    pub fn set_identity_contract(e: Env, contract: Address) -> Result<(), ErrorCode> {
+        crate::modules::admin::require_admin(&e)?;
+        crate::modules::identity::set_identity_contract(&e, contract);
+        Ok(())
     }
 }

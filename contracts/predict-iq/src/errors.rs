@@ -34,4 +34,5 @@ pub enum ErrorCode {
     ResolutionNotReady = 127,
     NoMajorityReached = 128,
     MarketNotCancelled = 129,
+    IdentityVerificationRequired = 130,
 }
