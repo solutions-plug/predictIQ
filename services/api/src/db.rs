@@ -564,3 +564,257 @@ impl Database {
         Ok(analytics)
     }
 }
+
+    // Waitlist management
+    pub async fn waitlist_get_by_email(
+        &self,
+        normalized_email: &str,
+    ) -> anyhow::Result<Option<crate::waitlist::WaitlistEntry>> {
+        let row = sqlx::query(
+            "SELECT id, email, name, role, status, source, referral_code, referred_by_code,
+                    position, priority_score, joined_at, invited_at, invitation_accepted_at,
+                    converted_at, created_at, updated_at
+             FROM waitlist_entries
+             WHERE email = $1",
+        )
+        .bind(normalized_email)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some(row) = row {
+            return Ok(Some(crate::waitlist::WaitlistEntry {
+                id: row.try_get("id")?,
+                email: row.try_get("email")?,
+                name: row.try_get("name")?,
+                role: row.try_get("role")?,
+                status: row.try_get("status")?,
+                source: row.try_get("source")?,
+                referral_code: row.try_get("referral_code")?,
+                referred_by_code: row.try_get("referred_by_code")?,
+                position: row.try_get("position")?,
+                priority_score: row.try_get("priority_score")?,
+                joined_at: row.try_get("joined_at")?,
+                invited_at: row.try_get("invited_at")?,
+                invitation_accepted_at: row.try_get("invitation_accepted_at")?,
+                converted_at: row.try_get("converted_at")?,
+                created_at: row.try_get("created_at")?,
+                updated_at: row.try_get("updated_at")?,
+            }));
+        }
+
+        Ok(None)
+    }
+
+    pub async fn waitlist_create_entry(
+        &self,
+        email: &str,
+        name: Option<&str>,
+        role: Option<&str>,
+        source: Option<&str>,
+        referral_code: &str,
+        referred_by_code: Option<&str>,
+    ) -> anyhow::Result<crate::waitlist::WaitlistEntry> {
+        // Get current max position
+        let position_row = sqlx::query(
+            "SELECT COALESCE(MAX(position), 0) + 1 as next_position FROM waitlist_entries"
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        let position: i32 = position_row.try_get("next_position")?;
+
+        // Calculate priority score based on referral
+        let mut priority_score = 0;
+        if let Some(ref_code) = referred_by_code {
+            // Increment referral count for referrer
+            let _ = sqlx::query(
+                "INSERT INTO waitlist_referrals (referrer_code, referral_count)
+                 VALUES ($1, 1)
+                 ON CONFLICT (referrer_code) DO UPDATE SET
+                     referral_count = waitlist_referrals.referral_count + 1,
+                     updated_at = NOW()"
+            )
+            .bind(ref_code)
+            .execute(&self.pool)
+            .await;
+
+            priority_score = 10; // Bonus for being referred
+        }
+
+        let row = sqlx::query(
+            "INSERT INTO waitlist_entries 
+             (email, name, role, status, source, referral_code, referred_by_code, position, priority_score)
+             VALUES ($1, $2, $3, 'pending', $4, $5, $6, $7, $8)
+             RETURNING id, email, name, role, status, source, referral_code, referred_by_code,
+                       position, priority_score, joined_at, invited_at, invitation_accepted_at,
+                       converted_at, created_at, updated_at",
+        )
+        .bind(email)
+        .bind(name)
+        .bind(role)
+        .bind(source)
+        .bind(referral_code)
+        .bind(referred_by_code)
+        .bind(position)
+        .bind(priority_score)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(crate::waitlist::WaitlistEntry {
+            id: row.try_get("id")?,
+            email: row.try_get("email")?,
+            name: row.try_get("name")?,
+            role: row.try_get("role")?,
+            status: row.try_get("status")?,
+            source: row.try_get("source")?,
+            referral_code: row.try_get("referral_code")?,
+            referred_by_code: row.try_get("referred_by_code")?,
+            position: row.try_get("position")?,
+            priority_score: row.try_get("priority_score")?,
+            joined_at: row.try_get("joined_at")?,
+            invited_at: row.try_get("invited_at")?,
+            invitation_accepted_at: row.try_get("invitation_accepted_at")?,
+            converted_at: row.try_get("converted_at")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    }
+
+    pub async fn waitlist_get_stats(&self) -> anyhow::Result<crate::waitlist::WaitlistStats> {
+        let row = sqlx::query(
+            "SELECT 
+                COUNT(*)::BIGINT as total_entries,
+                COUNT(*) FILTER (WHERE status = 'pending')::BIGINT as pending_entries,
+                COUNT(*) FILTER (WHERE status = 'invited')::BIGINT as invited_entries,
+                COUNT(*) FILTER (WHERE invitation_accepted_at IS NOT NULL)::BIGINT as accepted_entries,
+                (SELECT COALESCE(SUM(referral_count), 0)::BIGINT FROM waitlist_referrals) as total_referrals
+             FROM waitlist_entries"
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(crate::waitlist::WaitlistStats {
+            total_entries: row.try_get("total_entries")?,
+            pending_entries: row.try_get("pending_entries")?,
+            invited_entries: row.try_get("invited_entries")?,
+            accepted_entries: row.try_get("accepted_entries")?,
+            total_referrals: row.try_get("total_referrals")?,
+        })
+    }
+
+    pub async fn waitlist_get_all_for_export(&self) -> anyhow::Result<Vec<crate::waitlist::WaitlistExportEntry>> {
+        let rows = sqlx::query(
+            "SELECT 
+                w.email, w.name, w.role, w.status, w.position, w.referral_code,
+                w.joined_at, w.invited_at, w.invitation_accepted_at,
+                COALESCE(r.referral_count, 0) as referral_count
+             FROM waitlist_entries w
+             LEFT JOIN waitlist_referrals r ON w.referral_code = r.referrer_code
+             ORDER BY w.position ASC"
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(crate::waitlist::WaitlistExportEntry {
+                email: row.try_get("email")?,
+                name: row.try_get("name")?,
+                role: row.try_get("role")?,
+                status: row.try_get("status")?,
+                position: row.try_get("position")?,
+                referral_code: row.try_get("referral_code")?,
+                referral_count: row.try_get("referral_count")?,
+                joined_at: row.try_get("joined_at")?,
+                invited_at: row.try_get("invited_at")?,
+                invitation_accepted_at: row.try_get("invitation_accepted_at")?,
+            });
+        }
+
+        Ok(entries)
+    }
+
+    pub async fn waitlist_invite_by_positions(&self, positions: Vec<i32>) -> anyhow::Result<i32> {
+        let result = sqlx::query(
+            "UPDATE waitlist_entries
+             SET status = 'invited', invited_at = NOW(), updated_at = NOW()
+             WHERE position = ANY($1) AND status = 'pending'
+             RETURNING id"
+        )
+        .bind(&positions)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(result.len() as i32)
+    }
+
+    pub async fn waitlist_invite_top_n(&self, count: i32) -> anyhow::Result<Vec<crate::waitlist::WaitlistEntry>> {
+        let rows = sqlx::query(
+            "UPDATE waitlist_entries
+             SET status = 'invited', invited_at = NOW(), updated_at = NOW()
+             WHERE id IN (
+                 SELECT id FROM waitlist_entries
+                 WHERE status = 'pending'
+                 ORDER BY priority_score DESC, position ASC
+                 LIMIT $1
+             )
+             RETURNING id, email, name, role, status, source, referral_code, referred_by_code,
+                       position, priority_score, joined_at, invited_at, invitation_accepted_at,
+                       converted_at, created_at, updated_at"
+        )
+        .bind(count)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(crate::waitlist::WaitlistEntry {
+                id: row.try_get("id")?,
+                email: row.try_get("email")?,
+                name: row.try_get("name")?,
+                role: row.try_get("role")?,
+                status: row.try_get("status")?,
+                source: row.try_get("source")?,
+                referral_code: row.try_get("referral_code")?,
+                referred_by_code: row.try_get("referred_by_code")?,
+                position: row.try_get("position")?,
+                priority_score: row.try_get("priority_score")?,
+                joined_at: row.try_get("joined_at")?,
+                invited_at: row.try_get("invited_at")?,
+                invitation_accepted_at: row.try_get("invitation_accepted_at")?,
+                converted_at: row.try_get("converted_at")?,
+                created_at: row.try_get("created_at")?,
+                updated_at: row.try_get("updated_at")?,
+            });
+        }
+
+        Ok(entries)
+    }
+
+    pub async fn waitlist_mark_invitation_accepted(&self, email: &str) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            "UPDATE waitlist_entries
+             SET invitation_accepted_at = NOW(), updated_at = NOW()
+             WHERE email = $1 AND status = 'invited' AND invitation_accepted_at IS NULL"
+        )
+        .bind(email)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn waitlist_get_referral_count(&self, referral_code: &str) -> anyhow::Result<i32> {
+        let row = sqlx::query(
+            "SELECT COALESCE(referral_count, 0) as count FROM waitlist_referrals WHERE referrer_code = $1"
+        )
+        .bind(referral_code)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some(row) = row {
+            Ok(row.try_get("count")?)
+        } else {
+            Ok(0)
+        }
+    }
+}

@@ -1886,6 +1886,7 @@ dependencies = [
  "futures",
  "handlebars",
  "prometheus",
+ "rand 0.8.5",
  "redis",
  "reqwest",
  "serde",
