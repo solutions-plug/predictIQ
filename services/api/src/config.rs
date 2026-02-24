@@ -36,6 +36,9 @@ pub struct Config {
     pub sync_market_ids: Vec<i64>,
     pub featured_limit: i64,
     pub content_default_page_size: i64,
+    pub sendgrid_api_key: Option<String>,
+    pub from_email: Option<String>,
+    pub base_url: String,
 }
 
 impl Config {
@@ -111,6 +114,10 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(20),
+            sendgrid_api_key: env::var("SENDGRID_API_KEY").ok(),
+            from_email: env::var("FROM_EMAIL").ok(),
+            base_url: env::var("BASE_URL")
+                .unwrap_or_else(|_| "http://localhost:8080".to_string()),
         }
     }
 

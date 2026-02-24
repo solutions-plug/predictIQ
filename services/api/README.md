@@ -44,6 +44,9 @@ This service adds a multi-layer cache strategy for API responses, database query
 - `SYNC_MARKET_IDS` (comma-separated market IDs for background sync)
 - `FEATURED_LIMIT` (default: `10`)
 - `CONTENT_DEFAULT_PAGE_SIZE` (default: `20`)
+- `SENDGRID_API_KEY` (required for newsletter confirmation emails)
+- `FROM_EMAIL` (sender address for newsletter confirmation emails)
+- `BASE_URL` (default: `http://localhost:8080`, used in confirmation links)
 
 ## Key Naming Convention
 
@@ -73,6 +76,18 @@ cargo run -p predictiq-api
 - `GET /api/blockchain/users/:user/bets?page=1&page_size=20`
 - `GET /api/blockchain/oracle/:market_id`
 - `GET /api/blockchain/tx/:tx_hash` (also registers hash for ongoing monitor polling)
+
+## Newsletter Endpoints
+
+- `POST /api/v1/newsletter/subscribe` body: `{ "email": "user@example.com", "source": "direct" }`
+- `GET /api/v1/newsletter/confirm?token=<token>`
+- `DELETE /api/v1/newsletter/unsubscribe` body: `{ "email": "user@example.com" }`
+- `GET /api/v1/newsletter/gdpr/export?email=user@example.com`
+- `DELETE /api/v1/newsletter/gdpr/delete` body: `{ "email": "user@example.com" }`
+
+The subscribe endpoint applies an in-memory per-IP limit of 5 attempts per 15 minutes.
+
+Before using newsletter endpoints, apply [`sql/newsletter_schema.sql`](./sql/newsletter_schema.sql) to your database.
 
 ## Notes
 

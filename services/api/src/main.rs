@@ -4,6 +4,7 @@ mod config;
 mod db;
 mod handlers;
 mod metrics;
+mod newsletter;
 
 use std::sync::Arc;
 
@@ -16,6 +17,7 @@ use cache::RedisCache;
 use config::Config;
 use db::Database;
 use metrics::Metrics;
+use newsletter::IpRateLimiter;
 use tokio::net::TcpListener;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -27,6 +29,7 @@ pub struct AppState {
     pub(crate) db: Database,
     pub(crate) blockchain: BlockchainClient,
     pub(crate) metrics: Metrics,
+    pub(crate) newsletter_rate_limiter: IpRateLimiter,
 }
 
 #[tokio::main]
@@ -52,6 +55,7 @@ async fn main() -> anyhow::Result<()> {
         db,
         blockchain,
         metrics,
+        newsletter_rate_limiter: IpRateLimiter::default(),
     });
 
     Arc::new(state.blockchain.clone()).start_background_tasks();
@@ -87,6 +91,26 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/statistics", get(handlers::statistics))
         .route("/api/markets/featured", get(handlers::featured_markets))
         .route("/api/content", get(handlers::content))
+        .route(
+            "/api/v1/newsletter/subscribe",
+            post(handlers::newsletter_subscribe),
+        )
+        .route(
+            "/api/v1/newsletter/confirm",
+            get(handlers::newsletter_confirm),
+        )
+        .route(
+            "/api/v1/newsletter/unsubscribe",
+            axum::routing::delete(handlers::newsletter_unsubscribe),
+        )
+        .route(
+            "/api/v1/newsletter/gdpr/export",
+            get(handlers::newsletter_gdpr_export),
+        )
+        .route(
+            "/api/v1/newsletter/gdpr/delete",
+            axum::routing::delete(handlers::newsletter_gdpr_delete),
+        )
         .route(
             "/api/markets/:market_id/resolve",
             post(handlers::resolve_market),

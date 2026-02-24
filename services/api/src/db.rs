@@ -49,6 +49,17 @@ pub struct ContentPage {
     pub items: Vec<ContentItem>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewsletterSubscriber {
+    pub email: String,
+    pub source: String,
+    pub confirmed: bool,
+    pub confirmation_token: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub confirmed_at: Option<DateTime<Utc>>,
+    pub unsubscribed_at: Option<DateTime<Utc>>,
+}
+
 impl Database {
     pub async fn new(
         database_url: &str,
@@ -202,5 +213,94 @@ impl Database {
         }
 
         Ok(value)
+    }
+
+    pub async fn newsletter_get_by_email(
+        &self,
+        normalized_email: &str,
+    ) -> anyhow::Result<Option<NewsletterSubscriber>> {
+        let row = sqlx::query(
+            "SELECT email, source, confirmed, confirmation_token, created_at, confirmed_at, unsubscribed_at
+             FROM newsletter_subscribers
+             WHERE email = $1",
+        )
+        .bind(normalized_email)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some(row) = row {
+            return Ok(Some(NewsletterSubscriber {
+                email: row.try_get::<String, _>("email")?,
+                source: row.try_get::<String, _>("source")?,
+                confirmed: row.try_get::<bool, _>("confirmed")?,
+                confirmation_token: row.try_get::<Option<String>, _>("confirmation_token")?,
+                created_at: row.try_get::<DateTime<Utc>, _>("created_at")?,
+                confirmed_at: row.try_get::<Option<DateTime<Utc>>, _>("confirmed_at")?,
+                unsubscribed_at: row.try_get::<Option<DateTime<Utc>>, _>("unsubscribed_at")?,
+            }));
+        }
+
+        Ok(None)
+    }
+
+    pub async fn newsletter_upsert_pending(
+        &self,
+        normalized_email: &str,
+        source: &str,
+        confirmation_token: &str,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO newsletter_subscribers (email, source, confirmed, confirmation_token, created_at, confirmed_at, unsubscribed_at)
+             VALUES ($1, $2, FALSE, $3, NOW(), NULL, NULL)
+             ON CONFLICT (email) DO UPDATE SET
+                 source = EXCLUDED.source,
+                 confirmed = FALSE,
+                 confirmation_token = EXCLUDED.confirmation_token,
+                 created_at = NOW(),
+                 confirmed_at = NULL,
+                 unsubscribed_at = NULL",
+        )
+        .bind(normalized_email)
+        .bind(source)
+        .bind(confirmation_token)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn newsletter_confirm_by_token(&self, token: &str) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            "UPDATE newsletter_subscribers
+             SET confirmed = TRUE, confirmation_token = NULL, confirmed_at = NOW(), unsubscribed_at = NULL
+             WHERE confirmation_token = $1",
+        )
+        .bind(token)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn newsletter_unsubscribe(&self, normalized_email: &str) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            "UPDATE newsletter_subscribers
+             SET unsubscribed_at = NOW(), confirmed = FALSE
+             WHERE email = $1",
+        )
+        .bind(normalized_email)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn newsletter_gdpr_delete(&self, normalized_email: &str) -> anyhow::Result<bool> {
+        let result = sqlx::query("DELETE FROM newsletter_subscribers WHERE email = $1")
+            .bind(normalized_email)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(result.rows_affected() > 0)
     }
 }
