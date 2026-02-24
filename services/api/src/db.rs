@@ -303,4 +303,264 @@ impl Database {
 
         Ok(result.rows_affected() > 0)
     }
+
+    // Email job management
+    pub async fn email_create_job(
+        &self,
+        job_type: &str,
+        recipient: &str,
+        template_name: &str,
+        template_data: serde_json::Value,
+        priority: i32,
+    ) -> anyhow::Result<uuid::Uuid> {
+        let row = sqlx::query(
+            "INSERT INTO email_jobs (job_type, recipient_email, template_name, template_data, priority)
+             VALUES ($1, $2, $3, $4, $5)
+             RETURNING id",
+        )
+        .bind(job_type)
+        .bind(recipient)
+        .bind(template_name)
+        .bind(template_data)
+        .bind(priority)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(row.try_get("id")?)
+    }
+
+    pub async fn email_get_job(&self, job_id: uuid::Uuid) -> anyhow::Result<Option<crate::email::EmailJob>> {
+        let row = sqlx::query(
+            "SELECT id, job_type, recipient_email, template_name, template_data, status, priority,
+                    attempts, max_attempts, scheduled_at, started_at, completed_at, failed_at,
+                    error_message, created_at, updated_at
+             FROM email_jobs WHERE id = $1",
+        )
+        .bind(job_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        if let Some(row) = row {
+            return Ok(Some(crate::email::EmailJob {
+                id: row.try_get("id")?,
+                job_type: row.try_get("job_type")?,
+                recipient_email: row.try_get("recipient_email")?,
+                template_name: row.try_get("template_name")?,
+                template_data: row.try_get("template_data")?,
+                status: row.try_get("status")?,
+                priority: row.try_get("priority")?,
+                attempts: row.try_get("attempts")?,
+                max_attempts: row.try_get("max_attempts")?,
+                scheduled_at: row.try_get("scheduled_at")?,
+                started_at: row.try_get("started_at")?,
+                completed_at: row.try_get("completed_at")?,
+                failed_at: row.try_get("failed_at")?,
+                error_message: row.try_get("error_message")?,
+                created_at: row.try_get("created_at")?,
+                updated_at: row.try_get("updated_at")?,
+            }));
+        }
+
+        Ok(None)
+    }
+
+    pub async fn email_update_job_status(
+        &self,
+        job_id: uuid::Uuid,
+        status: &str,
+        error_message: Option<&str>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE email_jobs
+             SET status = $2, error_message = $3, updated_at = NOW(),
+                 completed_at = CASE WHEN $2 = 'completed' THEN NOW() ELSE completed_at END,
+                 failed_at = CASE WHEN $2 = 'failed' THEN NOW() ELSE failed_at END
+             WHERE id = $1",
+        )
+        .bind(job_id)
+        .bind(status)
+        .bind(error_message)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn email_update_job_attempts(
+        &self,
+        job_id: uuid::Uuid,
+        attempts: i32,
+        error_message: Option<&str>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE email_jobs
+             SET attempts = $2, error_message = $3, updated_at = NOW()
+             WHERE id = $1",
+        )
+        .bind(job_id)
+        .bind(attempts)
+        .bind(error_message)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    // Email event tracking
+    pub async fn email_create_event(
+        &self,
+        job_id: Option<uuid::Uuid>,
+        message_id: Option<&str>,
+        event_type: &str,
+        recipient: &str,
+        metadata: serde_json::Value,
+    ) -> anyhow::Result<uuid::Uuid> {
+        let row = sqlx::query(
+            "INSERT INTO email_events (email_job_id, message_id, event_type, recipient_email, metadata)
+             VALUES ($1, $2, $3, $4, $5)
+             RETURNING id",
+        )
+        .bind(job_id)
+        .bind(message_id)
+        .bind(event_type)
+        .bind(recipient)
+        .bind(metadata)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(row.try_get("id")?)
+    }
+
+    // Email suppression management
+    pub async fn email_add_suppression(
+        &self,
+        email: &str,
+        suppression_type: &str,
+        reason: Option<&str>,
+        bounce_type: Option<&str>,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO email_suppressions (email, suppression_type, reason, bounce_type)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (email) DO UPDATE SET
+                 suppression_type = EXCLUDED.suppression_type,
+                 reason = EXCLUDED.reason,
+                 bounce_type = EXCLUDED.bounce_type,
+                 updated_at = NOW()",
+        )
+        .bind(email)
+        .bind(suppression_type)
+        .bind(reason)
+        .bind(bounce_type)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn email_is_suppressed(&self, email: &str) -> anyhow::Result<bool> {
+        let row = sqlx::query("SELECT COUNT(*) as count FROM email_suppressions WHERE email = $1")
+            .bind(email)
+            .fetch_one(&self.pool)
+            .await?;
+
+        let count: i64 = row.try_get("count")?;
+        Ok(count > 0)
+    }
+
+    pub async fn email_remove_suppression(&self, email: &str) -> anyhow::Result<bool> {
+        let result = sqlx::query("DELETE FROM email_suppressions WHERE email = $1")
+            .bind(email)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    // Email analytics
+    pub async fn email_increment_analytics_counter(
+        &self,
+        counter_type: &str,
+        template_name: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let template = template_name.unwrap_or("unknown");
+        let today = chrono::Utc::now().date_naive();
+
+        let column = match counter_type {
+            "sent" => "sent_count",
+            "delivered" => "delivered_count",
+            "opened" => "opened_count",
+            "clicked" => "clicked_count",
+            "bounced" => "bounced_count",
+            "complained" => "complained_count",
+            "unsubscribed" => "unsubscribed_count",
+            _ => return Ok(()),
+        };
+
+        let query_str = format!(
+            "INSERT INTO email_analytics (template_name, date, {})
+             VALUES ($1, $2, 1)
+             ON CONFLICT (template_name, variant_name, date) DO UPDATE SET
+                 {} = email_analytics.{} + 1,
+                 updated_at = NOW()",
+            column, column, column
+        );
+
+        sqlx::query(&query_str)
+            .bind(template)
+            .bind(today)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn email_get_analytics(
+        &self,
+        template_name: Option<&str>,
+        days: i32,
+    ) -> anyhow::Result<Vec<crate::email::EmailAnalytics>> {
+        let start_date = chrono::Utc::now().date_naive() - chrono::Duration::days(days as i64);
+
+        let query = if let Some(template) = template_name {
+            sqlx::query(
+                "SELECT template_name, variant_name, date, sent_count, delivered_count,
+                        opened_count, clicked_count, bounced_count, complained_count, unsubscribed_count
+                 FROM email_analytics
+                 WHERE template_name = $1 AND date >= $2
+                 ORDER BY date DESC",
+            )
+            .bind(template)
+            .bind(start_date)
+        } else {
+            sqlx::query(
+                "SELECT template_name, variant_name, date, sent_count, delivered_count,
+                        opened_count, clicked_count, bounced_count, complained_count, unsubscribed_count
+                 FROM email_analytics
+                 WHERE date >= $1
+                 ORDER BY date DESC",
+            )
+            .bind(start_date)
+        };
+
+        let rows = query.fetch_all(&self.pool).await?;
+
+        let mut analytics = Vec::new();
+        for row in rows {
+            analytics.push(crate::email::EmailAnalytics {
+                template_name: row.try_get("template_name")?,
+                variant_name: row.try_get("variant_name")?,
+                date: row.try_get("date")?,
+                sent_count: row.try_get("sent_count")?,
+                delivered_count: row.try_get("delivered_count")?,
+                opened_count: row.try_get("opened_count")?,
+                clicked_count: row.try_get("clicked_count")?,
+                bounced_count: row.try_get("bounced_count")?,
+                complained_count: row.try_get("complained_count")?,
+                unsubscribed_count: row.try_get("unsubscribed_count")?,
+            });
+        }
+
+        Ok(analytics)
+    }
 }
