@@ -61,6 +61,7 @@ pub fn resolve_market(e: &Env, market_id: u64, winning_outcome: u32) -> Result<(
 
     market.status = MarketStatus::Resolved;
     market.winning_outcome = Some(winning_outcome);
+    market.resolved_at = Some(e.ledger().timestamp());
 
     markets::update_market(e, market);
 

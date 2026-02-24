@@ -1,6 +1,6 @@
 use crate::errors::ErrorCode;
-use crate::types::{ConfigKey, CreatorReputation, Market, MarketStatus, MarketTier, OracleConfig};
-use soroban_sdk::{contracttype, token, Address, Env, String, Vec};
+use crate::types::{ConfigKey, CreatorReputation, Market, MarketStatus, MarketTier, OracleConfig, TTL_LOW_THRESHOLD, TTL_HIGH_THRESHOLD, PRUNE_GRACE_PERIOD};
+use soroban_sdk::{contracttype, token, Address, Env, String, Vec, Map};
 
 #[contracttype]
 pub enum DataKey {
@@ -102,11 +102,22 @@ pub fn create_market(
         },
         parent_id,
         parent_outcome_idx,
+        resolved_at: None,
+        token_address: native_token,
+        outcome_stakes: soroban_sdk::Map::new(e),
+        pending_resolution_timestamp: None,
+        dispute_snapshot_ledger: None,
     };
 
     e.storage()
         .persistent()
         .set(&DataKey::Market(count), &market);
+    
+    // Set initial TTL for the market data
+    e.storage()
+        .persistent()
+        .extend_ttl(&DataKey::Market(count), TTL_LOW_THRESHOLD, TTL_HIGH_THRESHOLD);
+    
     e.storage().instance().set(&DataKey::MarketCount, &count);
 
     // Emit standardized MarketCreated event
@@ -216,6 +227,39 @@ pub fn release_creation_deposit(
             &market.creation_deposit,
         );
     }
+
+    Ok(())
+}
+
+/// Bump TTL for market data to prevent state expiration
+pub fn bump_market_ttl(e: &Env, market_id: u64) {
+    e.storage()
+        .persistent()
+        .extend_ttl(&DataKey::Market(market_id), TTL_LOW_THRESHOLD, TTL_HIGH_THRESHOLD);
+}
+
+/// Prune (archive) a market that has been resolved and all prizes claimed
+/// Can only be called 30 days after resolution
+pub fn prune_market(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
+    crate::modules::admin::require_admin(e)?;
+    
+    let market = get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
+
+    // Market must be resolved
+    if market.status != MarketStatus::Resolved {
+        return Err(ErrorCode::MarketNotActive);
+    }
+
+    // Check if 30 days have passed since resolution
+    let resolved_at = market.resolved_at.ok_or(ErrorCode::MarketNotActive)?;
+    let current_time = e.ledger().timestamp();
+    
+    if current_time < resolved_at + PRUNE_GRACE_PERIOD {
+        return Err(ErrorCode::MarketNotActive);
+    }
+
+    // Remove market from persistent storage
+    e.storage().persistent().remove(&DataKey::Market(market_id));
 
     Ok(())
 }

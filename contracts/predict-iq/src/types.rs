@@ -28,6 +28,11 @@ pub struct Market {
     pub creation_deposit: i128,
     pub parent_id: u64,          // 0 means no parent (independent market)
     pub parent_outcome_idx: u32, // Required outcome of parent market
+    pub resolved_at: Option<u64>, // Timestamp when market was resolved (for TTL pruning)
+    pub token_address: Address,   // Token used for betting
+    pub outcome_stakes: Map<u32, i128>, // Stake per outcome
+    pub pending_resolution_timestamp: Option<u64>, // Timestamp when resolution was initiated
+    pub dispute_snapshot_ledger: Option<u32>, // Ledger sequence for snapshot voting
 }
 
 #[contracttype]
@@ -137,3 +142,8 @@ pub struct PendingUpgrade {
 // Constants for upgrade governance
 pub const TIMELOCK_DURATION: u64 = 48 * 60 * 60; // 48 hours in seconds
 pub const MAJORITY_THRESHOLD_PERCENT: u32 = 51; // 51% for majority
+
+// TTL Management Constants (in ledgers, ~5 seconds per ledger)
+pub const TTL_LOW_THRESHOLD: u32 = 17_280; // ~1 day (86400 seconds / 5)
+pub const TTL_HIGH_THRESHOLD: u32 = 518_400; // ~30 days (2592000 seconds / 5)
+pub const PRUNE_GRACE_PERIOD: u64 = 2_592_000; // 30 days in seconds

@@ -1,5 +1,5 @@
 use crate::errors::ErrorCode;
-use crate::modules::markets;
+use crate::modules::{markets, sac};
 use crate::types::{Bet, MarketStatus};
 use soroban_sdk::{contracttype, token, Address, Env};
 
@@ -84,6 +84,9 @@ pub fn place_bet(
 
     e.storage().persistent().set(&bet_key, &existing_bet);
     markets::update_market(e, market);
+
+    // Bump TTL for market data to prevent state expiration
+    markets::bump_market_ttl(e, market_id);
 
     // Emit standardized BetPlaced event
     // Topics: [BetPlaced, market_id, bettor]
@@ -179,48 +182,4 @@ pub fn withdraw_refund(
     crate::modules::events::emit_rewards_claimed(e, market_id, bettor, refund_amount, true);
 
     Ok(refund_amount)
-}
-
-pub fn claim_winnings(
-    e: &Env,
-    bettor: Address,
-    market_id: u64,
-) -> Result<i128, ErrorCode> {
-    bettor.require_auth();
-
-    let market = markets::get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
-    
-    if market.status != MarketStatus::Resolved {
-        return Err(ErrorCode::MarketStillActive);
-    }
-
-    let bet_key = DataKey::Bet(market_id, bettor.clone());
-    let bet: Bet = e.storage().persistent().get(&bet_key).ok_or(ErrorCode::BetNotFound)?;
-
-    let winning_outcome = market.winning_outcome.ok_or(ErrorCode::MarketStillActive)?;
-    
-    if bet.outcome != winning_outcome {
-        return Err(ErrorCode::NotWinningOutcome);
-    }
-
-    let winning_stake = market.outcome_stakes.get(winning_outcome).unwrap_or(0);
-    if winning_stake == 0 {
-        return Err(ErrorCode::NotWinningOutcome);
-    }
-
-    let fee = crate::modules::fees::calculate_fee(e, market.total_staked);
-    let net_pool = market.total_staked - fee;
-    let payout = (bet.amount * net_pool) / winning_stake;
-
-    e.storage().persistent().remove(&bet_key);
-
-    // Use SAC-safe transfer for payout
-    sac::safe_transfer(e, &market.token_address, &e.current_contract_address(), &bettor, &payout)?;
-
-    e.events().publish(
-        (Symbol::new(e, "winnings_claimed"), market_id, bettor),
-        payout,
-    );
-
-    Ok(payout)
 }
