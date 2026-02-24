@@ -1,0 +1,77 @@
+groups:
+  - name: predictiq_alerts
+    interval: 30s
+    rules:
+      # High error rate alert
+      - alert: HighErrorRate
+        expr: |
+          (
+            sum(rate(http_requests_total{status_code=~"5.."}[5m]))
+            /
+            sum(rate(http_requests_total[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value | humanizePercentage }} (threshold: 5%)"
+
+      # Slow request alert
+      - alert: SlowRequests
+        expr: |
+          histogram_quantile(0.95, 
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
+          ) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Slow requests detected"
+          description: "95th percentile latency is {{ $value }}s (threshold: 1s)"
+
+      # High memory usage
+      - alert: HighMemoryUsage
+        expr: |
+          (
+            process_resident_memory_bytes
+            /
+            (1024 * 1024 * 1024)
+          ) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage"
+          description: "Memory usage is {{ $value }}GB"
+
+      # Service down
+      - alert: ServiceDown
+        expr: up{job="predictiq-backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PredictIQ backend is down"
+          description: "The backend service has been down for more than 1 minute"
+
+      # Blockchain errors
+      - alert: HighBlockchainErrorRate
+        expr: |
+          rate(blockchain_errors_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High blockchain error rate"
+          description: "Blockchain error rate is {{ $value }} errors/sec"
+
+      # Too many active connections
+      - alert: HighActiveConnections
+        expr: active_connections > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High number of active connections"
+          description: "Active connections: {{ $value }}"
