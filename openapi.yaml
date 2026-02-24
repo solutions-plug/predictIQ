@@ -1,0 +1,952 @@
+openapi: 3.0.3
+info:
+  title: PredictIQ Prediction Market API
+  description: |
+    Comprehensive API for the PredictIQ prediction market platform built on Stellar Soroban.
+    
+    ## Overview
+    PredictIQ enables users to create and participate in prediction markets with hybrid resolution 
+    mechanisms combining real-time oracle data (Pyth Network, Reflector) with community voting.
+    
+    ## Key Features
+    - Create and manage prediction markets
+    - Place bets on market outcomes
+    - Oracle-based and community-driven resolution
+    - Dispute resolution mechanism
+    - Governance and upgrade system
+    - Multi-token support
+    
+    ## Authentication
+    All contract interactions require Stellar account signatures. The caller's address is verified
+    on-chain for authorization checks.
+    
+    ## Rate Limits
+    Rate limits are enforced at the Stellar network level:
+    - Testnet: ~1000 operations per ledger (5 seconds)
+    - Mainnet: ~1000 operations per ledger (5 seconds)
+    
+    ## Error Handling
+    All endpoints return standardized error codes (100-120). See Error Codes section for details.
+    
+  version: 1.0.0
+  contact:
+    name: PredictIQ Support
+    url: https://github.com/predictiq/contracts
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: https://soroban-testnet.stellar.org:443
+    description: Stellar Testnet (Development)
+  - url: https://rpc-futurenet.stellar.org:443
+    description: Stellar Futurenet (Testing)
+  - url: https://rpc.mainnet.stellar.org:443
+    description: Stellar Mainnet (Production)
+
+tags:
+  - name: Initialization
+    description: Contract initialization and setup
+  - name: Markets
+    description: Market creation and management
+  - name: Betting
+    description: Place bets and claim winnings
+  - name: Voting
+    description: Community voting on disputed markets
+  - name: Disputes
+    description: Dispute resolution mechanism
+  - name: Administration
+    description: Admin-only operations
+  - name: Governance
+    description: Guardian-based governance and upgrades
+  - name: Oracles
+    description: Oracle integration and management
+  - name: Fees
+    description: Fee management and revenue tracking
+  - name: Query
+    description: Read-only query operations
+
+paths:
+  /initialize:
+    post:
+      tags:
+        - Initialization
+      summary: Initialize the contract
+      description: |
+        Initialize the PredictIQ contract with admin address and base fee configuration.
+        Can only be called once.
+      operationId: initialize
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - admin
+                - base_fee
+              properties:
+                admin:
+                  type: string
+                  description: Stellar address of the contract administrator
+                  example: "GBXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+                base_fee:
+                  type: integer
+                  format: int128
+                  description: Base fee amount in stroops
+                  example: 1000000
+      responses:
+        '200':
+          description: Contract initialized successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Bad request or already initialized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                alreadyInitialized:
+                  value:
+                    error_code: 100
+                    error_name: "AlreadyInitialized"
+                    message: "Contract has already been initialized"
+
+  /create_market:
+    post:
+      tags:
+        - Markets
+      summary: Create a new prediction market
+      description: |
+        Create a new prediction market with specified parameters. Requires authorization
+        and may require a creation deposit based on creator reputation.
+      operationId: createMarket
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateMarketRequest'
+      responses:
+        '200':
+          description: Market created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  market_id:
+                    type: integer
+                    format: uint64
+                    description: Unique identifier for the created market
+                    example: 1
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /get_market:
+    get:
+      tags:
+        - Query
+      summary: Get market details
+      description: Retrieve detailed information about a specific market
+      operationId: getMarket
+      parameters:
+        - name: id
+          in: query
+          required: true
+          schema:
+            type: integer
+            format: uint64
+          description: Market ID
+          example: 1
+      responses:
+        '200':
+          description: Market details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Market'
+        '404':
+          description: Market not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /place_bet:
+    post:
+      tags:
+        - Betting
+      summary: Place a bet on a market outcome
+      description: |
+        Place a bet on a specific outcome of an active market. The market must be active
+        and the deadline must not have passed.
+      operationId: placeBet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlaceBetRequest'
+      responses:
+        '200':
+          description: Bet placed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Invalid bet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /claim_winnings:
+    post:
+      tags:
+        - Betting
+      summary: Claim winnings from a resolved market
+      description: |
+        Claim winnings from a resolved market where the bettor placed a winning bet.
+      operationId: claimWinnings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - bettor
+                - market_id
+                - token_address
+              properties:
+                bettor:
+                  type: string
+                  description: Bettor's Stellar address
+                  example: "GBXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+                market_id:
+                  type: integer
+                  format: uint64
+                  description: Market ID
+                  example: 1
+                token_address:
+                  type: string
+                  description: Token contract address
+                  example: "CBXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+      responses:
+        '200':
+          description: Winnings claimed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  amount:
+                    type: integer
+                    format: int128
+                    description: Amount of winnings claimed
+                    example: 5000000
+
+  /cast_vote:
+    post:
+      tags:
+        - Voting
+      summary: Cast a vote in a disputed market
+      description: |
+        Cast a vote on the outcome of a disputed market. Requires the market to be
+        in disputed state and the voter to have voting power.
+      operationId: castVote
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CastVoteRequest'
+      responses:
+        '200':
+          description: Vote cast successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Invalid vote
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /file_dispute:
+    post:
+      tags:
+        - Disputes
+      summary: File a dispute for a market resolution
+      description: |
+        File a dispute challenging the resolution of a market. Can only be done
+        during the dispute window after initial resolution.
+      operationId: fileDispute
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - disciplinarian
+                - market_id
+              properties:
+                disciplinarian:
+                  type: string
+                  description: Address filing the dispute
+                  example: "GBXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+                market_id:
+                  type: integer
+                  format: uint64
+                  description: Market ID to dispute
+                  example: 1
+      responses:
+        '200':
+          description: Dispute filed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Invalid dispute
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /set_circuit_breaker:
+    post:
+      tags:
+        - Administration
+      summary: Update circuit breaker state
+      description: |
+        Update the circuit breaker state. Admin only. Used for emergency pausing
+        of contract operations.
+      operationId: setCircuitBreaker
+      security:
+        - adminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - state
+              properties:
+                state:
+                  $ref: '#/components/schemas/CircuitBreakerState'
+      responses:
+        '200':
+          description: Circuit breaker state updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '401':
+          description: Not authorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /set_base_fee:
+    post:
+      tags:
+        - Administration
+      summary: Update base fee
+      description: Set the base fee for market operations. Admin only.
+      operationId: setBaseFee
+      security:
+        - adminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - amount
+              properties:
+                amount:
+                  type: integer
+                  format: int128
+                  description: New base fee amount
+                  example: 2000000
+      responses:
+        '200':
+          description: Base fee updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /get_admin:
+    get:
+      tags:
+        - Query
+      summary: Get admin address
+      description: Retrieve the current admin address
+      operationId: getAdmin
+      responses:
+        '200':
+          description: Admin address
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  admin:
+                    type: string
+                    nullable: true
+                    example: "GBXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+
+  /get_revenue:
+    get:
+      tags:
+        - Fees
+      summary: Get total revenue for a token
+      description: Get the total revenue collected for a specific token
+      operationId: getRevenue
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Token contract address
+          example: "CBXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+      responses:
+        '200':
+          description: Revenue amount
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revenue:
+                    type: integer
+                    format: int128
+                    example: 10000000
+
+  /initialize_guardians:
+    post:
+      tags:
+        - Governance
+      summary: Initialize guardian set
+      description: |
+        Initialize the guardian set for governance. Can only be called once by admin.
+      operationId: initializeGuardians
+      security:
+        - adminAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - guardians
+              properties:
+                guardians:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/Guardian'
+      responses:
+        '200':
+          description: Guardians initialized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /initiate_upgrade:
+    post:
+      tags:
+        - Governance
+      summary: Initiate contract upgrade
+      description: |
+        Initiate a contract upgrade proposal. Starts the timelock period and voting.
+      operationId: initiateUpgrade
+      security:
+        - guardianAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - wasm_hash
+              properties:
+                wasm_hash:
+                  type: string
+                  description: Hash of the new WASM code
+                  example: "abc123def456..."
+      responses:
+        '200':
+          description: Upgrade initiated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /vote_for_upgrade:
+    post:
+      tags:
+        - Governance
+      summary: Vote on pending upgrade
+      description: Cast a vote for or against a pending upgrade
+      operationId: voteForUpgrade
+      security:
+        - guardianAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - voter
+                - vote_for
+              properties:
+                voter:
+                  type: string
+                  description: Guardian address
+                  example: "GBXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+                vote_for:
+                  type: boolean
+                  description: True to vote for, false to vote against
+                  example: true
+      responses:
+        '200':
+          description: Vote recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  executed:
+                    type: boolean
+                    description: Whether the upgrade was executed
+                    example: false
+
+components:
+  securitySchemes:
+    adminAuth:
+      type: apiKey
+      in: header
+      name: X-Admin-Signature
+      description: Admin account signature
+    guardianAuth:
+      type: apiKey
+      in: header
+      name: X-Guardian-Signature
+      description: Guardian account signature
+
+  schemas:
+    CreateMarketRequest:
+      type: object
+      required:
+        - creator
+        - description
+        - options
+        - deadline
+        - resolution_deadline
+        - oracle_config
+        - tier
+        - native_token
+      properties:
+        creator:
+          type: string
+          description: Creator's Stellar address
+          example: "GBXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+        description:
+          type: string
+          description: Market description
+          example: "Will BTC reach $100k by end of 2024?"
+          maxLength: 256
+        options:
+          type: array
+          items:
+            type: string
+          description: Array of possible outcomes
+          example: ["Yes", "No"]
+          minItems: 2
+          maxItems: 100
+        deadline:
+          type: integer
+          format: uint64
+          description: Unix timestamp when betting closes
+          example: 1735689600
+        resolution_deadline:
+          type: integer
+          format: uint64
+          description: Unix timestamp when market should be resolved
+          example: 1735776000
+        oracle_config:
+          $ref: '#/components/schemas/OracleConfig'
+        tier:
+          $ref: '#/components/schemas/MarketTier'
+        native_token:
+          type: string
+          description: Token contract address for betting
+          example: "CBXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+        parent_id:
+          type: integer
+          format: uint64
+          description: Parent market ID (0 for independent markets)
+          example: 0
+          default: 0
+        parent_outcome_idx:
+          type: integer
+          format: uint32
+          description: Required parent outcome index
+          example: 0
+          default: 0
+
+    PlaceBetRequest:
+      type: object
+      required:
+        - bettor
+        - market_id
+        - outcome
+        - amount
+        - token_address
+      properties:
+        bettor:
+          type: string
+          description: Bettor's Stellar address
+          example: "GBXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+        market_id:
+          type: integer
+          format: uint64
+          description: Market ID
+          example: 1
+        outcome:
+          type: integer
+          format: uint32
+          description: Outcome index to bet on
+          example: 0
+        amount:
+          type: integer
+          format: int128
+          description: Bet amount in stroops
+          example: 10000000
+          minimum: 1
+        token_address:
+          type: string
+          description: Token contract address
+          example: "CBXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+        referrer:
+          type: string
+          nullable: true
+          description: Optional referrer address
+          example: "GBXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+
+    CastVoteRequest:
+      type: object
+      required:
+        - voter
+        - market_id
+        - outcome
+        - weight
+      properties:
+        voter:
+          type: string
+          description: Voter's Stellar address
+          example: "GBXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+        market_id:
+          type: integer
+          format: uint64
+          description: Market ID
+          example: 1
+        outcome:
+          type: integer
+          format: uint32
+          description: Outcome to vote for
+          example: 0
+        weight:
+          type: integer
+          format: int128
+          description: Voting weight (typically token balance)
+          example: 1000000
+
+    Market:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: uint64
+          example: 1
+        creator:
+          type: string
+          example: "GBXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+        description:
+          type: string
+          example: "Will BTC reach $100k by end of 2024?"
+        options:
+          type: array
+          items:
+            type: string
+          example: ["Yes", "No"]
+        status:
+          $ref: '#/components/schemas/MarketStatus'
+        deadline:
+          type: integer
+          format: uint64
+          example: 1735689600
+        resolution_deadline:
+          type: integer
+          format: uint64
+          example: 1735776000
+        winning_outcome:
+          type: integer
+          format: uint32
+          nullable: true
+          example: 0
+        oracle_config:
+          $ref: '#/components/schemas/OracleConfig'
+        total_staked:
+          type: integer
+          format: int128
+          example: 50000000
+        payout_mode:
+          $ref: '#/components/schemas/PayoutMode'
+        tier:
+          $ref: '#/components/schemas/MarketTier'
+        creation_deposit:
+          type: integer
+          format: int128
+          example: 1000000
+        parent_id:
+          type: integer
+          format: uint64
+          example: 0
+        parent_outcome_idx:
+          type: integer
+          format: uint32
+          example: 0
+        resolved_at:
+          type: integer
+          format: uint64
+          nullable: true
+          example: 1735776000
+        token_address:
+          type: string
+          example: "CBXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+
+    OracleConfig:
+      type: object
+      required:
+        - oracle_address
+        - feed_id
+      properties:
+        oracle_address:
+          type: string
+          description: Oracle contract address
+          example: "CBXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+        feed_id:
+          type: string
+          description: Oracle feed identifier
+          example: "BTC/USD"
+        min_responses:
+          type: integer
+          format: uint32
+          nullable: true
+          description: Minimum oracle responses required
+          example: 1
+
+    MarketStatus:
+      type: string
+      enum:
+        - Active
+        - PendingResolution
+        - Disputed
+        - Resolved
+        - Cancelled
+      description: Current status of the market
+
+    MarketTier:
+      type: string
+      enum:
+        - Basic
+        - Pro
+        - Institutional
+      description: Market tier determining features and requirements
+
+    PayoutMode:
+      type: string
+      enum:
+        - Push
+        - Pull
+      description: |
+        Payout distribution mode:
+        - Push: Contract distributes to all winners automatically
+        - Pull: Winners claim individually
+
+    CircuitBreakerState:
+      type: string
+      enum:
+        - Closed
+        - Open
+        - HalfOpen
+        - Paused
+      description: Circuit breaker state for emergency controls
+
+    CreatorReputation:
+      type: string
+      enum:
+        - None
+        - Basic
+        - Pro
+        - Institutional
+      description: Creator reputation level
+
+    Guardian:
+      type: object
+      required:
+        - address
+        - voting_power
+      properties:
+        address:
+          type: string
+          description: Guardian's Stellar address
+          example: "GBXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+        voting_power:
+          type: integer
+          format: uint32
+          description: Voting power weight
+          example: 1
+
+    ErrorResponse:
+      type: object
+      properties:
+        error_code:
+          type: integer
+          description: Numeric error code (100-120)
+          example: 102
+        error_name:
+          type: string
+          description: Error name
+          example: "MarketNotFound"
+        message:
+          type: string
+          description: Human-readable error message
+          example: "The requested market does not exist"
+
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        message:
+          type: string
+          example: "Operation completed successfully"
+
+  responses:
+    UnauthorizedError:
+      description: Authentication required or insufficient permissions
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error_code: 101
+            error_name: "NotAuthorized"
+            message: "Caller lacks required authorization"
+
+    NotFoundError:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error_code: 102
+            error_name: "MarketNotFound"
+            message: "Requested market does not exist"
+
+x-error-codes:
+  100:
+    name: AlreadyInitialized
+    description: Contract has already been initialized
+  101:
+    name: NotAuthorized
+    description: Caller lacks required authorization
+  102:
+    name: MarketNotFound
+    description: Requested market does not exist
+  103:
+    name: MarketClosed
+    description: Market is closed for betting
+  104:
+    name: MarketStillActive
+    description: Market is still active (cannot resolve yet)
+  105:
+    name: InvalidOutcome
+    description: Outcome index is out of bounds
+  106:
+    name: InvalidBetAmount
+    description: Bet amount is invalid (zero or negative)
+  107:
+    name: InsufficientBalance
+    description: User has insufficient balance
+  108:
+    name: OracleFailure
+    description: Oracle failed to provide result
+  109:
+    name: CircuitBreakerOpen
+    description: Circuit breaker is open (system paused)
+  110:
+    name: DisputeWindowClosed
+    description: Dispute period has ended
+  111:
+    name: VotingNotStarted
+    description: Voting period has not begun
+  112:
+    name: VotingEnded
+    description: Voting period has ended
+  113:
+    name: AlreadyVoted
+    description: User has already cast a vote
+  114:
+    name: FeeTooHigh
+    description: Fee exceeds acceptable threshold
+  115:
+    name: MarketNotActive
+    description: Market is not in active state
+  116:
+    name: DeadlinePassed
+    description: Market deadline has passed
+  117:
+    name: CannotChangeOutcome
+    description: Cannot change bet outcome after initial bet
+  118:
+    name: MarketNotDisputed
+    description: Market is not in disputed state
+  119:
+    name: MarketNotPendingResolution
+    description: Market is not pending resolution
+  120:
+    name: AdminNotSet
+    description: Admin address has not been configured
