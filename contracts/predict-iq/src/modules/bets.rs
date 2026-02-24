@@ -62,7 +62,13 @@ pub fn place_bet(
     }
 
     // Transfer tokens from bettor to contract using SAC-safe transfer
-    sac::safe_transfer(e, &token_address, &bettor, &e.current_contract_address(), &amount)?;
+    sac::safe_transfer(
+        e,
+        &token_address,
+        &bettor,
+        &e.current_contract_address(),
+        &amount,
+    )?;
 
     let bet_key = DataKey::Bet(market_id, bettor.clone());
     let mut existing_bet: Bet = e.storage().persistent().get(&bet_key).unwrap_or(Bet {
@@ -78,7 +84,7 @@ pub fn place_bet(
 
     existing_bet.amount += amount;
     market.total_staked += amount;
-    
+
     let outcome_stake = market.outcome_stakes.get(outcome).unwrap_or(0);
     market.outcome_stakes.set(outcome, outcome_stake + amount);
 

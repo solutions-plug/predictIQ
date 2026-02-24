@@ -70,9 +70,21 @@ impl PredictIQ {
         token_address: Address,
         referrer: Option<Address>,
     ) -> Result<(), ErrorCode> {
-        crate::modules::bets::place_bet(&e, bettor, market_id, outcome, amount, token_address, referrer)
+        crate::modules::bets::place_bet(
+            &e,
+            bettor,
+            market_id,
+            outcome,
+            amount,
+            token_address,
+            referrer,
+        )
     }
 
+<<<<<<< features/issue-13-Database-Schema-and-Migrations
+    pub fn claim_winnings(e: Env, bettor: Address, market_id: u64) -> Result<i128, ErrorCode> {
+        crate::modules::bets::claim_winnings(&e, bettor, market_id)
+=======
     pub fn claim_winnings(
         e: Env,
         bettor: Address,
@@ -89,6 +101,7 @@ impl PredictIQ {
         token_address: Address,
     ) -> Result<i128, ErrorCode> {
         crate::modules::bets::withdraw_refund(&e, bettor, market_id, token_address)
+>>>>>>> main
     }
 
     pub fn get_market(e: Env, id: u64) -> Option<crate::types::Market> {
@@ -130,7 +143,11 @@ impl PredictIQ {
         crate::modules::fees::get_revenue(&e, token)
     }
 
-    pub fn claim_referral_rewards(e: Env, address: Address, token: Address) -> Result<i128, ErrorCode> {
+    pub fn claim_referral_rewards(
+        e: Env,
+        address: Address,
+        token: Address,
+    ) -> Result<i128, ErrorCode> {
         crate::modules::fees::claim_referral_rewards(&e, &address, &token)
     }
 

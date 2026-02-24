@@ -68,6 +68,29 @@ Examples:
 cargo run -p predictiq-api
 ```
 
+## Database Migrations and Seeds
+
+Issue #13 schema and seed scripts are in:
+
+- `services/api/database/migrations`
+- `services/api/database/seeds`
+
+Apply migrations:
+
+```bash
+for f in services/api/database/migrations/*.sql; do
+  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+done
+```
+
+Run seeds:
+
+```bash
+for f in services/api/database/seeds/*.sql; do
+  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+done
+```
+
 ## Blockchain Endpoints
 
 - `GET /api/blockchain/health`

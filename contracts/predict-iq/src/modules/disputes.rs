@@ -19,9 +19,11 @@ pub fn file_dispute(e: &Env, disciplinarian: Address, market_id: u64) -> Result<
     if market.status != MarketStatus::PendingResolution {
         return Err(ErrorCode::MarketNotPendingResolution);
     }
-    
+
     // Check if still within 24h dispute window
-    let pending_ts = market.pending_resolution_timestamp.ok_or(ErrorCode::ResolutionNotReady)?;
+    let pending_ts = market
+        .pending_resolution_timestamp
+        .ok_or(ErrorCode::ResolutionNotReady)?;
     if e.ledger().timestamp() >= pending_ts + 86400 {
         return Err(ErrorCode::DisputeWindowClosed);
     }
