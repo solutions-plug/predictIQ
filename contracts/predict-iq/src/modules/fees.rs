@@ -6,7 +6,7 @@ use soroban_sdk::{contracttype, Address, Env};
 #[contracttype]
 pub enum DataKey {
     TotalFeesCollected,
-    FeeRevenue(Address), // token_address -> amount
+    FeeRevenue(Address),      // token_address -> amount
     ReferrerBalance(Address), // referrer_address -> amount
 }
 
@@ -76,32 +76,32 @@ pub fn add_referral_reward(e: &Env, referrer: &Address, fee_amount: i128) {
     let mut balance: i128 = e.storage().persistent().get(&key).unwrap_or(0);
     balance += reward;
     e.storage().persistent().set(&key, &balance);
-    
-    e.events().publish(
-        (Symbol::new(e, "referral_reward"), referrer),
-        reward,
-    );
+
+    e.events()
+        .publish((Symbol::new(e, "referral_reward"), referrer), reward);
 }
 
-pub fn claim_referral_rewards(e: &Env, address: &Address, token: &Address) -> Result<i128, ErrorCode> {
+pub fn claim_referral_rewards(
+    e: &Env,
+    address: &Address,
+    token: &Address,
+) -> Result<i128, ErrorCode> {
     address.require_auth();
-    
+
     let key = DataKey::ReferrerBalance(address.clone());
     let balance: i128 = e.storage().persistent().get(&key).unwrap_or(0);
-    
+
     if balance == 0 {
         return Err(ErrorCode::InsufficientBalance);
     }
-    
+
     e.storage().persistent().set(&key, &0);
-    
+
     let client = soroban_sdk::token::Client::new(e, token);
     client.transfer(&e.current_contract_address(), address, &balance);
-    
-    e.events().publish(
-        (Symbol::new(e, "referral_claimed"), address),
-        balance,
-    );
-    
+
+    e.events()
+        .publish((Symbol::new(e, "referral_claimed"), address), balance);
+
     Ok(balance)
 }

@@ -70,14 +70,18 @@ impl PredictIQ {
         token_address: Address,
         referrer: Option<Address>,
     ) -> Result<(), ErrorCode> {
-        crate::modules::bets::place_bet(&e, bettor, market_id, outcome, amount, token_address, referrer)
+        crate::modules::bets::place_bet(
+            &e,
+            bettor,
+            market_id,
+            outcome,
+            amount,
+            token_address,
+            referrer,
+        )
     }
 
-    pub fn claim_winnings(
-        e: Env,
-        bettor: Address,
-        market_id: u64,
-    ) -> Result<i128, ErrorCode> {
+    pub fn claim_winnings(e: Env, bettor: Address, market_id: u64) -> Result<i128, ErrorCode> {
         crate::modules::bets::claim_winnings(&e, bettor, market_id)
     }
 
@@ -120,7 +124,11 @@ impl PredictIQ {
         crate::modules::fees::get_revenue(&e, token)
     }
 
-    pub fn claim_referral_rewards(e: Env, address: Address, token: Address) -> Result<i128, ErrorCode> {
+    pub fn claim_referral_rewards(
+        e: Env,
+        address: Address,
+        token: Address,
+    ) -> Result<i128, ErrorCode> {
         crate::modules::fees::claim_referral_rewards(&e, &address, &token)
     }
 
