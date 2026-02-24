@@ -110,3 +110,13 @@ pub fn emit_oracle_result_set(e: &Env, market_id: u64, oracle_address: Address, 
         outcome,
     );
 }
+
+/// Emit MarketCancelled event
+/// Topics: [mkt_cancl, market_id, contract_address]
+/// Data: (is_clawback)
+pub fn emit_market_cancelled(e: &Env, market_id: u64, is_clawback: bool) {
+    e.events().publish(
+        (symbol_short!("mkt_cancl"), market_id, e.current_contract_address()),
+        is_clawback,
+    );
+}

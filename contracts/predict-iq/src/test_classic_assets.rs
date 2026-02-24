@@ -30,9 +30,7 @@ fn test_classic_asset_sac_integration() {
     let oracle_config = types::OracleConfig {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "eth"),
-        min_responses: 1,
-        max_staleness_seconds: 3600,
-        max_confidence_bps: 200,
+        min_responses: Some(1),
     };
 
     let market_id = client.create_market(
@@ -42,7 +40,10 @@ fn test_classic_asset_sac_integration() {
         &1000,
         &2000,
         &oracle_config,
+        &types::MarketTier::Basic,
         &usdc_address,
+        &0,
+        &0,
     );
 
     // Mint USDC to bettors
@@ -65,7 +66,7 @@ fn test_classic_asset_sac_integration() {
     client.resolve_market(&market_id, &0);
 
     // Claim winnings with Classic asset
-    let payout = client.claim_winnings(&bettor1, &market_id);
+    let payout = client.claim_winnings(&bettor1, &market_id, &usdc_address);
     assert!(payout > 500_000_000); // Should get more than initial bet
 }
 
@@ -96,9 +97,7 @@ fn test_clawback_detection_cancels_market() {
     let oracle_config = types::OracleConfig {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "test"),
-        min_responses: 1,
-        max_staleness_seconds: 3600,
-        max_confidence_bps: 200,
+        min_responses: Some(1),
     };
 
     let market_id = client.create_market(
@@ -108,7 +107,10 @@ fn test_clawback_detection_cancels_market() {
         &1000,
         &2000,
         &oracle_config,
+        &types::MarketTier::Basic,
         &asset_address,
+        &0,
+        &0,
     );
 
     // Place bets
@@ -151,9 +153,7 @@ fn test_classic_asset_full_lifecycle() {
     let oracle_config = types::OracleConfig {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "btc"),
-        min_responses: 1,
-        max_staleness_seconds: 3600,
-        max_confidence_bps: 200,
+        min_responses: Some(1),
     };
 
     let market_id = client.create_market(
@@ -163,7 +163,10 @@ fn test_classic_asset_full_lifecycle() {
         &1000,
         &2000,
         &oracle_config,
+        &types::MarketTier::Basic,
         &usdc_address,
+        &0,
+        &0,
     );
 
     // Setup bettors
@@ -187,7 +190,7 @@ fn test_classic_asset_full_lifecycle() {
 
     // Winner claims
     let initial_balance = token_client.balance(&winner);
-    let payout = client.claim_winnings(&winner, &market_id);
+    let payout = client.claim_winnings(&winner, &market_id, &usdc_address);
     let final_balance = token_client.balance(&winner);
 
     // Verify payout
@@ -195,7 +198,7 @@ fn test_classic_asset_full_lifecycle() {
     assert_eq!(final_balance, initial_balance + payout);
 
     // Loser cannot claim
-    let loser_result = client.try_claim_winnings(&loser, &market_id);
+    let loser_result = client.try_claim_winnings(&loser, &market_id, &usdc_address);
     assert!(loser_result.is_err());
 }
 
@@ -226,9 +229,7 @@ fn test_frozen_asset_handling() {
     let oracle_config = types::OracleConfig {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "test"),
-        min_responses: 1,
-        max_staleness_seconds: 3600,
-        max_confidence_bps: 200,
+        min_responses: Some(1),
     };
 
     let market_id = client.create_market(
@@ -238,7 +239,10 @@ fn test_frozen_asset_handling() {
         &1000,
         &2000,
         &oracle_config,
+        &types::MarketTier::Basic,
         &asset_address,
+        &0,
+        &0,
     );
 
     // Place bet
@@ -251,6 +255,6 @@ fn test_frozen_asset_handling() {
     client.resolve_market(&market_id, &0);
 
     // Normal claim should succeed (freeze test would require admin controls)
-    let payout = client.claim_winnings(&bettor, &market_id);
+    let payout = client.claim_winnings(&bettor, &market_id, &asset_address);
     assert!(payout > 0);
 }
