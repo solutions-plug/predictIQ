@@ -106,7 +106,74 @@ fn test_market_creation_with_sufficient_deposit() {
     );
 
     assert_eq!(market_id, 1);
+    
+    let market = client.get_market(&market_id).unwrap();
+    assert_eq!(market.creation_deposit, 0);
+    assert_eq!(market.tier, types::MarketTier::Basic);
+}
 
+#[test]
+fn test_pro_reputation_skips_deposit() {
+    let (e, _admin, _contract_id, client) = setup_test_env();
+    
+    let deposit_amount = 10_000_000i128;
+    client.set_creation_deposit(&deposit_amount);
+    
+    let creator = Address::generate(&e);
+    let native_token = Address::generate(&e);
+    
+    // Set creator reputation to Pro
+    client.set_creator_reputation(&creator, &types::CreatorReputation::Pro);
+    
+    // Create market - should succeed without deposit
+    let market_id = create_test_market(&client, &e, &creator, types::MarketTier::Pro, &native_token);
+    
+    assert_eq!(market_id, 1);
+    
+    let market = client.get_market(&market_id).unwrap();
+    assert_eq!(market.creation_deposit, 0); // No deposit required
+    assert_eq!(market.tier, types::MarketTier::Pro);
+}
+
+#[test]
+fn test_institutional_reputation_skips_deposit() {
+    let (e, _admin, _contract_id, client) = setup_test_env();
+    
+    let deposit_amount = 10_000_000i128;
+    client.set_creation_deposit(&deposit_amount);
+    
+    let creator = Address::generate(&e);
+    let native_token = Address::generate(&e);
+    
+    // Set creator reputation to Institutional
+    client.set_creator_reputation(&creator, &types::CreatorReputation::Institutional);
+    
+    // Create market - should succeed without deposit
+    let market_id = create_test_market(&client, &e, &creator, types::MarketTier::Institutional, &native_token);
+    
+    assert_eq!(market_id, 1);
+    
+    let market = client.get_market(&market_id).unwrap();
+    assert_eq!(market.creation_deposit, 0); // No deposit required
+}
+
+#[test]
+fn test_deposit_released_after_resolution() {
+    let (e, _admin, _contract_id, client) = setup_test_env();
+    
+    // No deposit for this test
+    client.set_creation_deposit(&0);
+    
+    let creator = Address::generate(&e);
+    let native_token = Address::generate(&e);
+    
+    // Create market
+    let market_id = create_test_market(&client, &e, &creator, types::MarketTier::Basic, &native_token);
+    
+    // Resolve market
+    client.resolve_market(&market_id, &0);
+    
+    // Verify market is resolved
     let market = client.get_market(&market_id).unwrap();
     assert_eq!(market.creation_deposit, 0);
     assert_eq!(market.tier, types::MarketTier::Basic);
