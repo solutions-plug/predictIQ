@@ -17,27 +17,14 @@ app.use(express.json());
 app.use(pinoHttp({ logger }));
 app.use(rateLimiter);
 
-// Routes
 app.use('/health', healthRoutes);
-app.use(`/api/${config.apiVersion}`, landingRoutes);
+app.use(`/api/${config.apiVersion}/auth`, authRoutes);
+app.use(`/api/${config.apiVersion}/content`, contentRoutes);
 
-// Error handling
 app.use(errorHandler);
 
-const startServer = async () => {
-  try {
-    await connectDatabase();
-    
-    app.listen(config.port, () => {
-      logger.info(`Server running on port ${config.port} in ${config.env} mode`);
-      logger.info(`API version: ${config.apiVersion}`);
-    });
-  } catch (error) {
-    logger.error('Failed to start server:', error);
-    process.exit(1);
-  }
-};
-
-startServer();
+app.listen(config.port, () => {
+  logger.info(`Server running on port ${config.port}`);
+});
 
 export default app;

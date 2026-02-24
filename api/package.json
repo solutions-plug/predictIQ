@@ -1,7 +1,7 @@
 {
   "name": "predictiq-api",
   "version": "1.0.0",
-  "description": "PredictIQ Landing Page API Service",
+  "description": "PredictIQ Landing Page API with CMS",
   "main": "dist/index.js",
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
@@ -23,6 +23,8 @@
     "@types/cors": "^2.8.17",
     "@types/node": "^20.10.5",
     "@types/pg": "^8.10.9",
+    "@types/bcrypt": "^5.0.2",
+    "@types/jsonwebtoken": "^9.0.5",
     "typescript": "^5.3.3",
     "ts-node-dev": "^2.0.0",
     "pino-pretty": "^10.2.3"
