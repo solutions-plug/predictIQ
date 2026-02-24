@@ -1,0 +1,71 @@
+{
+  "dashboard": {
+    "title": "PredictIQ Backend Monitoring",
+    "panels": [
+      {
+        "title": "Request Rate",
+        "targets": [
+          {
+            "expr": "rate(http_requests_total[5m])"
+          }
+        ]
+      },
+      {
+        "title": "Error Rate",
+        "targets": [
+          {
+            "expr": "rate(http_requests_total{status_code=~\"5..\"}[5m])"
+          }
+        ]
+      },
+      {
+        "title": "Request Duration (p95)",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))"
+          }
+        ]
+      },
+      {
+        "title": "Active Connections",
+        "targets": [
+          {
+            "expr": "active_connections"
+          }
+        ]
+      },
+      {
+        "title": "Memory Usage",
+        "targets": [
+          {
+            "expr": "process_resident_memory_bytes / (1024 * 1024)"
+          }
+        ]
+      },
+      {
+        "title": "CPU Usage",
+        "targets": [
+          {
+            "expr": "rate(process_cpu_seconds_total[5m]) * 100"
+          }
+        ]
+      },
+      {
+        "title": "Blockchain Request Duration",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(blockchain_request_duration_seconds_bucket[5m])) by (le, operation))"
+          }
+        ]
+      },
+      {
+        "title": "Error Distribution",
+        "targets": [
+          {
+            "expr": "sum(rate(errors_total[5m])) by (error_code)"
+          }
+        ]
+      }
+    ]
+  }
+}

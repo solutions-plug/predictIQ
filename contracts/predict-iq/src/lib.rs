@@ -1,10 +1,20 @@
 #![no_std]
 use soroban_sdk::{contract, contractimpl, Address, Env, String, Vec};
 
-mod errors;
+pub mod types;
+pub mod errors;
 mod modules;
 mod test;
-pub mod types;
+mod test_amm;
+mod test_snapshot_voting;
+mod test_resolution_state_machine;
+mod test_multi_token;
+mod test_cancellation;
+mod test_referral;
+mod test_optimization;
+mod mock_identity;
+mod test_identity;
+mod test_security;
 
 use crate::errors::ErrorCode;
 use crate::modules::admin;
@@ -269,5 +279,121 @@ impl PredictIQ {
     /// This is critical for Classic Stellar assets with AUTH_CLAWBACK_ENABLED
     pub fn check_clawback(e: Env, market_id: u64) -> Result<(), ErrorCode> {
         crate::modules::sac::check_market_clawback(&e, market_id)
+    }
+
+    // Guardian Governance Functions
+    pub fn set_guardians(e: Env, guardians: Vec<Address>) -> Result<(), ErrorCode> {
+        crate::modules::admin::require_admin(&e)?;
+        crate::modules::guardians::set_guardians(&e, guardians)
+    }
+
+    pub fn sign_reset_admin(e: Env, guardian: Address, new_admin: Address) -> Result<(), ErrorCode> {
+        crate::modules::guardians::sign_reset_admin(&e, guardian, new_admin)
+    }
+
+    pub fn get_recovery_state(e: Env) -> Option<crate::modules::guardians::RecoveryState> {
+        crate::modules::guardians::get_recovery_state(&e)
+    }
+
+    pub fn is_recovery_active(e: Env) -> bool {
+        crate::modules::guardians::is_recovery_active(&e)
+    }
+
+    pub fn finalize_recovery(e: Env) -> Result<Address, ErrorCode> {
+        crate::modules::guardians::finalize_recovery(&e)
+    }
+
+    // AMM Functions
+    pub fn initialize_amm_pools(e: Env, market_id: u64, num_outcomes: u32, initial_usdc: i128) -> Result<(), ErrorCode> {
+        crate::modules::admin::require_admin(&e)?;
+        crate::modules::amm::initialize_pools(&e, market_id, num_outcomes, initial_usdc);
+        Ok(())
+    }
+
+    pub fn buy_shares(
+        e: Env,
+        buyer: Address,
+        market_id: u64,
+        outcome: u32,
+        usdc_in: i128,
+        token_address: Address,
+    ) -> Result<(i128, i128), ErrorCode> {
+        buyer.require_auth();
+        crate::modules::circuit_breaker::require_closed(&e)?;
+        
+        let client = soroban_sdk::token::Client::new(&e, &token_address);
+        client.transfer(&buyer, &e.current_contract_address(), &usdc_in);
+        
+        crate::modules::amm::buy_shares(&e, market_id, buyer, outcome, usdc_in)
+    }
+
+    pub fn sell_shares(
+        e: Env,
+        seller: Address,
+        market_id: u64,
+        outcome: u32,
+        shares_in: i128,
+        token_address: Address,
+    ) -> Result<(i128, i128), ErrorCode> {
+        seller.require_auth();
+        crate::modules::circuit_breaker::require_closed(&e)?;
+        
+        let (usdc_out, price) = crate::modules::amm::sell_shares(&e, market_id, seller.clone(), outcome, shares_in)?;
+        
+        let client = soroban_sdk::token::Client::new(&e, &token_address);
+        client.transfer(&e.current_contract_address(), &seller, &usdc_out);
+        
+        Ok((usdc_out, price))
+    }
+
+    pub fn get_buy_price(e: Env, market_id: u64, outcome: u32) -> i128 {
+        crate::modules::amm::get_buy_price(&e, market_id, outcome).unwrap_or(0)
+    }
+
+    pub fn get_user_shares(e: Env, market_id: u64, user: Address, outcome: u32) -> i128 {
+        crate::modules::amm::get_user_shares(&e, market_id, user, outcome)
+    }
+
+    pub fn get_amm_pool(e: Env, market_id: u64, outcome: u32) -> Option<crate::modules::amm::AMMPool> {
+        crate::modules::amm::get_pool(&e, market_id, outcome)
+    }
+
+    pub fn quote_buy(e: Env, market_id: u64, outcome: u32, usdc_in: i128) -> i128 {
+        crate::modules::amm::quote_buy(&e, market_id, outcome, usdc_in).unwrap_or(0)
+    }
+
+    pub fn quote_sell(e: Env, market_id: u64, outcome: u32, shares_in: i128) -> i128 {
+        crate::modules::amm::quote_sell(&e, market_id, outcome, shares_in).unwrap_or(0)
+    }
+
+    pub fn verify_pool_invariant(e: Env, market_id: u64, outcome: u32) -> bool {
+        crate::modules::amm::verify_invariant(&e, market_id, outcome).unwrap_or(false)
+    }
+
+    // Storage Optimization Functions
+    pub fn garbage_collect_bet(e: Env, caller: Address, market_id: u64, bettor: Address) -> Result<i128, ErrorCode> {
+        crate::modules::gc::garbage_collect_bet(&e, caller, market_id, bettor)
+    }
+
+    pub fn get_market_description(e: Env, market_id: u64) -> String {
+        if let Some(market) = crate::modules::markets::get_market(&e, market_id) {
+            crate::modules::compression::decompress_description(&e, &market.metadata)
+        } else {
+            String::from_str(&e, "")
+        }
+    }
+
+    pub fn get_market_options(e: Env, market_id: u64) -> Vec<String> {
+        if let Some(market) = crate::modules::markets::get_market(&e, market_id) {
+            crate::modules::compression::decompress_options(&e, &market.metadata)
+        } else {
+            Vec::new(&e)
+        }
+    }
+
+    pub fn set_identity_contract(e: Env, contract: Address) -> Result<(), ErrorCode> {
+        crate::modules::admin::require_admin(&e)?;
+        crate::modules::identity::set_identity_contract(&e, contract);
+        Ok(())
     }
 }
