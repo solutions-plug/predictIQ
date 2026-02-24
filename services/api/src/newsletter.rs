@@ -71,3 +71,34 @@ pub async fn send_confirmation_email(config: &Config, email: &str, token: &str) 
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::IpRateLimiter;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn limiter_blocks_when_max_requests_reached() {
+        let limiter = IpRateLimiter::default();
+        let key = "203.0.113.1";
+        let window = Duration::from_secs(60);
+
+        assert!(limiter.allow(key, 2, window).await);
+        assert!(limiter.allow(key, 2, window).await);
+        assert!(!limiter.allow(key, 2, window).await);
+    }
+
+    #[tokio::test]
+    async fn limiter_allows_after_window_expires() {
+        let limiter = IpRateLimiter::default();
+        let key = "198.51.100.42";
+        let window = Duration::from_millis(20);
+
+        assert!(limiter.allow(key, 1, window).await);
+        assert!(!limiter.allow(key, 1, window).await);
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
+
+        assert!(limiter.allow(key, 1, window).await);
+    }
+}
