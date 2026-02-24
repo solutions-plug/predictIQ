@@ -1,5 +1,5 @@
-use soroban_sdk::{Env, Address, Symbol, String, Vec, contracttype, token};
-use crate::types::{Market, MarketStatus, OracleConfig, MarketTier, CreatorReputation, ConfigKey};
+use soroban_sdk::{Env, Address, Symbol, String, Vec, contracttype, Map};
+use crate::types::{Market, MarketStatus, OracleConfig};
 use crate::errors::ErrorCode;
 
 #[contracttype]
@@ -17,8 +17,7 @@ pub fn create_market(
     deadline: u64,
     resolution_deadline: u64,
     oracle_config: OracleConfig,
-    tier: MarketTier,
-    native_token: Address,
+    token_address: Address,
 ) -> Result<u64, ErrorCode> {
     creator.require_auth();
 
@@ -59,9 +58,11 @@ pub fn create_market(
         winning_outcome: None,
         oracle_config,
         total_staked: 0,
-        payout_mode: crate::types::PayoutMode::Pull,
-        tier,
-        creation_deposit: if deposit_required { creation_deposit } else { 0 },
+        outcome_stakes: Map::new(e),
+        dispute_snapshot_ledger: None,
+        pending_resolution_timestamp: None,
+        dispute_timestamp: None,
+        token_address,
     };
 
     e.storage().persistent().set(&DataKey::Market(count), &market);
