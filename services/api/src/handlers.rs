@@ -14,7 +14,11 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::ValidateEmail;
 
-use crate::{cache::keys, newsletter::send_confirmation_email, AppState};
+use crate::{
+    cache::keys,
+    email::webhook::sendgrid_webhook_handler,
+    AppState,
+};
 
 #[derive(Debug, Serialize)]
 pub struct ApiError {
@@ -205,7 +209,26 @@ pub async fn newsletter_subscribe(
         .await
         .map_err(into_api_error)?;
 
-    send_confirmation_email(&state.config, &email, &token)
+    // Queue confirmation email instead of sending directly
+    let confirm_url = format!(
+        "{}/api/v1/newsletter/confirm?token={token}",
+        state.config.base_url.trim_end_matches('/')
+    );
+    
+    let template_data = serde_json::json!({
+        "confirm_url": confirm_url,
+        "email": email
+    });
+
+    state
+        .email_queue
+        .enqueue(
+            crate::email::types::EmailJobType::NewsletterConfirmation,
+            &email,
+            "newsletter_confirmation",
+            template_data,
+            0,
+        )
         .await
         .map_err(into_api_error)?;
 
@@ -611,4 +634,105 @@ pub async fn warm_critical_caches(state: Arc<AppState>) -> anyhow::Result<()> {
     let _ = statistics(State(state.clone())).await;
     let _ = featured_markets(State(state)).await;
     Ok(())
+}
+
+// Email service handlers
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EmailTestRequest {
+    pub recipient: String,
+    pub template_name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EmailAnalyticsQuery {
+    pub template_name: Option<String>,
+    pub days: Option<i32>,
+}
+
+pub async fn email_preview(
+    State(state): State<Arc<AppState>>,
+    Path(template_name): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let test_data = match template_name.as_str() {
+        "newsletter_confirmation" => serde_json::json!({
+            "confirm_url": format!("{}/api/v1/newsletter/confirm?token=test-token-123", state.config.base_url),
+            "email": "test@example.com"
+        }),
+        "waitlist_confirmation" => serde_json::json!({
+            "email": "test@example.com"
+        }),
+        "contact_form_auto_response" => serde_json::json!({
+            "name": "Test User",
+            "subject": "Test Subject",
+            "message": "This is a test message."
+        }),
+        "welcome_email" => serde_json::json!({
+            "name": "Test User",
+            "dashboard_url": format!("{}/dashboard", state.config.base_url),
+            "help_url": format!("{}/help", state.config.base_url),
+            "unsubscribe_url": format!("{}/api/v1/newsletter/unsubscribe", state.config.base_url)
+        }),
+        _ => serde_json::json!({}),
+    };
+
+    let preview = state
+        .email_service
+        .preview_email(&template_name, &test_data)
+        .map_err(into_api_error)?;
+
+    Ok((StatusCode::OK, Json(preview)))
+}
+
+pub async fn email_send_test(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<EmailTestRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    let message_id = state
+        .email_service
+        .send_test_email(&payload.recipient, &payload.template_name)
+        .await
+        .map_err(into_api_error)?;
+
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "success": true,
+            "message": "Test email sent successfully",
+            "message_id": message_id
+        })),
+    ))
+}
+
+pub async fn email_analytics(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<EmailAnalyticsQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    let days = query.days.unwrap_or(30).clamp(1, 365);
+    let analytics = state
+        .db
+        .email_get_analytics(query.template_name.as_deref(), days)
+        .await
+        .map_err(into_api_error)?;
+
+    Ok((StatusCode::OK, Json(analytics)))
+}
+
+pub async fn email_queue_stats(
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, ApiError> {
+    let stats = state
+        .email_queue
+        .get_stats()
+        .await
+        .map_err(into_api_error)?;
+
+    Ok((StatusCode::OK, Json(stats)))
+}
+
+pub async fn sendgrid_webhook(
+    State(state): State<Arc<AppState>>,
+    Json(events): Json<Vec<crate::email::webhook::SendGridEvent>>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    sendgrid_webhook_handler(State(Arc::new(state.webhook_handler.clone())), Json(events)).await
 }

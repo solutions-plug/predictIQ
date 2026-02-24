@@ -6,7 +6,7 @@ use serde::{de::DeserializeOwned, Serialize};
 
 #[derive(Clone)]
 pub struct RedisCache {
-    manager: ConnectionManager,
+    pub(crate) manager: ConnectionManager,
 }
 
 impl RedisCache {
