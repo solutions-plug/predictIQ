@@ -53,6 +53,16 @@ pub struct FeaturedMarketView {
     pub resolved_outcome: Option<u32>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformStats {
+    pub total_markets: u64,
+    pub total_volume: String,
+    pub active_markets: u64,
+    pub total_users: u64,
+    pub last_updated: String,
+}
+
 pub async fn health() -> impl IntoResponse {
     (StatusCode::OK, "ok")
 }
@@ -417,6 +427,75 @@ pub async fn statistics(State(state): State<Arc<AppState>>) -> Result<impl IntoR
     Ok((StatusCode::OK, Json(payload)))
 }
 
+pub async fn platform_stats(State(state): State<Arc<AppState>>) -> Result<impl IntoResponse, ApiError> {
+    let start = Instant::now();
+    let cache_key = keys::api_platform_stats();
+    let ttl = Duration::from_secs(5 * 60);
+    let endpoint = "platform_stats";
+
+    let (payload, hit) = state
+        .cache
+        .get_or_set_json(&cache_key, ttl, || async {
+            // Try to get blockchain stats, fallback to cached data if blockchain fails
+            let blockchain_stats = state.blockchain.platform_statistics_cached().await;
+            
+            // Get database stats for additional metrics
+            let db_stats = state.db.statistics_cached().await?;
+            
+            // Get user count from database
+            let total_users = state.db.get_total_users().await.unwrap_or(0);
+            
+            let (total_markets, active_markets, total_volume) = match blockchain_stats {
+                Ok(chain_stats) => {
+                    // Validate blockchain data
+                    let validated_total = chain_stats.total_markets.max(0);
+                    let validated_active = chain_stats.active_markets.min(validated_total);
+                    
+                    (
+                        validated_total,
+                        validated_active,
+                        chain_stats.total_volume,
+                    )
+                },
+                Err(err) => {
+                    // Fallback to database stats if blockchain is unavailable
+                    tracing::warn!("blockchain unavailable, using database fallback for platform stats: {}", err);
+                    (
+                        db_stats.total_markets.max(0) as u64,
+                        db_stats.active_markets.max(0) as u64,
+                        format!("{:.2}", db_stats.total_volume.max(0.0)),
+                    )
+                }
+            };
+            
+            // Validate all metrics are non-negative
+            let validated_users = total_users.max(0);
+            
+            let last_updated = chrono::Utc::now().to_rfc3339();
+            
+            let stats = PlatformStats {
+                total_markets,
+                total_volume: total_volume.clone(),
+                active_markets,
+                total_users: validated_users,
+                last_updated: last_updated.clone(),
+            };
+            
+            Ok(stats)
+        })
+        .await
+        .map_err(into_api_error)?;
+
+    if hit {
+        state.metrics.observe_hit("api", endpoint);
+    } else {
+        state.metrics.observe_miss("api", endpoint);
+    }
+    state.metrics.observe_request(endpoint, start.elapsed());
+
+    Ok((StatusCode::OK, Json(payload)))
+}
+
 pub async fn featured_markets(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -632,6 +711,7 @@ pub async fn warm_critical_caches(state: Arc<AppState>) -> anyhow::Result<()> {
     let _ = state.blockchain.health_check_cached().await?;
     let _ = state.blockchain.platform_statistics_cached().await?;
     let _ = statistics(State(state.clone())).await;
+    let _ = platform_stats(State(state.clone())).await;
     let _ = featured_markets(State(state)).await;
     Ok(())
 }

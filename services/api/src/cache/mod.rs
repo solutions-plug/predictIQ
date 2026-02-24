@@ -90,6 +90,10 @@ pub mod keys {
         format!("{API_PREFIX}:statistics")
     }
 
+    pub fn api_platform_stats() -> String {
+        format!("{API_PREFIX}:platform_stats")
+    }
+
     pub fn api_featured_markets() -> String {
         format!("{API_PREFIX}:featured_markets")
     }

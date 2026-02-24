@@ -117,6 +117,14 @@ impl Database {
         Ok(value)
     }
 
+    pub async fn get_total_users(&self) -> anyhow::Result<u64> {
+        let row = sqlx::query("SELECT COUNT(DISTINCT user_address)::BIGINT AS total FROM bets")
+            .fetch_one(&self.pool)
+            .await?;
+        
+        Ok(row.try_get::<i64, _>("total")? as u64)
+    }
+
     pub async fn featured_markets_cached(&self, limit: i64) -> anyhow::Result<Vec<FeaturedMarket>> {
         let key = keys::dbq_featured_markets(limit);
         let ttl = Duration::from_secs(2 * 60);
