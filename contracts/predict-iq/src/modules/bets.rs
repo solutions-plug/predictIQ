@@ -29,6 +29,9 @@ pub fn place_bet(
     // Enforce identity verification
     crate::modules::identity::require_verified(e, &bettor)?;
 
+    // Check if contract is paused - high-risk operation
+    crate::modules::circuit_breaker::require_not_paused_for_high_risk(e)?;
+
     let mut market = markets::get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
     
     if market.status != MarketStatus::Active {

@@ -94,12 +94,17 @@ pub struct OracleConfig {
     pub max_confidence_bps: u64, // basis points (e.g., 200 = 2%)
 }
 
+// Gas optimization constants
+pub const MAX_PUSH_PAYOUT_WINNERS: u32 = 50; // Threshold for switching to pull mode
+pub const MAX_OUTCOMES_PER_MARKET: u32 = 100; // Limit to prevent excessive iteration
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ConfigKey {
     Admin,
     MarketAdmin,
     FeeAdmin,
+    GuardianAccount,
     BaseFee,
     CircuitBreakerState,
     GovernanceToken,
@@ -111,6 +116,7 @@ pub enum CircuitBreakerState {
     Closed,
     Open,
     HalfOpen,
+    Paused, // Emergency pause state - blocks high-risk operations
 }
 
 // Bit-packing helpers

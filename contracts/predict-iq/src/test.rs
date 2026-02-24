@@ -3,8 +3,7 @@ use super::*;
 use soroban_sdk::testutils::{Address as _};
 use soroban_sdk::{Address, Env, Vec, String, token};
 
-#[test]
-fn test_market_lifecycle() {
+fn setup_test_env() -> (Env, Address, soroban_sdk::Address, PredictIQClient<'static>) {
     let e = Env::default();
     e.mock_all_auths();
 
@@ -14,15 +13,21 @@ fn test_market_lifecycle() {
 
     client.initialize(&admin, &100); // 1% fee
 
-    let creator = Address::generate(&e);
-    let description = String::from_str(&e, "Will BTC reach $100k?");
-    let mut options = Vec::new(&e);
-    options.push_back(String::from_str(&e, "Yes"));
-    options.push_back(String::from_str(&e, "No"));
+    (e, admin, contract_id, client)
+}
 
-    let deadline = 1000;
-    let resolution_deadline = 2000;
-    
+fn create_test_market(
+    client: &PredictIQClient,
+    e: &Env,
+    creator: &Address,
+    tier: types::MarketTier,
+    native_token: &Address,
+) -> u64 {
+    let description = String::from_str(e, "Test Market");
+    let mut options = Vec::new(e);
+    options.push_back(String::from_str(e, "Yes"));
+    options.push_back(String::from_str(e, "No"));
+
     let oracle_config = types::OracleConfig {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "btc_price"),
@@ -37,7 +42,74 @@ fn test_market_lifecycle() {
 
     let market_id = client.create_market(&creator, &description, &options, &deadline, &resolution_deadline, &oracle_config, &token_address);
     assert_eq!(market_id, 1);
+    
+    let market = client.get_market(&market_id).unwrap();
+    assert_eq!(market.creation_deposit, 0);
+    assert_eq!(market.tier, types::MarketTier::Basic);
+}
 
+#[test]
+fn test_pro_reputation_skips_deposit() {
+    let (e, _admin, _contract_id, client) = setup_test_env();
+    
+    let deposit_amount = 10_000_000i128;
+    client.set_creation_deposit(&deposit_amount);
+    
+    let creator = Address::generate(&e);
+    let native_token = Address::generate(&e);
+    
+    // Set creator reputation to Pro
+    client.set_creator_reputation(&creator, &types::CreatorReputation::Pro);
+    
+    // Create market - should succeed without deposit
+    let market_id = create_test_market(&client, &e, &creator, types::MarketTier::Pro, &native_token);
+    
+    assert_eq!(market_id, 1);
+    
+    let market = client.get_market(&market_id).unwrap();
+    assert_eq!(market.creation_deposit, 0); // No deposit required
+    assert_eq!(market.tier, types::MarketTier::Pro);
+}
+
+#[test]
+fn test_institutional_reputation_skips_deposit() {
+    let (e, _admin, _contract_id, client) = setup_test_env();
+    
+    let deposit_amount = 10_000_000i128;
+    client.set_creation_deposit(&deposit_amount);
+    
+    let creator = Address::generate(&e);
+    let native_token = Address::generate(&e);
+    
+    // Set creator reputation to Institutional
+    client.set_creator_reputation(&creator, &types::CreatorReputation::Institutional);
+    
+    // Create market - should succeed without deposit
+    let market_id = create_test_market(&client, &e, &creator, types::MarketTier::Institutional, &native_token);
+    
+    assert_eq!(market_id, 1);
+    
+    let market = client.get_market(&market_id).unwrap();
+    assert_eq!(market.creation_deposit, 0); // No deposit required
+}
+
+#[test]
+fn test_deposit_released_after_resolution() {
+    let (e, _admin, _contract_id, client) = setup_test_env();
+    
+    // No deposit for this test
+    client.set_creation_deposit(&0);
+    
+    let creator = Address::generate(&e);
+    let native_token = Address::generate(&e);
+    
+    // Create market
+    let market_id = create_test_market(&client, &e, &creator, types::MarketTier::Basic, &native_token);
+    
+    // Resolve market
+    client.resolve_market(&market_id, &0);
+    
+    // Verify market is resolved
     let market = client.get_market(&market_id).unwrap();
     assert_eq!(market.id, 1);
     assert_eq!(market.status, types::MarketStatus::Active);
