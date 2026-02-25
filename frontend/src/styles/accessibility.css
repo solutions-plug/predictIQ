@@ -1,0 +1,400 @@
+/**
+ * Accessibility-focused CSS
+ * WCAG 2.1 AA Compliant Styles
+ */
+
+/* ============================================
+   SKIP LINKS
+   ============================================ */
+
+.skip-link {
+  position: absolute;
+  top: -40px;
+  left: 0;
+  background: #000;
+  color: #fff;
+  padding: 8px 16px;
+  text-decoration: none;
+  z-index: 100;
+  font-weight: 600;
+}
+
+.skip-link:focus {
+  top: 0;
+  outline: 3px solid #4A90E2;
+  outline-offset: 2px;
+}
+
+/* ============================================
+   VISUALLY HIDDEN (Screen Reader Only)
+   ============================================ */
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+.visually-hidden:focus {
+  position: static;
+  width: auto;
+  height: auto;
+  padding: inherit;
+  margin: inherit;
+  overflow: visible;
+  clip: auto;
+  white-space: normal;
+}
+
+/* ============================================
+   FOCUS INDICATORS
+   ============================================ */
+
+/* High contrast focus indicator for all interactive elements */
+*:focus {
+  outline: 3px solid #4A90E2;
+  outline-offset: 2px;
+}
+
+/* Remove default outline and add custom */
+*:focus:not(:focus-visible) {
+  outline: none;
+}
+
+*:focus-visible {
+  outline: 3px solid #4A90E2;
+  outline-offset: 2px;
+}
+
+/* Button focus */
+button:focus,
+a:focus {
+  outline: 3px solid #4A90E2;
+  outline-offset: 2px;
+}
+
+/* Input focus */
+input:focus,
+textarea:focus,
+select:focus {
+  outline: 3px solid #4A90E2;
+  outline-offset: 2px;
+  border-color: #4A90E2;
+}
+
+/* ============================================
+   COLOR CONTRAST
+   ============================================ */
+
+/* Ensure minimum 4.5:1 contrast for normal text */
+body {
+  color: #1a1a1a; /* 16.1:1 contrast on white */
+  background-color: #ffffff;
+}
+
+/* Large text (18pt+) needs minimum 3:1 contrast */
+h1, h2, h3, h4, h5, h6 {
+  color: #1a1a1a;
+}
+
+/* Link contrast */
+a {
+  color: #0056b3; /* 7.5:1 contrast on white */
+  text-decoration: underline;
+}
+
+a:hover {
+  color: #003d82; /* 10.7:1 contrast on white */
+  text-decoration: underline;
+}
+
+a:visited {
+  color: #551A8B; /* 7.1:1 contrast on white */
+}
+
+/* Button contrast */
+button {
+  background-color: #0056b3; /* 7.5:1 contrast */
+  color: #ffffff;
+  border: 2px solid #0056b3;
+}
+
+button:hover {
+  background-color: #003d82; /* 10.7:1 contrast */
+  border-color: #003d82;
+}
+
+button:disabled {
+  background-color: #6c757d; /* 4.6:1 contrast */
+  border-color: #6c757d;
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+/* ============================================
+   ERROR STATES
+   ============================================ */
+
+.error-message {
+  color: #c41e3a; /* 5.9:1 contrast on white */
+  font-size: 0.875rem;
+  margin-top: 0.25rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.error-message::before {
+  content: "⚠";
+  font-size: 1rem;
+  font-weight: bold;
+}
+
+input[aria-invalid="true"],
+textarea[aria-invalid="true"] {
+  border-color: #c41e3a;
+  border-width: 2px;
+}
+
+/* ============================================
+   REQUIRED FIELD INDICATOR
+   ============================================ */
+
+.required {
+  color: #c41e3a;
+  font-weight: bold;
+  margin-left: 0.25rem;
+}
+
+/* ============================================
+   FORM LABELS
+   ============================================ */
+
+label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+  color: #1a1a1a;
+}
+
+/* ============================================
+   TOUCH TARGETS (Minimum 44x44px)
+   ============================================ */
+
+button,
+a,
+input[type="checkbox"],
+input[type="radio"],
+select {
+  min-height: 44px;
+  min-width: 44px;
+  padding: 12px 24px;
+}
+
+/* ============================================
+   TEXT SIZING AND SPACING
+   ============================================ */
+
+/* Ensure text can scale to 200% without loss of content */
+html {
+  font-size: 16px;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  line-height: 1.5; /* WCAG 1.4.12 */
+  letter-spacing: 0.02em;
+}
+
+p {
+  margin-bottom: 1rem;
+  max-width: 70ch; /* Optimal reading length */
+}
+
+/* Heading spacing */
+h1, h2, h3, h4, h5, h6 {
+  margin-top: 1.5em;
+  margin-bottom: 0.5em;
+  line-height: 1.3;
+}
+
+/* ============================================
+   RESPONSIVE TEXT
+   ============================================ */
+
+@media (max-width: 768px) {
+  html {
+    font-size: 14px;
+  }
+}
+
+@media (min-width: 1200px) {
+  html {
+    font-size: 18px;
+  }
+}
+
+/* ============================================
+   HIGH CONTRAST MODE
+   ============================================ */
+
+@media (prefers-contrast: high) {
+  * {
+    border-color: currentColor !important;
+  }
+  
+  button {
+    border-width: 2px;
+  }
+  
+  *:focus {
+    outline-width: 4px;
+  }
+}
+
+/* ============================================
+   REDUCED MOTION
+   ============================================ */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ============================================
+   DARK MODE (Respects user preference)
+   ============================================ */
+
+@media (prefers-color-scheme: dark) {
+  body {
+    background-color: #1a1a1a;
+    color: #f0f0f0; /* 13.6:1 contrast on dark */
+  }
+  
+  a {
+    color: #66b3ff; /* 7.5:1 contrast on dark */
+  }
+  
+  button {
+    background-color: #0066cc;
+    border-color: #0066cc;
+  }
+  
+  input,
+  textarea,
+  select {
+    background-color: #2a2a2a;
+    color: #f0f0f0;
+    border-color: #4a4a4a;
+  }
+}
+
+/* ============================================
+   PRINT STYLES
+   ============================================ */
+
+@media print {
+  .skip-link,
+  nav,
+  button {
+    display: none;
+  }
+  
+  a {
+    text-decoration: underline;
+  }
+  
+  a[href]::after {
+    content: " (" attr(href) ")";
+  }
+}
+
+/* ============================================
+   LOADING STATES
+   ============================================ */
+
+[aria-busy="true"] {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+/* ============================================
+   DISABLED STATES
+   ============================================ */
+
+[aria-disabled="true"],
+[disabled] {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* ============================================
+   LIVE REGIONS
+   ============================================ */
+
+[role="status"],
+[role="alert"],
+[aria-live] {
+  position: relative;
+}
+
+/* ============================================
+   TABLES (if needed)
+   ============================================ */
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+th {
+  text-align: left;
+  font-weight: 600;
+  background-color: #f5f5f5;
+  padding: 12px;
+  border: 1px solid #ddd;
+}
+
+td {
+  padding: 12px;
+  border: 1px solid #ddd;
+}
+
+/* ============================================
+   UTILITY CLASSES
+   ============================================ */
+
+.sr-only-focusable:not(:focus):not(:focus-within) {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+.no-outline {
+  outline: none;
+}
+
+.focus-ring:focus {
+  outline: 3px solid #4A90E2;
+  outline-offset: 2px;
+}
