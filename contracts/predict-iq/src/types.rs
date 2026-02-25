@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Map, String, Vec};
+use soroban_sdk::{contracttype, Address, String, Vec, Map, Bytes};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -10,55 +10,53 @@ pub enum MarketStatus {
     Cancelled,
 }
 
+// Optimized Market with bit-packing
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Market {
     pub id: u64,
     pub creator: Address,
-    pub description: String,
-    pub options: Vec<String>,
-    pub status: MarketStatus,
+    pub metadata: Bytes, // Compressed description + options
+    pub header: u32, // Bit-packed: status(8) | winning_outcome(8) | flags(16)
     pub deadline: u64,
     pub resolution_deadline: u64,
-    pub winning_outcome: Option<u32>,
     pub oracle_config: OracleConfig,
     pub total_staked: i128,
-    pub payout_mode: PayoutMode, // New: determines push vs pull payouts
-    pub tier: MarketTier,
-    pub creation_deposit: i128,
-    pub parent_id: u64,          // 0 means no parent (independent market)
-    pub parent_outcome_idx: u32, // Required outcome of parent market
-    pub resolved_at: Option<u64>, // Timestamp when market was resolved (for TTL pruning)
-    pub token_address: Address,   // Token used for betting
-    pub outcome_stakes: Map<u32, i128>, // Stake per outcome
-    pub pending_resolution_timestamp: Option<u64>, // Timestamp when resolution was initiated
-    pub dispute_snapshot_ledger: Option<u32>, // Ledger sequence for snapshot voting
+    pub outcome_stakes: Map<u32, i128>,
+    pub dispute_snapshot_ledger: Option<u32>,
+    pub pending_resolution_timestamp: Option<u64>,
+    pub dispute_timestamp: Option<u64>,
+    pub token_address: Address,
+    pub resolved_at: Option<u64>, // For garbage collection
 }
 
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum PayoutMode {
-    Push, // Contract distributes to all winners (small markets)
-    Pull, // Winners claim individually (large markets)
+impl Market {
+    pub fn status(&self) -> MarketStatus {
+        bitpack::unpack_status(self.header)
+    }
+    
+    pub fn winning_outcome(&self) -> Option<u32> {
+        bitpack::unpack_winning_outcome(self.header)
+    }
+    
+    pub fn set_status(&mut self, status: MarketStatus) {
+        let winning_outcome = bitpack::unpack_winning_outcome(self.header);
+        let is_disputed = bitpack::is_disputed(self.header);
+        let is_cancelled = bitpack::is_cancelled(self.header);
+        let has_oracle = bitpack::has_oracle(self.header);
+        self.header = bitpack::pack_header(status, winning_outcome, is_disputed, is_cancelled, has_oracle);
+    }
+    
+    pub fn set_winning_outcome(&mut self, outcome: Option<u32>) {
+        let status = bitpack::unpack_status(self.header);
+        let is_disputed = bitpack::is_disputed(self.header);
+        let is_cancelled = bitpack::is_cancelled(self.header);
+        let has_oracle = bitpack::has_oracle(self.header);
+        self.header = bitpack::pack_header(status, outcome, is_disputed, is_cancelled, has_oracle);
+    }
 }
 
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum MarketTier {
-    Basic,
-    Pro,
-    Institutional,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum CreatorReputation {
-    None,
-    Basic,
-    Pro,
-    Institutional,
-}
-
+// Optimized Bet with minimal fields
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Bet {
@@ -122,12 +120,59 @@ pub enum CircuitBreakerState {
     Paused, // Emergency pause state - blocks high-risk operations
 }
 
-// Governance and Upgrade Types
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Guardian {
-    pub address: Address,
-    pub voting_power: u32,
+// Bit-packing helpers
+pub mod bitpack {
+    use super::MarketStatus;
+    
+    // Header layout: [status: 8 bits][winning_outcome: 8 bits][flags: 16 bits]
+    // Flags: bit 0 = is_disputed, bit 1 = is_cancelled, bit 2 = has_oracle
+    
+    pub fn pack_header(status: MarketStatus, winning_outcome: Option<u32>, is_disputed: bool, is_cancelled: bool, has_oracle: bool) -> u32 {
+        let status_bits = match status {
+            MarketStatus::Active => 0u32,
+            MarketStatus::PendingResolution => 1u32,
+            MarketStatus::Disputed => 2u32,
+            MarketStatus::Resolved => 3u32,
+            MarketStatus::Cancelled => 4u32,
+        };
+        
+        let outcome_bits = winning_outcome.unwrap_or(255) as u32;
+        
+        let mut flags = 0u32;
+        if is_disputed { flags |= 0x01; }
+        if is_cancelled { flags |= 0x02; }
+        if has_oracle { flags |= 0x04; }
+        
+        (status_bits << 24) | (outcome_bits << 16) | flags
+    }
+    
+    pub fn unpack_status(header: u32) -> MarketStatus {
+        match (header >> 24) & 0xFF {
+            0 => MarketStatus::Active,
+            1 => MarketStatus::PendingResolution,
+            2 => MarketStatus::Disputed,
+            3 => MarketStatus::Resolved,
+            4 => MarketStatus::Cancelled,
+            _ => MarketStatus::Active,
+        }
+    }
+    
+    pub fn unpack_winning_outcome(header: u32) -> Option<u32> {
+        let outcome = ((header >> 16) & 0xFF) as u32;
+        if outcome == 255 { None } else { Some(outcome) }
+    }
+    
+    pub fn is_disputed(header: u32) -> bool {
+        (header & 0x01) != 0
+    }
+    
+    pub fn is_cancelled(header: u32) -> bool {
+        (header & 0x02) != 0
+    }
+    
+    pub fn has_oracle(header: u32) -> bool {
+        (header & 0x04) != 0
+    }
 }
 
 #[contracttype]

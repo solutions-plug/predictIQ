@@ -23,7 +23,6 @@ Implements a comprehensive system to prevent spam and reward reputable creators 
 ```rust
 // Before
 create_market(creator, description, options, deadline, resolution_deadline, oracle_config)
-
 // After
 create_market(creator, description, options, deadline, resolution_deadline, oracle_config, tier, native_token)
 ```

@@ -1,0 +1,34 @@
+{
+  "name": "predictiq-backend",
+  "version": "1.0.0",
+  "description": "PredictIQ Backend API with comprehensive error handling and monitoring",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "jest",
+    "lint": "eslint src --ext .ts"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "pino": "^8.16.2",
+    "pino-http": "^8.5.1",
+    "pino-pretty": "^10.2.3",
+    "@sentry/node": "^7.91.0",
+    "prom-client": "^15.1.0",
+    "dotenv": "^16.3.1",
+    "cors": "^2.8.5",
+    "helmet": "^7.1.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.10.5",
+    "@types/cors": "^2.8.17",
+    "typescript": "^5.3.3",
+    "tsx": "^4.7.0",
+    "eslint": "^8.56.0",
+    "@typescript-eslint/eslint-plugin": "^6.15.0",
+    "@typescript-eslint/parser": "^6.15.0"
+  }
+}

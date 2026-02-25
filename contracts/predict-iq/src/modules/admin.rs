@@ -40,9 +40,7 @@ pub fn get_fee_admin(e: &Env) -> Option<Address> {
 
 pub fn set_guardian(e: &Env, guardian: Address) -> Result<(), ErrorCode> {
     require_admin(e)?;
-    e.storage()
-        .persistent()
-        .set(&ConfigKey::GuardianAccount, &guardian);
+    e.storage().persistent().set(&ConfigKey::GuardianAccount, &guardian);
     Ok(())
 }
 
