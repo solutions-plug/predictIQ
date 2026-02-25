@@ -563,4 +563,52 @@ impl Database {
 
         Ok(analytics)
     }
+
+    // Contact form submissions
+    pub async fn contact_create_submission(
+        &self,
+        name: &str,
+        email: &str,
+        subject: &str,
+        message: &str,
+        ip_address: Option<&str>,
+        user_agent: Option<&str>,
+        recaptcha_score: Option<f64>,
+    ) -> anyhow::Result<uuid::Uuid> {
+        let row = sqlx::query(
+            "INSERT INTO contact_submissions (name, email, subject, message, ip_address, user_agent, recaptcha_score, status)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
+             RETURNING id",
+        )
+        .bind(name)
+        .bind(email)
+        .bind(subject)
+        .bind(message)
+        .bind(ip_address)
+        .bind(user_agent)
+        .bind(recaptcha_score)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(row.try_get("id")?)
+    }
+
+    pub async fn contact_count_recent_by_ip(
+        &self,
+        ip_address: &str,
+        minutes: i64,
+    ) -> anyhow::Result<i64> {
+        let cutoff = chrono::Utc::now() - chrono::Duration::minutes(minutes);
+        
+        let row = sqlx::query(
+            "SELECT COUNT(*) as count FROM contact_submissions 
+             WHERE ip_address = $1 AND created_at > $2",
+        )
+        .bind(ip_address)
+        .bind(cutoff)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(row.try_get("count")?)
+    }
 }

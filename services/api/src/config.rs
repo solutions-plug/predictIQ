@@ -39,6 +39,8 @@ pub struct Config {
     pub sendgrid_api_key: Option<String>,
     pub from_email: Option<String>,
     pub base_url: String,
+    pub recaptcha_secret_key: String,
+    pub support_email: String,
 }
 
 impl Config {
@@ -118,6 +120,10 @@ impl Config {
             from_email: env::var("FROM_EMAIL").ok(),
             base_url: env::var("BASE_URL")
                 .unwrap_or_else(|_| "http://localhost:8080".to_string()),
+            recaptcha_secret_key: env::var("RECAPTCHA_SECRET_KEY")
+                .unwrap_or_else(|_| "".to_string()),
+            support_email: env::var("SUPPORT_EMAIL")
+                .unwrap_or_else(|_| "support@predictiq.com".to_string()),
         }
     }
 

@@ -1,6 +1,7 @@
 mod blockchain;
 mod cache;
 mod config;
+mod contact;
 mod db;
 mod email;
 mod handlers;
@@ -155,6 +156,11 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/webhooks/sendgrid",
             post(handlers::sendgrid_webhook),
+        )
+        // Contact form endpoint
+        .route(
+            "/api/v1/contact",
+            post(handlers::contact_form_submit),
         )
         .layer(TraceLayer::new_for_http())
         .with_state(state);
