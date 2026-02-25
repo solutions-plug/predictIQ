@@ -674,15 +674,7 @@ pub async fn warm_critical_caches(state: Arc<AppState>) -> anyhow::Result<()> {
     let _ = state.blockchain.health_check_cached().await?;
     let _ = state.blockchain.platform_statistics_cached().await?;
     let _ = statistics(State(state.clone())).await;
-    let _ = featured_markets(
-        State(state),
-        Query(FeaturedMarketsQuery {
-            category: None,
-            limit: None,
-            page: None,
-        }),
-    )
-    .await;
+    let _ = featured_markets(State(state)).await;
     Ok(())
 }
 
