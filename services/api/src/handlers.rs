@@ -43,14 +43,35 @@ pub struct ContentQuery {
     pub page_size: Option<i64>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct FeaturedMarketsQuery {
+    pub category: Option<String>,
+    pub limit: Option<i64>,
+    pub page: Option<i64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeaturedMarketView {
     pub id: i64,
     pub title: String,
+    pub description: Option<String>,
+    pub category: String,
     pub volume: f64,
+    pub participant_count: i32,
     pub ends_at: chrono::DateTime<chrono::Utc>,
+    pub outcome_options: serde_json::Value,
+    pub current_odds: serde_json::Value,
     pub onchain_volume: String,
     pub resolved_outcome: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeaturedMarketsApiResponse {
+    pub markets: Vec<FeaturedMarketView>,
+    pub total: i64,
+    pub page: i64,
+    pub page_size: i64,
+    pub last_updated: String,
 }
 
 pub async fn health() -> impl IntoResponse {
@@ -419,36 +440,57 @@ pub async fn statistics(State(state): State<Arc<AppState>>) -> Result<impl IntoR
 
 pub async fn featured_markets(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<FeaturedMarketsQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let start = Instant::now();
-    let cache_key = keys::api_featured_markets();
-    let ttl = Duration::from_secs(2 * 60);
     let endpoint = "featured_markets";
 
-    let featured_limit = state.config.featured_limit;
+    let category = query.category.as_deref();
+    let page = query.page.unwrap_or(1).max(1);
+    let limit = query.limit.unwrap_or(8).clamp(1, 20);
+
+    let cache_key = keys::api_featured_markets_with_params(category, page, limit);
+    let ttl = Duration::from_secs(2 * 60);
 
     let (payload, hit) = state
         .cache
         .get_or_set_json(&cache_key, ttl, || async {
-            let markets = state.db.featured_markets_cached(featured_limit).await?;
-            let chain_futures = markets
+            let response = state
+                .db
+                .featured_markets_with_filters(category, page, limit)
+                .await?;
+
+            let chain_futures = response
+                .markets
                 .iter()
                 .map(|m| state.blockchain.market_data_cached(m.id));
             let chain_data = join_all(chain_futures).await;
 
-            let mut view = Vec::with_capacity(markets.len());
-            for (m, chain_result) in markets.into_iter().zip(chain_data.into_iter()) {
+            let mut view = Vec::with_capacity(response.markets.len());
+            for (m, chain_result) in response.markets.into_iter().zip(chain_data.into_iter()) {
                 let chain = chain_result?;
                 view.push(FeaturedMarketView {
                     id: m.id,
                     title: m.title,
+                    description: m.description,
+                    category: m.category,
                     volume: m.volume,
+                    participant_count: m.participant_count,
                     ends_at: m.ends_at,
+                    outcome_options: m.outcome_options,
+                    current_odds: m.current_odds,
                     onchain_volume: chain.onchain_volume,
                     resolved_outcome: chain.resolved_outcome,
                 });
             }
-            Ok(view)
+
+            Ok(FeaturedMarketsApiResponse {
+                markets: view,
+                total: response.total,
+                page: response.page,
+                page_size: response.page_size,
+                last_updated: response.last_updated.to_rfc3339(),
+            })
         })
         .await
         .map_err(into_api_error)?;
@@ -632,7 +674,15 @@ pub async fn warm_critical_caches(state: Arc<AppState>) -> anyhow::Result<()> {
     let _ = state.blockchain.health_check_cached().await?;
     let _ = state.blockchain.platform_statistics_cached().await?;
     let _ = statistics(State(state.clone())).await;
-    let _ = featured_markets(State(state)).await;
+    let _ = featured_markets(
+        State(state),
+        Query(FeaturedMarketsQuery {
+            category: None,
+            limit: None,
+            page: None,
+        }),
+    )
+    .await;
     Ok(())
 }
 

@@ -94,6 +94,13 @@ pub mod keys {
         format!("{API_PREFIX}:featured_markets")
     }
 
+    pub fn api_featured_markets_with_params(category: Option<&str>, page: i64, limit: i64) -> String {
+        match category {
+            Some(cat) => format!("{API_PREFIX}:featured_markets:cat:{}:page:{}:limit:{}", cat, page, limit),
+            None => format!("{API_PREFIX}:featured_markets:page:{}:limit:{}", page, limit),
+        }
+    }
+
     pub fn api_content(page: i64, page_size: i64) -> String {
         format!("{API_PREFIX}:content:page:{page}:size:{page_size}")
     }

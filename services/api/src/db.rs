@@ -29,8 +29,22 @@ pub struct Statistics {
 pub struct FeaturedMarket {
     pub id: i64,
     pub title: String,
+    pub description: Option<String>,
+    pub category: String,
     pub volume: f64,
+    pub participant_count: i32,
     pub ends_at: DateTime<Utc>,
+    pub outcome_options: serde_json::Value,
+    pub current_odds: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeaturedMarketsResponse {
+    pub markets: Vec<FeaturedMarket>,
+    pub total: i64,
+    pub page: i64,
+    pub page_size: i64,
+    pub last_updated: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,10 +140,10 @@ impl Database {
             .cache
             .get_or_set_json(&key, ttl, || async move {
                 let rows = sqlx::query(
-                    "SELECT id, title, total_volume, ends_at \
+                    "SELECT id, title, description, category, total_volume, participant_count, ends_at, outcome_options, current_odds \
                     FROM markets \
                     WHERE status = 'active' \
-                    ORDER BY total_volume DESC, ends_at ASC \
+                    ORDER BY total_volume DESC, participant_count DESC, ends_at ASC \
                     LIMIT $1",
                 )
                 .bind(limit)
@@ -141,8 +155,13 @@ impl Database {
                     markets.push(FeaturedMarket {
                         id: row.try_get::<i64, _>("id")?,
                         title: row.try_get::<String, _>("title")?,
+                        description: row.try_get::<Option<String>, _>("description")?,
+                        category: row.try_get::<String, _>("category")?,
                         volume: row.try_get::<f64, _>("total_volume")?,
+                        participant_count: row.try_get::<i32, _>("participant_count")?,
                         ends_at: row.try_get::<DateTime<Utc>, _>("ends_at")?,
+                        outcome_options: row.try_get::<serde_json::Value, _>("outcome_options")?,
+                        current_odds: row.try_get::<serde_json::Value, _>("current_odds")?,
                     });
                 }
 
@@ -157,6 +176,87 @@ impl Database {
         }
 
         Ok(value)
+    }
+
+    pub async fn featured_markets_with_filters(
+        &self,
+        category: Option<&str>,
+        page: i64,
+        page_size: i64,
+    ) -> anyhow::Result<FeaturedMarketsResponse> {
+        let offset = (page.saturating_sub(1)) * page_size;
+        let now = Utc::now();
+
+        let (query_str, count_str) = if let Some(cat) = category {
+            (
+                "SELECT id, title, description, category, total_volume, participant_count, ends_at, outcome_options, current_odds \
+                FROM markets \
+                WHERE status = 'active' AND category = $1 \
+                ORDER BY total_volume DESC, participant_count DESC, ends_at ASC \
+                LIMIT $2 OFFSET $3",
+                "SELECT COUNT(*)::BIGINT as total FROM markets WHERE status = 'active' AND category = $1"
+            )
+        } else {
+            (
+                "SELECT id, title, description, category, total_volume, participant_count, ends_at, outcome_options, current_odds \
+                FROM markets \
+                WHERE status = 'active' \
+                ORDER BY total_volume DESC, participant_count DESC, ends_at ASC \
+                LIMIT $1 OFFSET $2",
+                "SELECT COUNT(*)::BIGINT as total FROM markets WHERE status = 'active'"
+            )
+        };
+
+        let total = if let Some(cat) = category {
+            let row = sqlx::query(count_str)
+                .bind(cat)
+                .fetch_one(&self.pool)
+                .await?;
+            row.try_get::<i64, _>("total")?
+        } else {
+            let row = sqlx::query(count_str)
+                .fetch_one(&self.pool)
+                .await?;
+            row.try_get::<i64, _>("total")?
+        };
+
+        let rows = if let Some(cat) = category {
+            sqlx::query(query_str)
+                .bind(cat)
+                .bind(page_size)
+                .bind(offset)
+                .fetch_all(&self.pool)
+                .await?
+        } else {
+            sqlx::query(query_str)
+                .bind(page_size)
+                .bind(offset)
+                .fetch_all(&self.pool)
+                .await?
+        };
+
+        let mut markets = Vec::with_capacity(rows.len());
+        for row in rows {
+            markets.push(FeaturedMarket {
+                id: row.try_get::<i64, _>("id")?,
+                title: row.try_get::<String, _>("title")?,
+                description: row.try_get::<Option<String>, _>("description")?,
+                category: row.try_get::<String, _>("category")?,
+                volume: row.try_get::<f64, _>("total_volume")?,
+                participant_count: row.try_get::<i32, _>("participant_count")?,
+                ends_at: row.try_get::<DateTime<Utc>, _>("ends_at")?,
+                outcome_options: row.try_get::<serde_json::Value, _>("outcome_options")?,
+                current_odds: row.try_get::<serde_json::Value, _>("current_odds")?,
+            });
+        }
+
+        Ok(FeaturedMarketsResponse {
+            markets,
+            total,
+            page,
+            page_size,
+            last_updated: now,
+        })
     }
 
     pub async fn content_cached(&self, page: i64, page_size: i64) -> anyhow::Result<ContentPage> {
