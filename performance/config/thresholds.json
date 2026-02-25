@@ -1,0 +1,38 @@
+{
+  "backend": {
+    "response_time": {
+      "p95": 200,
+      "p99": 500,
+      "avg": 150
+    },
+    "error_rate": {
+      "max": 0.001
+    },
+    "throughput": {
+      "min": 1000
+    },
+    "cache": {
+      "hit_rate_min": 0.8
+    }
+  },
+  "contracts": {
+    "gas_costs": {
+      "create_market": 500000,
+      "place_bet": 200000,
+      "resolve_market": 300000
+    }
+  },
+  "database": {
+    "query_time": {
+      "p95": 50,
+      "p99": 100
+    },
+    "connection_pool": {
+      "max_utilization": 0.8
+    }
+  },
+  "regression": {
+    "max_degradation_percent": 10,
+    "alert_threshold_percent": 5
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "predictiq-performance-tests",
+  "version": "1.0.0",
+  "description": "Performance testing suite for PredictIQ",
+  "scripts": {
+    "test:smoke": "k6 run backend/k6/smoke-test.js",
+    "test:load": "k6 run backend/k6/load-test.js",
+    "test:stress": "k6 run backend/k6/stress-test.js",
+    "test:spike": "k6 run backend/k6/spike-test.js",
+    "test:all": "npm run test:smoke && npm run test:load && npm run test:stress",
+    "report": "node scripts/generate-report.js",
+    "compare": "node scripts/compare-results.js"
+  },
+  "devDependencies": {
+    "k6": "^0.0.0"
+  }
+}
