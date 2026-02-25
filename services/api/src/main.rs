@@ -6,10 +6,14 @@ mod email;
 mod handlers;
 mod metrics;
 mod newsletter;
+mod rate_limit;
+mod security;
+mod validation;
 
 use std::sync::Arc;
 
 use axum::{
+    middleware,
     routing::{get, post},
     Router,
 };
@@ -20,8 +24,13 @@ use db::Database;
 use email::{queue::EmailQueue, service::EmailService, webhook::WebhookHandler};
 use metrics::Metrics;
 use newsletter::IpRateLimiter;
+use security::{ApiKeyAuth, IpWhitelist, RateLimiter};
 use tokio::net::TcpListener;
-use tower_http::trace::TraceLayer;
+use tower_http::{
+    compression::CompressionLayer,
+    cors::{Any, CorsLayer},
+    trace::TraceLayer,
+};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Clone)]
@@ -59,6 +68,21 @@ async fn main() -> anyhow::Result<()> {
 
     let bind_addr = config.bind_addr;
 
+    // Initialize security components
+    let rate_limiter = Arc::new(RateLimiter::new());
+    let api_key_auth = Arc::new(ApiKeyAuth::new(config.api_keys.clone()));
+    let ip_whitelist = Arc::new(IpWhitelist::new(config.admin_whitelist_ips.clone()));
+
+    // Start rate limiter cleanup task
+    let rate_limiter_cleanup = rate_limiter.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(300));
+        loop {
+            interval.tick().await;
+            rate_limiter_cleanup.cleanup().await;
+        }
+    });
+
     let state = Arc::new(AppState {
         config,
         cache,
@@ -84,7 +108,14 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("cache warming skipped: {err}");
     }
 
-    let app = Router::new()
+    // CORS configuration
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
+    // Public routes (with global rate limiting)
+    let public_routes = Router::new()
         .route("/health", get(handlers::health))
         .route("/metrics", get(handlers::metrics))
         .route("/api/blockchain/health", get(handlers::blockchain_health))
@@ -111,6 +142,13 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/statistics", get(handlers::statistics))
         .route("/api/markets/featured", get(handlers::featured_markets))
         .route("/api/content", get(handlers::content))
+        .layer(middleware::from_fn_with_state(
+            rate_limiter.clone(),
+            security::global_rate_limit_middleware,
+        ));
+
+    // Newsletter routes (with specific rate limiting)
+    let newsletter_routes = Router::new()
         .route(
             "/api/v1/newsletter/subscribe",
             post(handlers::newsletter_subscribe),
@@ -131,6 +169,13 @@ async fn main() -> anyhow::Result<()> {
             "/api/v1/newsletter/gdpr/delete",
             axum::routing::delete(handlers::newsletter_gdpr_delete),
         )
+        .layer(middleware::from_fn_with_state(
+            rate_limiter.clone(),
+            rate_limit::newsletter_rate_limit_middleware,
+        ));
+
+    // Admin routes (with API key auth, IP whitelist, and rate limiting)
+    let admin_routes = Router::new()
         .route(
             "/api/markets/:market_id/resolve",
             post(handlers::resolve_market),
