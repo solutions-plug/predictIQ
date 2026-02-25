@@ -42,6 +42,8 @@ fn test_snapshot_voting_with_balance_change() {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "BTC/USD"),
         min_responses: 1,
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
     };
 
     let market_id = client.create_market(
@@ -105,6 +107,8 @@ fn test_zero_balance_at_snapshot() {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "BTC/USD"),
         min_responses: 1,
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
     };
 
     let market_id = client.create_market(
@@ -157,6 +161,8 @@ fn test_token_locking_fallback() {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "BTC/USD"),
         min_responses: 1,
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
     };
 
     let market_id = client.create_market(
@@ -233,6 +239,8 @@ fn test_insufficient_balance_for_vote_weight() {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "BTC/USD"),
         min_responses: 1,
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
     };
 
     let market_id = client.create_market(
@@ -282,6 +290,8 @@ fn test_dispute_captures_ledger_sequence() {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "BTC/USD"),
         min_responses: 1,
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
     };
 
     let market_id = client.create_market(

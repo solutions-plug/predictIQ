@@ -1,6 +1,6 @@
-use soroban_sdk::{Env, Address, Symbol, token};
+use soroban_sdk::{Env, Address, Symbol};
 use crate::types::MarketStatus;
-use crate::modules::{markets, admin};
+use crate::modules::{markets, admin, sac};
 use crate::errors::ErrorCode;
 
 const FAILED_MARKET_THRESHOLD_BPS: i128 = 7500; // 75% vote required to cancel
@@ -81,8 +81,8 @@ pub fn withdraw_refund(e: &Env, bettor: Address, market_id: u64) -> Result<i128,
     
     e.storage().persistent().remove(&bet_key);
     
-    let client = token::Client::new(e, &market.token_address);
-    client.transfer(&e.current_contract_address(), &bettor, &refund_amount);
+    // Use SAC-safe transfer for refund
+    sac::safe_transfer(e, &market.token_address, &e.current_contract_address(), &bettor, &refund_amount)?;
     
     e.events().publish(
         (Symbol::new(e, "refund_withdrawn"), market_id, bettor),

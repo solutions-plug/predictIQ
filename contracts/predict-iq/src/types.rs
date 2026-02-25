@@ -89,9 +89,7 @@ pub struct LockedTokens {
 pub struct OracleConfig {
     pub oracle_address: Address,
     pub feed_id: String,
-    pub min_responses: u32,
-    pub max_staleness_seconds: u64,
-    pub max_confidence_bps: u64, // basis points (e.g., 200 = 2%)
+    pub min_responses: Option<u32>, // Optimized: None defaults to 1
 }
 
 // Gas optimization constants
@@ -107,7 +105,10 @@ pub enum ConfigKey {
     GuardianAccount,
     BaseFee,
     CircuitBreakerState,
-    GovernanceToken,
+    CreationDeposit,
+    GuardianSet,
+    PendingUpgrade,
+    UpgradeVotes,
 }
 
 #[contracttype]
@@ -173,3 +174,21 @@ pub mod bitpack {
         (header & 0x04) != 0
     }
 }
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingUpgrade {
+    pub wasm_hash: String,
+    pub initiated_at: u64,
+    pub votes_for: Vec<Address>,
+    pub votes_against: Vec<Address>,
+}
+
+// Constants for upgrade governance
+pub const TIMELOCK_DURATION: u64 = 48 * 60 * 60; // 48 hours in seconds
+pub const MAJORITY_THRESHOLD_PERCENT: u32 = 51; // 51% for majority
+
+// TTL Management Constants (in ledgers, ~5 seconds per ledger)
+pub const TTL_LOW_THRESHOLD: u32 = 17_280; // ~1 day (86400 seconds / 5)
+pub const TTL_HIGH_THRESHOLD: u32 = 518_400; // ~30 days (2592000 seconds / 5)
+pub const PRUNE_GRACE_PERIOD: u64 = 2_592_000; // 30 days in seconds

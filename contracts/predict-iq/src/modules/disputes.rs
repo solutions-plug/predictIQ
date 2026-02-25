@@ -2,6 +2,17 @@ use soroban_sdk::{Env, Address, Symbol, Vec, contracttype};
 use crate::types::{MarketStatus, PayoutMode};
 use crate::modules::markets;
 use crate::errors::ErrorCode;
+use crate::modules::markets;
+use crate::types::{MarketStatus, PayoutMode};
+use soroban_sdk::{contracttype, Address, Env};
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ResolutionMetrics {
+    pub winner_count: u32,
+    pub total_winning_stake: i128,
+    pub gas_estimate: u64,
+}
 
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -15,34 +26,35 @@ pub fn file_dispute(e: &Env, disciplinarian: Address, market_id: u64) -> Result<
     disciplinarian.require_auth();
 
     let mut market = markets::get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
-    
+
     if market.status != MarketStatus::PendingResolution {
         return Err(ErrorCode::MarketNotPendingResolution);
     }
-    
+
     // Check if still within 24h dispute window
-    let pending_ts = market.pending_resolution_timestamp.ok_or(ErrorCode::ResolutionNotReady)?;
+    let pending_ts = market
+        .pending_resolution_timestamp
+        .ok_or(ErrorCode::ResolutionNotReady)?;
     if e.ledger().timestamp() >= pending_ts + 86400 {
         return Err(ErrorCode::DisputeWindowClosed);
     }
 
     market.status = MarketStatus::Disputed;
-    market.dispute_snapshot_ledger = Some(e.ledger().sequence());
-    market.dispute_timestamp = Some(e.ledger().timestamp());
+    // Extend resolution deadline for voting period
+    market.resolution_deadline += 86400 * 3; // 3 days extension
+    let new_deadline = market.resolution_deadline;
 
     markets::update_market(e, market);
 
-    e.events().publish(
-        (Symbol::new(e, "market_disputed"), market_id, disciplinarian),
-        (),
-    );
-    
+    // Emit standardized DisputeFiled event
+    // Topics: [DisputeFiled, market_id, disciplinarian]
+    crate::modules::events::emit_dispute_filed(e, market_id, disciplinarian, new_deadline);
+
     Ok(())
 }
 
 // Gas-optimized resolution with automatic payout mode selection
 pub fn resolve_market(e: &Env, market_id: u64, winning_outcome: u32) -> Result<(), ErrorCode> {
-    // Admin override for NoMajorityReached cases
     let mut market = markets::get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
     
     // Validate outcome
@@ -62,14 +74,21 @@ pub fn resolve_market(e: &Env, market_id: u64, winning_outcome: u32) -> Result<(
     
     market.status = MarketStatus::Resolved;
     market.winning_outcome = Some(winning_outcome);
+    market.resolved_at = Some(e.ledger().timestamp());
 
     markets::update_market(e, market);
 
-    e.events().publish(
-        (Symbol::new(e, "market_resolved"), market_id),
+    // Emit standardized ResolutionFinalized event
+    // Topics: [ResolutionFinalized, market_id, resolver (admin)]
+    let admin = crate::modules::admin::get_admin(e).unwrap_or(e.current_contract_address());
+    crate::modules::events::emit_resolution_finalized(
+        e,
+        market_id,
+        admin,
         winning_outcome,
+        0, // Total payout tracked separately by indexer
     );
-    
+
     Ok(())
 }
 

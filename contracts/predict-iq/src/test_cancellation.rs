@@ -46,7 +46,9 @@ fn test_admin_cancel_market() {
             oracle_address: oracle,
             feed_id: String::from_str(&env, "test"),
             min_responses: 1,
-        },
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
+    },
         &token_address,
     );
     
@@ -76,7 +78,9 @@ fn test_withdraw_refund_full_amount() {
             oracle_address: oracle,
             feed_id: String::from_str(&env, "test"),
             min_responses: 1,
-        },
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
+    },
         &token_address,
     );
     
@@ -118,7 +122,9 @@ fn test_refund_no_fee_collected() {
             oracle_address: oracle,
             feed_id: String::from_str(&env, "test"),
             min_responses: 1,
-        },
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
+    },
         &token_address,
     );
     
@@ -152,7 +158,9 @@ fn test_refund_only_on_cancelled_market() {
             oracle_address: oracle,
             feed_id: String::from_str(&env, "test"),
             min_responses: 1,
-        },
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
+    },
         &token_address,
     );
     
@@ -179,7 +187,9 @@ fn test_refund_only_once() {
             oracle_address: oracle,
             feed_id: String::from_str(&env, "test"),
             min_responses: 1,
-        },
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
+    },
         &token_address,
     );
     

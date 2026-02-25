@@ -1,5 +1,5 @@
-use soroban_sdk::{Env, Symbol, contracttype};
 use crate::types::CircuitBreakerState;
+use soroban_sdk::{contracttype, Env};
 
 #[contracttype]
 pub enum DataKey {
@@ -8,19 +8,25 @@ pub enum DataKey {
 }
 
 pub fn track_error(e: &Env) {
-    let mut count: u32 = e.storage().instance().get(&DataKey::ErrorCount).unwrap_or(0);
+    let mut count: u32 = e
+        .storage()
+        .instance()
+        .get(&DataKey::ErrorCount)
+        .unwrap_or(0);
     count += 1;
     e.storage().instance().set(&DataKey::ErrorCount, &count);
 
-    if count > 10 { // Threshold for automatic trigger
+    if count > 10 {
+        // Threshold for automatic trigger
         // Automatically open the circuit breaker
-        e.storage().persistent().set(&crate::types::ConfigKey::CircuitBreakerState, &CircuitBreakerState::Open);
-        
-        // Event format: (Topic, MarketID, SubjectAddr, Data) - no market_id for global monitoring
-        e.events().publish(
-            (Symbol::new(e, "automatic_circuit_breaker_trigger"),),
-            count,
+        e.storage().persistent().set(
+            &crate::types::ConfigKey::CircuitBreakerState,
+            &CircuitBreakerState::Open,
         );
+
+        // Emit standardized circuit breaker event using soroban_sdk
+        use soroban_sdk::symbol_short;
+        e.events().publish((symbol_short!("cb_auto"),), count);
     }
 }
 

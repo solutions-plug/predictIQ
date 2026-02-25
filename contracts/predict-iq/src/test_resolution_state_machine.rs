@@ -32,6 +32,8 @@ fn create_test_market(
         oracle_address: Address::generate(e),
         feed_id: String::from_str(e, "test"),
         min_responses: 1,
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
     };
 
     let token_admin = Address::generate(e);
@@ -302,6 +304,8 @@ fn test_payouts_blocked_until_resolved() {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "test"),
         min_responses: 1,
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
     };
 
     let market_id = client.create_market(&creator, &description, &options, &100, &resolution_deadline, &oracle_config, &token_address);

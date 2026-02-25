@@ -1,6 +1,6 @@
-use soroban_sdk::{Env, Address};
-use crate::types::ConfigKey;
 use crate::errors::ErrorCode;
+use crate::types::ConfigKey;
+use soroban_sdk::{Address, Env};
 
 pub fn set_admin(e: &Env, admin: Address) {
     e.storage().persistent().set(&ConfigKey::Admin, &admin);
@@ -18,7 +18,9 @@ pub fn require_admin(e: &Env) -> Result<(), ErrorCode> {
 
 pub fn set_market_admin(e: &Env, admin: Address) -> Result<(), ErrorCode> {
     require_admin(e)?;
-    e.storage().persistent().set(&ConfigKey::MarketAdmin, &admin);
+    e.storage()
+        .persistent()
+        .set(&ConfigKey::MarketAdmin, &admin);
     Ok(())
 }
 

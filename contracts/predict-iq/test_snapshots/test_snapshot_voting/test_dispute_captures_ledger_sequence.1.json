@@ -68,6 +68,22 @@
                     },
                     {
                       "key": {
+                        "symbol": "max_confidence_bps"
+                      },
+                      "val": {
+                        "u64": 200
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "max_staleness_seconds"
+                      },
+                      "val": {
+                        "u64": 3600
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "min_responses"
                       },
                       "val": {
@@ -426,6 +442,22 @@
                             },
                             "val": {
                               "string": "BTC/USD"
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "max_confidence_bps"
+                            },
+                            "val": {
+                              "u64": 200
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "max_staleness_seconds"
+                            },
+                            "val": {
+                              "u64": 3600
                             }
                           },
                           {

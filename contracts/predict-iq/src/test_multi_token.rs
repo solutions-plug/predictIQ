@@ -31,6 +31,8 @@ fn test_usdc_market_6_decimals() {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "btc"),
         min_responses: 1,
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
     };
 
     let market_id = client.create_market(
@@ -88,6 +90,8 @@ fn test_xlm_market_7_decimals() {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "eth"),
         min_responses: 1,
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
     };
 
     let market_id = client.create_market(
@@ -145,6 +149,8 @@ fn test_usdc_payout_precision() {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "test"),
         min_responses: 1,
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
     };
 
     let market_id = client.create_market(
@@ -215,6 +221,8 @@ fn test_xlm_payout_precision() {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "test"),
         min_responses: 1,
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
     };
 
     let market_id = client.create_market(
@@ -282,6 +290,8 @@ fn test_wrong_token_rejected() {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "test"),
         min_responses: 1,
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
     };
 
     let market_id = client.create_market(
