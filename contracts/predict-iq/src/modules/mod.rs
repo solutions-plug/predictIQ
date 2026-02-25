@@ -9,5 +9,16 @@ pub mod governance;
 pub mod markets;
 pub mod monitoring;
 pub mod oracles;
+pub mod resolution;
 pub mod sac;
 pub mod voting;
+
+// Test modules
+#[cfg(test)]
+mod admin_test;
+#[cfg(test)]
+mod bets_test;
+#[cfg(test)]
+mod circuit_breaker_test;
+#[cfg(test)]
+mod markets_test;
