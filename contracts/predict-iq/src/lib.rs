@@ -274,6 +274,13 @@ impl PredictIQ {
         crate::modules::markets::prune_market(&e, market_id)
     }
 
+    /// Check if a market's prize pool has been clawed back by the asset issuer
+    /// If clawback is detected, the market is automatically cancelled
+    /// This is critical for Classic Stellar assets with AUTH_CLAWBACK_ENABLED
+    pub fn check_clawback(e: Env, market_id: u64) -> Result<(), ErrorCode> {
+        crate::modules::sac::check_market_clawback(&e, market_id)
+    }
+
     // Guardian Governance Functions
     pub fn set_guardians(e: Env, guardians: Vec<Address>) -> Result<(), ErrorCode> {
         crate::modules::admin::require_admin(&e)?;

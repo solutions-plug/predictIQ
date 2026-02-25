@@ -16,7 +16,6 @@ use validator::ValidateEmail;
 
 use crate::{
     cache::keys,
-    contact::{ContactFormRequest, ContactFormResponse, RecaptchaVerifyResponse},
     email::webhook::sendgrid_webhook_handler,
     AppState,
 };
@@ -44,14 +43,35 @@ pub struct ContentQuery {
     pub page_size: Option<i64>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct FeaturedMarketsQuery {
+    pub category: Option<String>,
+    pub limit: Option<i64>,
+    pub page: Option<i64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeaturedMarketView {
     pub id: i64,
     pub title: String,
+    pub description: Option<String>,
+    pub category: String,
     pub volume: f64,
+    pub participant_count: i32,
     pub ends_at: chrono::DateTime<chrono::Utc>,
+    pub outcome_options: serde_json::Value,
+    pub current_odds: serde_json::Value,
     pub onchain_volume: String,
     pub resolved_outcome: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeaturedMarketsApiResponse {
+    pub markets: Vec<FeaturedMarketView>,
+    pub total: i64,
+    pub page: i64,
+    pub page_size: i64,
+    pub last_updated: String,
 }
 
 pub async fn health() -> impl IntoResponse {
@@ -420,36 +440,57 @@ pub async fn statistics(State(state): State<Arc<AppState>>) -> Result<impl IntoR
 
 pub async fn featured_markets(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<FeaturedMarketsQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let start = Instant::now();
-    let cache_key = keys::api_featured_markets();
-    let ttl = Duration::from_secs(2 * 60);
     let endpoint = "featured_markets";
 
-    let featured_limit = state.config.featured_limit;
+    let category = query.category.as_deref();
+    let page = query.page.unwrap_or(1).max(1);
+    let limit = query.limit.unwrap_or(8).clamp(1, 20);
+
+    let cache_key = keys::api_featured_markets_with_params(category, page, limit);
+    let ttl = Duration::from_secs(2 * 60);
 
     let (payload, hit) = state
         .cache
         .get_or_set_json(&cache_key, ttl, || async {
-            let markets = state.db.featured_markets_cached(featured_limit).await?;
-            let chain_futures = markets
+            let response = state
+                .db
+                .featured_markets_with_filters(category, page, limit)
+                .await?;
+
+            let chain_futures = response
+                .markets
                 .iter()
                 .map(|m| state.blockchain.market_data_cached(m.id));
             let chain_data = join_all(chain_futures).await;
 
-            let mut view = Vec::with_capacity(markets.len());
-            for (m, chain_result) in markets.into_iter().zip(chain_data.into_iter()) {
+            let mut view = Vec::with_capacity(response.markets.len());
+            for (m, chain_result) in response.markets.into_iter().zip(chain_data.into_iter()) {
                 let chain = chain_result?;
                 view.push(FeaturedMarketView {
                     id: m.id,
                     title: m.title,
+                    description: m.description,
+                    category: m.category,
                     volume: m.volume,
+                    participant_count: m.participant_count,
                     ends_at: m.ends_at,
+                    outcome_options: m.outcome_options,
+                    current_odds: m.current_odds,
                     onchain_volume: chain.onchain_volume,
                     resolved_outcome: chain.resolved_outcome,
                 });
             }
-            Ok(view)
+
+            Ok(FeaturedMarketsApiResponse {
+                markets: view,
+                total: response.total,
+                page: response.page,
+                page_size: response.page_size,
+                last_updated: response.last_updated.to_rfc3339(),
+            })
         })
         .await
         .map_err(into_api_error)?;
@@ -736,166 +777,4 @@ pub async fn sendgrid_webhook(
     Json(events): Json<Vec<crate::email::webhook::SendGridEvent>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     sendgrid_webhook_handler(State(Arc::new(state.webhook_handler.clone())), Json(events)).await
-}
-
-// Contact form handler
-pub async fn contact_form_submit(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Json(payload): Json<ContactFormRequest>,
-) -> Result<impl IntoResponse, ApiError> {
-    // Validate input
-    if let Err(err) = payload.validate() {
-        return Ok((
-            StatusCode::BAD_REQUEST,
-            Json(ContactFormResponse {
-                success: false,
-                message: err,
-                submission_id: None,
-            }),
-        ));
-    }
-
-    let ip = client_ip(&headers);
-    let user_agent = headers
-        .get("user-agent")
-        .and_then(|h| h.to_str().ok())
-        .map(|s| s.to_string());
-
-    // Rate limiting: max 3 submissions per IP per 15 minutes
-    let recent_count = state
-        .db
-        .contact_count_recent_by_ip(&ip, 15)
-        .await
-        .map_err(into_api_error)?;
-
-    if recent_count >= 3 {
-        return Ok((
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(ContactFormResponse {
-                success: false,
-                message: "Too many submissions. Please try again later.".to_string(),
-                submission_id: None,
-            }),
-        ));
-    }
-
-    // Verify reCAPTCHA
-    let recaptcha_score = match verify_recaptcha(&state.config.recaptcha_secret_key, &payload.recaptcha_token).await {
-        Ok(score) => {
-            if score < 0.5 {
-                tracing::warn!("[contact] Low reCAPTCHA score: {} from IP: {}", score, ip);
-                return Ok((
-                    StatusCode::BAD_REQUEST,
-                    Json(ContactFormResponse {
-                        success: false,
-                        message: "reCAPTCHA verification failed. Please try again.".to_string(),
-                        submission_id: None,
-                    }),
-                ));
-            }
-            Some(score)
-        }
-        Err(err) => {
-            tracing::error!("[contact] reCAPTCHA verification error: {}", err);
-            // Continue without score in development, but log the error
-            None
-        }
-    };
-
-    // Store submission in database
-    let submission_id = state
-        .db
-        .contact_create_submission(
-            payload.name.trim(),
-            &payload.email.trim().to_lowercase(),
-            payload.subject.trim(),
-            payload.message.trim(),
-            Some(&ip),
-            user_agent.as_deref(),
-            recaptcha_score,
-        )
-        .await
-        .map_err(into_api_error)?;
-
-    // Send notification email to support team
-    let support_email = state.config.support_email.clone();
-    let notification_data = serde_json::json!({
-        "submission_id": submission_id,
-        "name": payload.name.trim(),
-        "email": payload.email.trim(),
-        "subject": payload.subject.trim(),
-        "message": payload.message.trim(),
-        "ip_address": ip,
-        "recaptcha_score": recaptcha_score,
-    });
-
-    state
-        .email_queue
-        .enqueue(
-            crate::email::types::EmailJobType::Custom("contact_notification".to_string()),
-            &support_email,
-            "contact_notification",
-            notification_data,
-            1, // High priority
-        )
-        .await
-        .map_err(into_api_error)?;
-
-    // Send auto-response confirmation email to user
-    let auto_response_data = serde_json::json!({
-        "name": payload.name.trim(),
-        "subject": payload.subject.trim(),
-        "message": payload.message.trim(),
-    });
-
-    state
-        .email_queue
-        .enqueue(
-            crate::email::types::EmailJobType::ContactFormAutoResponse,
-            &payload.email.trim().to_lowercase(),
-            "contact_form_auto_response",
-            auto_response_data,
-            0,
-        )
-        .await
-        .map_err(into_api_error)?;
-
-    tracing::info!(
-        "[contact] Submission created: id={} email={} ip={}",
-        submission_id,
-        payload.email.trim(),
-        ip
-    );
-
-    Ok((
-        StatusCode::OK,
-        Json(ContactFormResponse {
-            success: true,
-            message: "Thank you for contacting us. We'll get back to you soon.".to_string(),
-            submission_id: Some(submission_id),
-        }),
-    ))
-}
-
-async fn verify_recaptcha(secret_key: &str, token: &str) -> anyhow::Result<f64> {
-    let client = reqwest::Client::new();
-    let params = [("secret", secret_key), ("response", token)];
-
-    let response = client
-        .post("https://www.google.com/recaptcha/api/siteverify")
-        .form(&params)
-        .send()
-        .await?;
-
-    let result: RecaptchaVerifyResponse = response.json().await?;
-
-    if !result.success {
-        anyhow::bail!(
-            "reCAPTCHA verification failed: {:?}",
-            result.error_codes.unwrap_or_default()
-        );
-    }
-
-    Ok(result.score.unwrap_or(0.0))
 }
