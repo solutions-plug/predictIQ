@@ -11,7 +11,6 @@ chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
 handlebars = "5.1"
 prometheus = "0.13"
-rand = "0.8"
 redis = { version = "0.25", features = ["tokio-comp", "connection-manager", "streams"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }

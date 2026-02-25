@@ -6,7 +6,6 @@ mod email;
 mod handlers;
 mod metrics;
 mod newsletter;
-mod waitlist;
 
 use std::sync::Arc;
 
@@ -156,27 +155,6 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/webhooks/sendgrid",
             post(handlers::sendgrid_webhook),
-        )
-        // Waitlist endpoints
-        .route(
-            "/api/v1/waitlist/join",
-            post(handlers::waitlist_join),
-        )
-        .route(
-            "/api/v1/waitlist/stats",
-            get(handlers::waitlist_stats),
-        )
-        .route(
-            "/api/v1/waitlist/export",
-            get(handlers::waitlist_export),
-        )
-        .route(
-            "/api/v1/waitlist/invite",
-            post(handlers::waitlist_batch_invite),
-        )
-        .route(
-            "/api/v1/waitlist/acceptance",
-            post(handlers::waitlist_track_acceptance),
         )
         .layer(TraceLayer::new_for_http())
         .with_state(state);
