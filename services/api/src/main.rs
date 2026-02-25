@@ -37,25 +37,6 @@ pub struct AppState {
     pub(crate) webhook_handler: WebhookHandler,
 }
 
-async fn refresh_platform_stats_worker(state: Arc<AppState>) {
-    use tokio::time::{interval, Duration};
-    
-    let mut ticker = interval(Duration::from_secs(5 * 60)); // Refresh every 5 minutes
-    
-    loop {
-        ticker.tick().await;
-        
-        match handlers::platform_stats(axum::extract::State(state.clone())).await {
-            Ok(_) => {
-                tracing::debug!("platform stats refreshed successfully");
-            }
-            Err(err) => {
-                tracing::warn!("failed to refresh platform stats: {:?}", err);
-            }
-        }
-    }
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::registry()
@@ -91,12 +72,6 @@ async fn main() -> anyhow::Result<()> {
     });
 
     Arc::new(state.blockchain.clone()).start_background_tasks();
-    
-    // Start platform stats refresh worker
-    let stats_state = state.clone();
-    tokio::spawn(async move {
-        refresh_platform_stats_worker(stats_state).await;
-    });
     
     // Start email queue worker in background
     let queue_worker = email_queue.clone();
@@ -134,7 +109,6 @@ async fn main() -> anyhow::Result<()> {
             get(handlers::blockchain_tx_status),
         )
         .route("/api/statistics", get(handlers::statistics))
-        .route("/api/v1/stats", get(handlers::platform_stats))
         .route("/api/markets/featured", get(handlers::featured_markets))
         .route("/api/content", get(handlers::content))
         .route(
