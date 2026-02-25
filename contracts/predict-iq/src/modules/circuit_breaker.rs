@@ -43,37 +43,25 @@ pub fn require_closed(e: &Env) -> Result<(), ErrorCode> {
 
 pub fn pause(e: &Env) -> Result<(), ErrorCode> {
     admin::require_guardian(e)?;
-    e.storage().persistent().set(
-        &ConfigKey::CircuitBreakerState,
-        &CircuitBreakerState::Paused,
+    e.storage().persistent().set(&ConfigKey::CircuitBreakerState, &CircuitBreakerState::Paused);
+    
+    e.events().publish(
+        (Symbol::new(e, "contract_paused"),),
+        (),
     );
-
-    // Emit standardized CircuitBreakerTriggered event
-    let contract_addr = e.current_contract_address();
-    crate::modules::events::emit_circuit_breaker_triggered(
-        e,
-        contract_addr,
-        soroban_sdk::String::from_str(e, "paused"),
-    );
-
+    
     Ok(())
 }
 
 pub fn unpause(e: &Env) -> Result<(), ErrorCode> {
     admin::require_guardian(e)?;
-    e.storage().persistent().set(
-        &ConfigKey::CircuitBreakerState,
-        &CircuitBreakerState::Closed,
+    e.storage().persistent().set(&ConfigKey::CircuitBreakerState, &CircuitBreakerState::Closed);
+    
+    e.events().publish(
+        (Symbol::new(e, "contract_unpaused"),),
+        (),
     );
-
-    // Emit standardized CircuitBreakerTriggered event
-    let contract_addr = e.current_contract_address();
-    crate::modules::events::emit_circuit_breaker_triggered(
-        e,
-        contract_addr,
-        soroban_sdk::String::from_str(e, "closed"),
-    );
-
+    
     Ok(())
 }
 

@@ -29,7 +29,7 @@ pub fn validate_price(e: &Env, price: &PythPrice, config: &OracleConfig) -> Resu
 
     // Check freshness
     if age > config.max_staleness_seconds as i64 {
-        return Err(ErrorCode::StalePrice);
+        return Err(ErrorCode::OracleFailure);
     }
 
     // Check confidence: conf should be < max_confidence_bps% of price
@@ -41,7 +41,7 @@ pub fn validate_price(e: &Env, price: &PythPrice, config: &OracleConfig) -> Resu
     let max_conf = (price_abs * config.max_confidence_bps) / 10000;
 
     if price.conf > max_conf {
-        return Err(ErrorCode::ConfidenceTooLow);
+        return Err(ErrorCode::OracleFailure);
     }
 
     Ok(())
@@ -52,7 +52,10 @@ pub fn resolve_with_pyth(e: &Env, market_id: u64, config: &OracleConfig) -> Resu
 
     // Convert price to outcome (implementation depends on market logic)
     let outcome = determine_outcome(&price);
-
+    
+    // Record oracle update for manipulation prevention
+    crate::modules::reentrancy::record_oracle_update(e, market_id);
+    
     // Store result
     e.storage()
         .persistent()
@@ -90,13 +93,16 @@ pub fn get_oracle_result(e: &Env, market_id: u64, _config: &OracleConfig) -> Opt
 }
 
 pub fn set_oracle_result(e: &Env, market_id: u64, outcome: u32) -> Result<(), ErrorCode> {
-    // Mock oracle result for testing/demonstration
-    e.storage()
-        .persistent()
-        .set(&OracleData::Result(market_id, 0), &outcome);
-    e.storage().persistent().set(
-        &OracleData::LastUpdate(market_id, 0),
-        &e.ledger().timestamp(),
+    // Record oracle update for manipulation prevention
+    crate::modules::reentrancy::record_oracle_update(e, market_id);
+    
+    // Manual override for testing
+    e.storage().persistent().set(&OracleData::Result(market_id, 0), &outcome);
+    e.storage().persistent().set(&OracleData::LastUpdate(market_id, 0), &e.ledger().timestamp());
+    
+    e.events().publish(
+        (Symbol::new(e, "oracle_update"), market_id),
+        outcome,
     );
 
     // Emit standardized OracleResultSet event

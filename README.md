@@ -40,6 +40,11 @@ make build
 
 # Run tests
 make test
+
+# Start API service (optional)
+cd ../../api
+npm install
+npm run dev
 ```
 
 ---
@@ -48,6 +53,10 @@ make test
 
 ```
 PredictIQ/
+├── api/                      # Landing page API service
+│   ├── src/                  # TypeScript source code
+│   ├── Dockerfile            # Container configuration
+│   └── README.md             # API documentation
 ├── contracts/
 │   └── predict-iq/           # Main prediction market contract
 │       ├── src/              # Contract source code
@@ -63,6 +72,7 @@ PredictIQ/
 ```
 
 **Key Components:**
+- **`api`**: Landing page backend API service (Node.js/Express/TypeScript)
 - **`predict-iq`**: Main prediction market contract with oracle integration, voting, disputes, and governance
 
 ---
