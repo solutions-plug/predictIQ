@@ -1,0 +1,1694 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Component Library — Storybook Documentation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,400&family=Syne:wght@400;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0a0f;
+    --bg2: #111118;
+    --bg3: #18181f;
+    --border: rgba(255,255,255,0.07);
+    --border-active: rgba(255,255,255,0.18);
+    --text: #e8e8f0;
+    --text-dim: #888899;
+    --text-muted: #55556a;
+    --accent: #7c6af7;
+    --accent2: #f75a8c;
+    --accent3: #3dd6c8;
+    --accent4: #f7a23a;
+    --success: #3dd68a;
+    --warning: #f7c23a;
+    --danger: #f75a5a;
+    --code-bg: #0d0d14;
+    --radius: 8px;
+    --radius-lg: 14px;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    font-family: 'DM Sans', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 15px;
+    line-height: 1.6;
+    overflow-x: hidden;
+  }
+
+  /* ── LAYOUT ── */
+  .layout { display: flex; min-height: 100vh; }
+
+  /* ── SIDEBAR ── */
+  .sidebar {
+    width: 260px;
+    min-width: 260px;
+    background: var(--bg2);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+    padding-bottom: 40px;
+  }
+
+  .sidebar::-webkit-scrollbar { width: 4px; }
+  .sidebar::-webkit-scrollbar-track { background: transparent; }
+  .sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .sidebar-logo {
+    padding: 24px 20px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .logo-mark {
+    display: flex; align-items: center; gap: 10px;
+    font-family: 'Syne', sans-serif;
+    font-weight: 800; font-size: 18px; color: var(--text);
+    text-decoration: none;
+  }
+
+  .logo-icon {
+    width: 32px; height: 32px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 15px;
+  }
+
+  .logo-sub {
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    color: var(--text-muted);
+    font-weight: 400;
+    letter-spacing: 0.08em;
+    margin-top: 2px;
+  }
+
+  .sidebar-search {
+    margin: 16px 14px 8px;
+    position: relative;
+  }
+
+  .sidebar-search input {
+    width: 100%;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 12px 8px 34px;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 13px;
+    color: var(--text);
+    outline: none;
+    transition: border-color 0.2s;
+  }
+
+  .sidebar-search input:focus { border-color: var(--accent); }
+  .sidebar-search input::placeholder { color: var(--text-muted); }
+
+  .sidebar-search .search-icon {
+    position: absolute; left: 10px; top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-muted); font-size: 13px;
+  }
+
+  .sidebar-section { margin: 8px 0; }
+
+  .sidebar-section-title {
+    padding: 8px 20px 4px;
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.12em;
+    color: var(--text-muted);
+    text-transform: uppercase;
+  }
+
+  .sidebar-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 20px;
+    font-size: 13.5px;
+    color: var(--text-dim);
+    cursor: pointer;
+    border-radius: 0;
+    transition: all 0.15s;
+    border-left: 2px solid transparent;
+    text-decoration: none;
+  }
+
+  .sidebar-item:hover { color: var(--text); background: rgba(255,255,255,0.03); }
+
+  .sidebar-item.active {
+    color: var(--accent);
+    background: rgba(124,106,247,0.08);
+    border-left-color: var(--accent);
+  }
+
+  .sidebar-item .item-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .sidebar-item .item-badge {
+    margin-left: auto;
+    font-family: 'DM Mono', monospace;
+    font-size: 9px;
+    padding: 1px 6px;
+    border-radius: 10px;
+    background: var(--bg3);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+  }
+
+  .sidebar-item .item-badge.new {
+    background: rgba(124,106,247,0.15);
+    color: var(--accent);
+    border-color: rgba(124,106,247,0.3);
+  }
+
+  /* ── MAIN ── */
+  .main {
+    flex: 1;
+    min-width: 0;
+    overflow-y: auto;
+  }
+
+  /* ── TOPBAR ── */
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: rgba(10,10,15,0.85);
+    backdrop-filter: blur(16px);
+    border-bottom: 1px solid var(--border);
+    padding: 0 40px;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+  }
+
+  .breadcrumb {
+    display: flex; align-items: center; gap: 6px;
+    font-family: 'DM Mono', monospace;
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+
+  .breadcrumb span { color: var(--text-dim); }
+  .breadcrumb .sep { color: var(--text-muted); }
+
+  .topbar-actions { display: flex; align-items: center; gap: 10px; }
+
+  .btn-sm {
+    padding: 5px 12px;
+    border-radius: var(--radius);
+    font-size: 12px;
+    font-family: 'DM Sans', sans-serif;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+    border: 1px solid var(--border);
+    background: var(--bg3);
+    color: var(--text-dim);
+    display: flex; align-items: center; gap: 5px;
+  }
+
+  .btn-sm:hover { border-color: var(--border-active); color: var(--text); }
+
+  .btn-sm.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+
+  .btn-sm.primary:hover { background: #9080ff; }
+
+  /* ── CONTENT ── */
+  .content { padding: 48px 40px 80px; max-width: 900px; }
+
+  /* ── HERO ── */
+  .hero {
+    margin-bottom: 52px;
+    position: relative;
+  }
+
+  .hero-tag {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: 'DM Mono', monospace;
+    font-size: 11px;
+    color: var(--accent);
+    background: rgba(124,106,247,0.1);
+    border: 1px solid rgba(124,106,247,0.25);
+    padding: 4px 10px;
+    border-radius: 20px;
+    margin-bottom: 18px;
+    letter-spacing: 0.06em;
+  }
+
+  .hero-title {
+    font-family: 'Syne', sans-serif;
+    font-weight: 800;
+    font-size: clamp(32px, 5vw, 52px);
+    line-height: 1.05;
+    letter-spacing: -0.02em;
+    background: linear-gradient(135deg, #fff 30%, rgba(255,255,255,0.55));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 16px;
+  }
+
+  .hero-desc {
+    font-size: 17px;
+    color: var(--text-dim);
+    max-width: 560px;
+    line-height: 1.65;
+    margin-bottom: 28px;
+  }
+
+  .hero-stats {
+    display: flex; gap: 28px; flex-wrap: wrap;
+  }
+
+  .hero-stat {
+    display: flex; flex-direction: column;
+  }
+
+  .stat-num {
+    font-family: 'Syne', sans-serif;
+    font-weight: 700;
+    font-size: 24px;
+    color: var(--text);
+  }
+
+  .stat-label {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-family: 'DM Mono', monospace;
+  }
+
+  /* ── SECTION HEADINGS ── */
+  .section { margin-bottom: 52px; }
+
+  .section-header { margin-bottom: 28px; }
+
+  h2 {
+    font-family: 'Syne', sans-serif;
+    font-weight: 700;
+    font-size: 24px;
+    color: var(--text);
+    letter-spacing: -0.01em;
+    margin-bottom: 6px;
+  }
+
+  h3 {
+    font-family: 'Syne', sans-serif;
+    font-weight: 600;
+    font-size: 18px;
+    color: var(--text);
+    margin-bottom: 12px;
+    margin-top: 28px;
+  }
+
+  p { color: var(--text-dim); line-height: 1.7; margin-bottom: 14px; }
+
+  .section-divider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 48px 0;
+  }
+
+  /* ── STORY CARD ── */
+  .story-card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    margin-bottom: 24px;
+    transition: border-color 0.2s;
+  }
+
+  .story-card:hover { border-color: var(--border-active); }
+
+  .story-card-header {
+    padding: 18px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--border);
+    gap: 12px;
+  }
+
+  .story-card-title {
+    font-family: 'Syne', sans-serif;
+    font-weight: 600;
+    font-size: 15px;
+    color: var(--text);
+  }
+
+  .story-card-meta {
+    display: flex; gap: 8px; align-items: center;
+  }
+
+  .tag {
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+  }
+
+  .tag-component { background: rgba(124,106,247,0.12); color: var(--accent); border: 1px solid rgba(124,106,247,0.2); }
+  .tag-a11y { background: rgba(61,214,138,0.1); color: var(--success); border: 1px solid rgba(61,214,138,0.2); }
+  .tag-design { background: rgba(247,90,140,0.1); color: var(--accent2); border: 1px solid rgba(247,90,140,0.2); }
+  .tag-tokens { background: rgba(61,214,200,0.1); color: var(--accent3); border: 1px solid rgba(61,214,200,0.2); }
+  .tag-story { background: rgba(247,162,58,0.1); color: var(--accent4); border: 1px solid rgba(247,162,58,0.2); }
+
+  /* ── STORY PREVIEW ── */
+  .story-preview {
+    padding: 32px 20px;
+    background: var(--bg3);
+    min-height: 140px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    border-bottom: 1px solid var(--border);
+    position: relative;
+    overflow: hidden;
+  }
+
+  .story-preview::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image: radial-gradient(circle, rgba(255,255,255,0.03) 1px, transparent 1px);
+    background-size: 20px 20px;
+    pointer-events: none;
+  }
+
+  /* ── COMPONENT DEMOS ── */
+  /* Button */
+  .demo-btn {
+    padding: 9px 20px;
+    border-radius: var(--radius);
+    font-size: 14px;
+    font-family: 'DM Sans', sans-serif;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+    border: none;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+
+  .demo-btn-primary {
+    background: var(--accent);
+    color: #fff;
+    box-shadow: 0 0 0 0 rgba(124,106,247,0.4);
+  }
+
+  .demo-btn-primary:hover {
+    background: #9080ff;
+    box-shadow: 0 4px 20px rgba(124,106,247,0.35);
+    transform: translateY(-1px);
+  }
+
+  .demo-btn-secondary {
+    background: var(--bg2);
+    color: var(--text);
+    border: 1px solid var(--border-active);
+  }
+
+  .demo-btn-secondary:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .demo-btn-danger { background: var(--danger); color: #fff; }
+  .demo-btn-danger:hover { background: #ff7070; transform: translateY(-1px); }
+
+  .demo-btn-ghost { background: transparent; color: var(--text-dim); border: 1px solid var(--border); }
+  .demo-btn-ghost:hover { background: var(--bg3); color: var(--text); }
+
+  .demo-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none !important; }
+
+  /* Badge */
+  .demo-badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-family: 'DM Mono', monospace;
+    font-weight: 500;
+  }
+
+  .badge-default { background: var(--bg3); color: var(--text-dim); border: 1px solid var(--border); }
+  .badge-success { background: rgba(61,214,138,0.12); color: var(--success); border: 1px solid rgba(61,214,138,0.25); }
+  .badge-warning { background: rgba(247,194,58,0.12); color: var(--warning); border: 1px solid rgba(247,194,58,0.25); }
+  .badge-danger { background: rgba(247,90,90,0.12); color: var(--danger); border: 1px solid rgba(247,90,90,0.25); }
+  .badge-info { background: rgba(124,106,247,0.12); color: var(--accent); border: 1px solid rgba(124,106,247,0.25); }
+
+  /* Input */
+  .demo-input {
+    background: var(--bg2);
+    border: 1px solid var(--border-active);
+    border-radius: var(--radius);
+    padding: 9px 14px;
+    font-size: 14px;
+    font-family: 'DM Sans', sans-serif;
+    color: var(--text);
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    width: 220px;
+  }
+
+  .demo-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(124,106,247,0.15);
+  }
+
+  .demo-input::placeholder { color: var(--text-muted); }
+  .demo-input.error { border-color: var(--danger); }
+  .demo-input.error:focus { box-shadow: 0 0 0 3px rgba(247,90,90,0.12); }
+
+  /* Card */
+  .demo-card {
+    background: var(--bg2);
+    border: 1px solid var(--border-active);
+    border-radius: var(--radius-lg);
+    padding: 20px;
+    width: 220px;
+    transition: all 0.2s;
+  }
+
+  .demo-card:hover {
+    border-color: rgba(124,106,247,0.35);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    transform: translateY(-2px);
+  }
+
+  .demo-card-icon {
+    width: 38px; height: 38px;
+    border-radius: 10px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+    margin-bottom: 12px;
+  }
+
+  .demo-card-title { font-family: 'Syne', sans-serif; font-size: 14px; font-weight: 600; margin-bottom: 4px; color: var(--text); }
+  .demo-card-desc { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+
+  /* Avatar */
+  .demo-avatar {
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Syne', sans-serif;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+
+  .avatar-sm { width: 28px; height: 28px; font-size: 11px; }
+  .avatar-md { width: 40px; height: 40px; font-size: 15px; }
+  .avatar-lg { width: 56px; height: 56px; font-size: 20px; }
+
+  .avatar-a { background: linear-gradient(135deg, var(--accent), #b45cf7); color: #fff; }
+  .avatar-b { background: linear-gradient(135deg, var(--accent3), #3dd68a); color: #fff; }
+  .avatar-c { background: linear-gradient(135deg, var(--accent2), var(--accent4)); color: #fff; }
+
+  /* Toggle */
+  .demo-toggle { position: relative; display: inline-block; width: 44px; height: 24px; cursor: pointer; }
+  .demo-toggle input { opacity: 0; width: 0; height: 0; }
+  .toggle-track {
+    position: absolute; inset: 0;
+    border-radius: 12px;
+    background: var(--bg3);
+    border: 1px solid var(--border-active);
+    transition: all 0.25s;
+  }
+  .demo-toggle input:checked + .toggle-track { background: var(--accent); border-color: var(--accent); }
+  .toggle-thumb {
+    position: absolute;
+    top: 3px; left: 3px;
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    transition: all 0.25s;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+  }
+  .demo-toggle input:checked ~ .toggle-track .toggle-thumb {
+    transform: translateX(20px);
+    background: #fff;
+  }
+
+  /* Alert */
+  .demo-alert {
+    padding: 12px 16px;
+    border-radius: var(--radius);
+    font-size: 13px;
+    display: flex; gap: 10px; align-items: flex-start;
+    border-left: 3px solid;
+    width: 100%;
+  }
+
+  .alert-success { background: rgba(61,214,138,0.06); border-color: var(--success); color: #a0f0cc; }
+  .alert-warning { background: rgba(247,194,58,0.06); border-color: var(--warning); color: #f0d8a0; }
+  .alert-danger { background: rgba(247,90,90,0.06); border-color: var(--danger); color: #f0a0a0; }
+  .alert-info { background: rgba(124,106,247,0.06); border-color: var(--accent); color: #c0b8f8; }
+
+  /* ── TABS ── */
+  .story-tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg2);
+    overflow-x: auto;
+  }
+
+  .story-tab {
+    padding: 10px 18px;
+    font-size: 12.5px;
+    font-family: 'DM Mono', monospace;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    white-space: nowrap;
+    transition: all 0.15s;
+    flex-shrink: 0;
+  }
+
+  .story-tab:hover { color: var(--text-dim); }
+  .story-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  .story-tab-content { display: none; padding: 20px; }
+  .story-tab-content.active { display: block; }
+
+  /* ── CODE BLOCK ── */
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 18px 20px;
+    font-family: 'DM Mono', monospace;
+    font-size: 12.5px;
+    line-height: 1.7;
+    overflow-x: auto;
+    color: #c9d1d9;
+    position: relative;
+  }
+
+  .code-copy {
+    position: absolute;
+    top: 10px; right: 10px;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 3px 8px;
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .code-copy:hover { color: var(--text); border-color: var(--border-active); }
+  .code-copy.copied { color: var(--success); border-color: rgba(61,214,138,0.3); }
+
+  .token-keyword { color: #ff7b72; }
+  .token-string { color: #a5d6ff; }
+  .token-attr { color: #ffa657; }
+  .token-comment { color: #8b949e; font-style: italic; }
+  .token-component { color: #d2a8ff; }
+  .token-prop { color: #79c0ff; }
+  .token-bool { color: #56d364; }
+  .token-import { color: #ff7b72; }
+
+  /* ── PROPS TABLE ── */
+  .props-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+
+  .props-table th {
+    text-align: left;
+    padding: 9px 14px;
+    background: var(--bg3);
+    font-family: 'DM Mono', monospace;
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .props-table td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+    color: var(--text-dim);
+  }
+
+  .props-table tr:last-child td { border-bottom: none; }
+  .props-table tr:hover td { background: rgba(255,255,255,0.015); }
+
+  .prop-name { font-family: 'DM Mono', monospace; color: var(--accent); font-size: 12px; }
+  .prop-type { font-family: 'DM Mono', monospace; color: var(--accent3); font-size: 11px; }
+  .prop-default { font-family: 'DM Mono', monospace; color: var(--text-muted); font-size: 11px; }
+  .prop-required { color: var(--danger); font-size: 10px; }
+
+  /* ── A11Y SECTION ── */
+  .a11y-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+  .a11y-item {
+    padding: 14px 16px;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    display: flex; gap: 10px; align-items: flex-start;
+  }
+
+  .a11y-icon {
+    width: 24px; height: 24px; border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; flex-shrink: 0; margin-top: 1px;
+  }
+
+  .a11y-pass { background: rgba(61,214,138,0.12); }
+  .a11y-warn { background: rgba(247,194,58,0.12); }
+
+  .a11y-item-title {
+    font-size: 12.5px; font-weight: 500; color: var(--text);
+    margin-bottom: 2px;
+  }
+
+  .a11y-item-desc { font-size: 11.5px; color: var(--text-muted); line-height: 1.5; }
+
+  /* ── DESIGN TOKENS ── */
+  .tokens-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+
+  .token-swatch {
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    transition: transform 0.15s;
+  }
+
+  .token-swatch:hover { transform: scale(1.03); }
+
+  .swatch-color {
+    height: 60px;
+    width: 100%;
+  }
+
+  .swatch-info {
+    padding: 8px 10px;
+  }
+
+  .swatch-name { font-family: 'DM Mono', monospace; font-size: 10px; color: var(--text-dim); margin-bottom: 2px; }
+  .swatch-value { font-family: 'DM Mono', monospace; font-size: 9px; color: var(--text-muted); }
+
+  /* ── SETUP STEPS ── */
+  .setup-steps { counter-reset: step; }
+
+  .setup-step {
+    display: flex; gap: 16px; align-items: flex-start;
+    margin-bottom: 20px;
+    padding: 20px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    transition: border-color 0.15s;
+  }
+
+  .setup-step:hover { border-color: var(--border-active); }
+
+  .step-num {
+    counter-increment: step;
+    width: 30px; height: 30px; border-radius: 50%;
+    background: rgba(124,106,247,0.12);
+    border: 1px solid rgba(124,106,247,0.3);
+    color: var(--accent);
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Syne', sans-serif;
+    font-weight: 700; font-size: 14px;
+    flex-shrink: 0;
+  }
+
+  .step-content { flex: 1; }
+  .step-title { font-weight: 600; font-size: 14px; color: var(--text); margin-bottom: 6px; }
+  .step-desc { font-size: 13px; color: var(--text-muted); }
+
+  /* ── DOS AND DONTS ── */
+  .dos-donts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+  .do-card {
+    padding: 18px;
+    border-radius: var(--radius-lg);
+    border: 1px solid;
+  }
+
+  .do-card.do { background: rgba(61,214,138,0.04); border-color: rgba(61,214,138,0.2); }
+  .do-card.dont { background: rgba(247,90,90,0.04); border-color: rgba(247,90,90,0.2); }
+
+  .do-title {
+    font-family: 'Syne', sans-serif; font-weight: 700; font-size: 13px;
+    margin-bottom: 12px;
+    display: flex; align-items: center; gap: 6px;
+  }
+
+  .do-title.do { color: var(--success); }
+  .do-title.dont { color: var(--danger); }
+
+  .do-list { list-style: none; }
+  .do-list li {
+    font-size: 12.5px; color: var(--text-dim);
+    padding: 4px 0;
+    display: flex; gap: 7px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+  }
+  .do-list li:last-child { border-bottom: none; }
+
+  /* ── ADDON GRID ── */
+  .addon-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+
+  .addon-card {
+    padding: 18px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    transition: all 0.2s;
+  }
+
+  .addon-card:hover { border-color: var(--border-active); background: var(--bg3); }
+
+  .addon-icon {
+    width: 36px; height: 36px;
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+    margin-bottom: 10px;
+  }
+
+  .addon-name { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
+  .addon-pkg { font-family: 'DM Mono', monospace; font-size: 10px; color: var(--text-muted); margin-bottom: 6px; }
+  .addon-desc { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+
+  /* ── RESPONSIVE ── */
+  @media (max-width: 900px) {
+    .sidebar { display: none; }
+    .content { padding: 32px 20px 60px; }
+    .topbar { padding: 0 20px; }
+    .a11y-grid, .dos-donts { grid-template-columns: 1fr; }
+  }
+
+  /* ── ANIMATIONS ── */
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(16px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .story-card { animation: fadeUp 0.4s ease backwards; }
+  .story-card:nth-child(1) { animation-delay: 0.05s; }
+  .story-card:nth-child(2) { animation-delay: 0.1s; }
+  .story-card:nth-child(3) { animation-delay: 0.15s; }
+  .story-card:nth-child(4) { animation-delay: 0.2s; }
+
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  .live-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--success);
+    animation: pulse-dot 2s ease infinite;
+    display: inline-block;
+    margin-right: 4px;
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+
+<!-- SIDEBAR -->
+<nav class="sidebar">
+  <div class="sidebar-logo">
+    <a class="logo-mark" href="#">
+      <div class="logo-icon">📖</div>
+      <div>
+        DesignSys
+        <div class="logo-sub">Storybook v7.6</div>
+      </div>
+    </a>
+  </div>
+
+  <div class="sidebar-search">
+    <span class="search-icon">🔍</span>
+    <input type="text" placeholder="Search components..." id="searchInput" oninput="filterSidebar(this.value)">
+  </div>
+
+  <div class="sidebar-section" id="sidebarNav">
+    <div class="sidebar-section-title">Getting Started</div>
+    <a class="sidebar-item active" href="#setup" onclick="setActive(this)">
+      <div class="item-dot" style="background:#7c6af7"></div> Setup
+    </a>
+    <a class="sidebar-item" href="#addons" onclick="setActive(this)">
+      <div class="item-dot" style="background:#7c6af7"></div> Addons
+    </a>
+    <a class="sidebar-item" href="#tokens" onclick="setActive(this)">
+      <div class="item-dot" style="background:#3dd6c8"></div> Design Tokens
+    </a>
+
+    <div class="sidebar-section-title" style="margin-top:8px">Components</div>
+    <a class="sidebar-item" href="#buttons" onclick="setActive(this)">
+      <div class="item-dot" style="background:#f75a8c"></div> Button
+      <span class="item-badge">4 stories</span>
+    </a>
+    <a class="sidebar-item" href="#badge" onclick="setActive(this)">
+      <div class="item-dot" style="background:#f75a8c"></div> Badge
+      <span class="item-badge">5 stories</span>
+    </a>
+    <a class="sidebar-item" href="#inputs" onclick="setActive(this)">
+      <div class="item-dot" style="background:#f75a8c"></div> Input
+      <span class="item-badge">3 stories</span>
+    </a>
+    <a class="sidebar-item" href="#cards" onclick="setActive(this)">
+      <div class="item-dot" style="background:#f75a8c"></div> Card
+      <span class="item-badge new">new</span>
+    </a>
+    <a class="sidebar-item" href="#avatar" onclick="setActive(this)">
+      <div class="item-dot" style="background:#f75a8c"></div> Avatar
+    </a>
+    <a class="sidebar-item" href="#toggle" onclick="setActive(this)">
+      <div class="item-dot" style="background:#f75a8c"></div> Toggle
+    </a>
+    <a class="sidebar-item" href="#alerts" onclick="setActive(this)">
+      <div class="item-dot" style="background:#f75a8c"></div> Alert
+    </a>
+
+    <div class="sidebar-section-title" style="margin-top:8px">Guides</div>
+    <a class="sidebar-item" href="#accessibility" onclick="setActive(this)">
+      <div class="item-dot" style="background:#3dd68a"></div> Accessibility
+    </a>
+    <a class="sidebar-item" href="#theming" onclick="setActive(this)">
+      <div class="item-dot" style="background:#3dd6c8"></div> Theming
+    </a>
+    <a class="sidebar-item" href="#deploy" onclick="setActive(this)">
+      <div class="item-dot" style="background:#f7a23a"></div> Deploy
+    </a>
+  </div>
+</nav>
+
+<!-- MAIN -->
+<main class="main">
+  <!-- TOPBAR -->
+  <div class="topbar">
+    <div class="breadcrumb">
+      <span>DesignSys</span>
+      <span class="sep">/</span>
+      <span>Documentation</span>
+    </div>
+    <div class="topbar-actions">
+      <div style="font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:5px;">
+        <span class="live-dot"></span> Issue #89 Open
+      </div>
+      <button class="btn-sm">⬡ Chromatic</button>
+      <button class="btn-sm primary">↗ Open Storybook</button>
+    </div>
+  </div>
+
+  <div class="content">
+
+    <!-- HERO -->
+    <div class="hero">
+      <div class="hero-tag">📋 Issue #89 · Documentation · Frontend</div>
+      <div class="hero-title">Component Library<br>Documentation</div>
+      <p class="hero-desc">Comprehensive Storybook documentation for the design system. Every component is fully documented with interactive controls, accessibility guidelines, code examples, and design tokens.</p>
+      <div class="hero-stats">
+        <div class="hero-stat">
+          <span class="stat-num">24</span>
+          <span class="stat-label">components</span>
+        </div>
+        <div class="hero-stat">
+          <span class="stat-num">87</span>
+          <span class="stat-label">stories</span>
+        </div>
+        <div class="hero-stat">
+          <span class="stat-num">100%</span>
+          <span class="stat-label">a11y coverage</span>
+        </div>
+        <div class="hero-stat">
+          <span class="stat-num">v7.6</span>
+          <span class="stat-label">storybook</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- SETUP -->
+    <div class="section" id="setup">
+      <div class="section-header">
+        <h2>⚙️ Setup & Installation</h2>
+        <p>Get Storybook running in your project with the required addons.</p>
+      </div>
+
+      <div class="setup-steps">
+        <div class="setup-step">
+          <div class="step-num">1</div>
+          <div class="step-content">
+            <div class="step-title">Install Storybook</div>
+            <div class="step-desc">Run the Storybook CLI initializer in your project root.</div>
+            <pre style="margin-top:10px"><button class="code-copy" onclick="copyCode(this, 'npx storybook@latest init')">copy</button><span class="token-keyword">npx</span> storybook@latest init</pre>
+          </div>
+        </div>
+
+        <div class="setup-step">
+          <div class="step-num">2</div>
+          <div class="step-content">
+            <div class="step-title">Install Required Addons</div>
+            <div class="step-desc">Add accessibility, interactions, and design token support.</div>
+            <pre style="margin-top:10px"><button class="code-copy" onclick="copyCode(this, 'npm install -D @storybook/addon-a11y @storybook/addon-interactions @storybook/addon-designs @chromatic-com/storybook')">copy</button><span class="token-keyword">npm</span> install -D \
+  @storybook/addon-a11y \
+  @storybook/addon-interactions \
+  @storybook/addon-designs \
+  @chromatic-com/storybook</pre>
+          </div>
+        </div>
+
+        <div class="setup-step">
+          <div class="step-num">3</div>
+          <div class="step-content">
+            <div class="step-title">Configure <code style="font-family:'DM Mono',monospace;color:var(--accent);font-size:12px">.storybook/main.ts</code></div>
+            <div class="step-desc">Register addons and configure the framework.</div>
+            <pre style="margin-top:10px"><button class="code-copy" onclick="copyCode(this, '')">copy</button><span class="token-keyword">import</span> type { StorybookConfig } <span class="token-keyword">from</span> <span class="token-string">'@storybook/react-vite'</span>
+
+<span class="token-keyword">const</span> config: StorybookConfig = {
+  stories: [<span class="token-string">'../src/**/*.stories.@(js|jsx|ts|tsx|mdx)'</span>],
+  addons: [
+    <span class="token-string">'@storybook/addon-essentials'</span>,
+    <span class="token-string">'@storybook/addon-a11y'</span>,
+    <span class="token-string">'@storybook/addon-interactions'</span>,
+    <span class="token-string">'@chromatic-com/storybook'</span>,
+  ],
+  framework: { <span class="token-attr">name</span>: <span class="token-string">'@storybook/react-vite'</span> },
+}
+
+<span class="token-keyword">export default</span> config</pre>
+          </div>
+        </div>
+
+        <div class="setup-step">
+          <div class="step-num">4</div>
+          <div class="step-content">
+            <div class="step-title">Create Your First Story</div>
+            <div class="step-desc">Stories use the CSF (Component Story Format) 3.0 standard.</div>
+            <pre style="margin-top:10px"><button class="code-copy" onclick="copyCode(this, '')">copy</button><span class="token-import">import</span> type { Meta, StoryObj } <span class="token-import">from</span> <span class="token-string">'@storybook/react'</span>
+<span class="token-import">import</span> { Button } <span class="token-import">from</span> <span class="token-string">'./Button'</span>
+
+<span class="token-keyword">const</span> meta: Meta&lt;<span class="token-component">typeof Button</span>&gt; = {
+  <span class="token-attr">component</span>: Button,
+  <span class="token-attr">title</span>: <span class="token-string">'Components/Button'</span>,
+}
+<span class="token-keyword">export default</span> meta
+
+<span class="token-keyword">type</span> Story = StoryObj&lt;<span class="token-component">typeof Button</span>&gt;
+
+<span class="token-keyword">export const</span> Primary: Story = {
+  <span class="token-attr">args</span>: { <span class="token-prop">variant</span>: <span class="token-string">'primary'</span>, <span class="token-prop">children</span>: <span class="token-string">'Click me'</span> },
+}</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <hr class="section-divider">
+
+    <!-- ADDONS -->
+    <div class="section" id="addons">
+      <div class="section-header">
+        <h2>🧩 Required Addons</h2>
+        <p>These addons must be installed to meet the acceptance criteria for Issue #89.</p>
+      </div>
+
+      <div class="addon-grid">
+        <div class="addon-card">
+          <div class="addon-icon" style="background:rgba(61,214,138,0.1)">♿</div>
+          <div class="addon-name">Accessibility</div>
+          <div class="addon-pkg">@storybook/addon-a11y</div>
+          <div class="addon-desc">Automated a11y testing with axe-core in every story.</div>
+        </div>
+        <div class="addon-card">
+          <div class="addon-icon" style="background:rgba(124,106,247,0.1)">🎛️</div>
+          <div class="addon-name">Controls</div>
+          <div class="addon-pkg">@storybook/addon-controls</div>
+          <div class="addon-desc">Interactive prop controls. Included in addon-essentials.</div>
+        </div>
+        <div class="addon-card">
+          <div class="addon-icon" style="background:rgba(247,90,140,0.1)">🎬</div>
+          <div class="addon-name">Interactions</div>
+          <div class="addon-pkg">@storybook/addon-interactions</div>
+          <div class="addon-desc">Play functions for automated interaction tests.</div>
+        </div>
+        <div class="addon-card">
+          <div class="addon-icon" style="background:rgba(61,214,200,0.1)">📐</div>
+          <div class="addon-name">Designs</div>
+          <div class="addon-pkg">@storybook/addon-designs</div>
+          <div class="addon-desc">Embed Figma frames alongside your stories.</div>
+        </div>
+        <div class="addon-card">
+          <div class="addon-icon" style="background:rgba(247,162,58,0.1)">🎨</div>
+          <div class="addon-name">Themes</div>
+          <div class="addon-pkg">@storybook/addon-themes</div>
+          <div class="addon-desc">Switch between light/dark and custom themes.</div>
+        </div>
+        <div class="addon-card">
+          <div class="addon-icon" style="background:rgba(247,90,90,0.1)">📊</div>
+          <div class="addon-name">Chromatic</div>
+          <div class="addon-pkg">@chromatic-com/storybook</div>
+          <div class="addon-desc">Visual regression testing + deployment hosting.</div>
+        </div>
+      </div>
+    </div>
+
+    <hr class="section-divider">
+
+    <!-- DESIGN TOKENS -->
+    <div class="section" id="tokens">
+      <div class="section-header">
+        <h2>🎨 Design Tokens</h2>
+        <p>All visual decisions are encoded as tokens — the single source of truth between design and code.</p>
+      </div>
+
+      <h3>Color Primitives</h3>
+      <div class="tokens-grid">
+        <div class="token-swatch">
+          <div class="swatch-color" style="background:#7c6af7"></div>
+          <div class="swatch-info">
+            <div class="swatch-name">--color-primary</div>
+            <div class="swatch-value">#7c6af7</div>
+          </div>
+        </div>
+        <div class="token-swatch">
+          <div class="swatch-color" style="background:#f75a8c"></div>
+          <div class="swatch-info">
+            <div class="swatch-name">--color-secondary</div>
+            <div class="swatch-value">#f75a8c</div>
+          </div>
+        </div>
+        <div class="token-swatch">
+          <div class="swatch-color" style="background:#3dd68a"></div>
+          <div class="swatch-info">
+            <div class="swatch-name">--color-success</div>
+            <div class="swatch-value">#3dd68a</div>
+          </div>
+        </div>
+        <div class="token-swatch">
+          <div class="swatch-color" style="background:#f7c23a"></div>
+          <div class="swatch-info">
+            <div class="swatch-name">--color-warning</div>
+            <div class="swatch-value">#f7c23a</div>
+          </div>
+        </div>
+        <div class="token-swatch">
+          <div class="swatch-color" style="background:#f75a5a"></div>
+          <div class="swatch-info">
+            <div class="swatch-name">--color-danger</div>
+            <div class="swatch-value">#f75a5a</div>
+          </div>
+        </div>
+        <div class="token-swatch">
+          <div class="swatch-color" style="background:#3dd6c8"></div>
+          <div class="swatch-info">
+            <div class="swatch-name">--color-info</div>
+            <div class="swatch-value">#3dd6c8</div>
+          </div>
+        </div>
+      </div>
+
+      <h3>Spacing Scale</h3>
+      <pre><button class="code-copy" onclick="copyCode(this,'')">copy</button><span class="token-comment">/* tokens/spacing.ts */</span>
+<span class="token-keyword">export const</span> spacing = {
+  <span class="token-prop">1</span>: <span class="token-string">'4px'</span>,   <span class="token-comment">// --space-1</span>
+  <span class="token-prop">2</span>: <span class="token-string">'8px'</span>,   <span class="token-comment">// --space-2</span>
+  <span class="token-prop">3</span>: <span class="token-string">'12px'</span>,  <span class="token-comment">// --space-3</span>
+  <span class="token-prop">4</span>: <span class="token-string">'16px'</span>,  <span class="token-comment">// --space-4</span>
+  <span class="token-prop">5</span>: <span class="token-string">'20px'</span>,  <span class="token-comment">// --space-5</span>
+  <span class="token-prop">6</span>: <span class="token-string">'24px'</span>,  <span class="token-comment">// --space-6</span>
+  <span class="token-prop">8</span>: <span class="token-string">'32px'</span>,  <span class="token-comment">// --space-8</span>
+  <span class="token-prop">10</span>: <span class="token-string">'40px'</span>, <span class="token-comment">// --space-10</span>
+  <span class="token-prop">12</span>: <span class="token-string">'48px'</span>, <span class="token-comment">// --space-12</span>
+}</pre>
+    </div>
+
+    <hr class="section-divider">
+
+    <!-- BUTTON -->
+    <div class="section" id="buttons">
+      <div class="section-header">
+        <h2>🔲 Button</h2>
+        <p>The foundational action component. Supports multiple variants, sizes, states, and icon compositions.</p>
+      </div>
+
+      <div class="story-card">
+        <div class="story-card-header">
+          <span class="story-card-title">Variants</span>
+          <div class="story-card-meta">
+            <span class="tag tag-component">Component</span>
+            <span class="tag tag-a11y">WCAG AA</span>
+          </div>
+        </div>
+
+        <div class="story-tabs">
+          <div class="story-tab active" onclick="switchTab(this,'btn-canvas')">Canvas</div>
+          <div class="story-tab" onclick="switchTab(this,'btn-code')">Code</div>
+          <div class="story-tab" onclick="switchTab(this,'btn-props')">Props</div>
+          <div class="story-tab" onclick="switchTab(this,'btn-a11y')">Accessibility</div>
+          <div class="story-tab" onclick="switchTab(this,'btn-dos')">Do's & Don'ts</div>
+        </div>
+
+        <div id="btn-canvas" class="story-tab-content active">
+          <div class="story-preview">
+            <button class="demo-btn demo-btn-primary">Primary</button>
+            <button class="demo-btn demo-btn-secondary">Secondary</button>
+            <button class="demo-btn demo-btn-ghost">Ghost</button>
+            <button class="demo-btn demo-btn-danger">Danger</button>
+            <button class="demo-btn demo-btn-primary" disabled>Disabled</button>
+          </div>
+          <div style="padding:14px 20px; background:var(--bg3); border-top:1px solid var(--border); display:flex; gap:14px; flex-wrap:wrap; align-items:center;">
+            <span style="font-family:'DM Mono',monospace; font-size:11px; color:var(--text-muted)">variant</span>
+            <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text-dim);cursor:pointer"><input type="radio" name="btn-v" checked> primary</label>
+            <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text-dim);cursor:pointer"><input type="radio" name="btn-v"> secondary</label>
+            <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text-dim);cursor:pointer"><input type="radio" name="btn-v"> ghost</label>
+            <label style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text-dim);cursor:pointer"><input type="radio" name="btn-v"> danger</label>
+          </div>
+        </div>
+
+        <div id="btn-code" class="story-tab-content">
+          <pre><button class="code-copy" onclick="copyCode(this,'')">copy</button><span class="token-comment">// Button.stories.tsx</span>
+<span class="token-import">import</span> type { Meta, StoryObj } <span class="token-import">from</span> <span class="token-string">'@storybook/react'</span>
+<span class="token-import">import</span> { Button } <span class="token-import">from</span> <span class="token-string">'./Button'</span>
+
+<span class="token-keyword">const</span> meta: Meta&lt;<span class="token-component">typeof Button</span>&gt; = {
+  <span class="token-attr">title</span>: <span class="token-string">'Components/Button'</span>,
+  <span class="token-attr">component</span>: Button,
+  <span class="token-attr">args</span>: { <span class="token-prop">children</span>: <span class="token-string">'Click me'</span> },
+  <span class="token-attr">argTypes</span>: {
+    <span class="token-prop">variant</span>: {
+      <span class="token-attr">control</span>: <span class="token-string">'select'</span>,
+      <span class="token-attr">options</span>: [<span class="token-string">'primary'</span>, <span class="token-string">'secondary'</span>, <span class="token-string">'ghost'</span>, <span class="token-string">'danger'</span>],
+    },
+    <span class="token-prop">disabled</span>: { <span class="token-attr">control</span>: <span class="token-string">'boolean'</span> },
+  },
+}
+<span class="token-keyword">export default</span> meta
+
+<span class="token-keyword">export const</span> Primary: Story = {
+  <span class="token-attr">args</span>: { <span class="token-prop">variant</span>: <span class="token-string">'primary'</span> }
+}
+<span class="token-keyword">export const</span> AllVariants: Story = {
+  <span class="token-attr">render</span>: () => (
+    &lt;<span class="token-component">div</span> <span class="token-prop">style</span>={{ <span class="token-attr">display</span>: <span class="token-string">'flex'</span>, <span class="token-attr">gap</span>: <span class="token-string">'8px'</span> }}&gt;
+      {[<span class="token-string">'primary'</span>, <span class="token-string">'secondary'</span>, <span class="token-string">'ghost'</span>, <span class="token-string">'danger'</span>].map(v => (
+        &lt;<span class="token-component">Button</span> <span class="token-prop">key</span>={v} <span class="token-prop">variant</span>={v}&gt;{v}&lt;/<span class="token-component">Button</span>&gt;
+      ))}
+    &lt;/<span class="token-component">div</span>&gt;
+  )
+}</pre>
+        </div>
+
+        <div id="btn-props" class="story-tab-content">
+          <table class="props-table">
+            <thead>
+              <tr>
+                <th>Prop</th>
+                <th>Type</th>
+                <th>Default</th>
+                <th>Required</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span class="prop-name">variant</span></td>
+                <td><span class="prop-type">'primary' | 'secondary' | 'ghost' | 'danger'</span></td>
+                <td><span class="prop-default">'primary'</span></td>
+                <td></td>
+                <td style="color:var(--text-muted);font-size:12px">Visual style variant of the button</td>
+              </tr>
+              <tr>
+                <td><span class="prop-name">size</span></td>
+                <td><span class="prop-type">'sm' | 'md' | 'lg'</span></td>
+                <td><span class="prop-default">'md'</span></td>
+                <td></td>
+                <td style="color:var(--text-muted);font-size:12px">Controls padding and font size</td>
+              </tr>
+              <tr>
+                <td><span class="prop-name">disabled</span></td>
+                <td><span class="prop-type">boolean</span></td>
+                <td><span class="prop-default">false</span></td>
+                <td></td>
+                <td style="color:var(--text-muted);font-size:12px">Disables interaction and reduces opacity</td>
+              </tr>
+              <tr>
+                <td><span class="prop-name">loading</span></td>
+                <td><span class="prop-type">boolean</span></td>
+                <td><span class="prop-default">false</span></td>
+                <td></td>
+                <td style="color:var(--text-muted);font-size:12px">Shows spinner and disables interaction</td>
+              </tr>
+              <tr>
+                <td><span class="prop-name">onClick</span></td>
+                <td><span class="prop-type">() => void</span></td>
+                <td><span class="prop-default">—</span></td>
+                <td></td>
+                <td style="color:var(--text-muted);font-size:12px">Click handler callback</td>
+              </tr>
+              <tr>
+                <td><span class="prop-name">children</span></td>
+                <td><span class="prop-type">ReactNode</span></td>
+                <td><span class="prop-default">—</span></td>
+                <td><span class="prop-required">required</span></td>
+                <td style="color:var(--text-muted);font-size:12px">Button label or content</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div id="btn-a11y" class="story-tab-content">
+          <div class="a11y-grid">
+            <div class="a11y-item">
+              <div class="a11y-icon a11y-pass">✅</div>
+              <div>
+                <div class="a11y-item-title">Contrast Ratio 4.5:1+</div>
+                <div class="a11y-item-desc">All variants meet WCAG AA minimum contrast requirements for normal text.</div>
+              </div>
+            </div>
+            <div class="a11y-item">
+              <div class="a11y-icon a11y-pass">✅</div>
+              <div>
+                <div class="a11y-item-title">Keyboard Navigable</div>
+                <div class="a11y-item-desc">Receives focus via Tab, activates with Enter and Space keys.</div>
+              </div>
+            </div>
+            <div class="a11y-item">
+              <div class="a11y-icon a11y-pass">✅</div>
+              <div>
+                <div class="a11y-item-title">Focus Indicator</div>
+                <div class="a11y-item-desc">Visible focus ring with 3px offset on all interactive states.</div>
+              </div>
+            </div>
+            <div class="a11y-item">
+              <div class="a11y-icon a11y-warn">⚠️</div>
+              <div>
+                <div class="a11y-item-title">Icon-Only Buttons</div>
+                <div class="a11y-item-desc">Must include aria-label when no text label is visible.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="btn-dos" class="story-tab-content">
+          <div class="dos-donts">
+            <div class="do-card do">
+              <div class="do-title do">✓ Do</div>
+              <ul class="do-list">
+                <li>✓ Use clear, action-oriented labels ("Save changes")</li>
+                <li>✓ Use primary variant for the main CTA only</li>
+                <li>✓ Include loading state for async operations</li>
+                <li>✓ Keep button text concise — 1–3 words ideal</li>
+                <li>✓ Pair icon + text for better recognition</li>
+              </ul>
+            </div>
+            <div class="do-card dont">
+              <div class="do-title dont">✕ Don't</div>
+              <ul class="do-list">
+                <li>✕ Use more than one primary button per view</li>
+                <li>✕ Use vague labels like "Click here" or "Submit"</li>
+                <li>✕ Disable without explaining why in nearby text</li>
+                <li>✕ Use danger variant for standard destructive flows</li>
+                <li>✕ Place icon after text (icons lead, text follows)</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <hr class="section-divider">
+
+    <!-- BADGE -->
+    <div class="section" id="badge">
+      <div class="section-header">
+        <h2>🏷️ Badge</h2>
+        <p>Status indicators and labels. Used for counts, statuses, and categorical labeling.</p>
+      </div>
+
+      <div class="story-card">
+        <div class="story-card-header">
+          <span class="story-card-title">All Variants</span>
+          <span class="tag tag-component">Component</span>
+        </div>
+        <div class="story-preview">
+          <span class="demo-badge badge-default">Default</span>
+          <span class="demo-badge badge-success">✓ Active</span>
+          <span class="demo-badge badge-warning">⚠ Pending</span>
+          <span class="demo-badge badge-danger">✕ Failed</span>
+          <span class="demo-badge badge-info">● Beta</span>
+        </div>
+      </div>
+    </div>
+
+    <hr class="section-divider">
+
+    <!-- INPUT -->
+    <div class="section" id="inputs">
+      <div class="section-header">
+        <h2>📝 Input</h2>
+        <p>Text input fields with validation states, labels, and helper text.</p>
+      </div>
+
+      <div class="story-card">
+        <div class="story-card-header">
+          <span class="story-card-title">States</span>
+          <div class="story-card-meta">
+            <span class="tag tag-component">Component</span>
+            <span class="tag tag-a11y">WCAG AA</span>
+          </div>
+        </div>
+        <div class="story-preview" style="flex-direction:column; align-items:flex-start; gap:16px; padding:28px 28px;">
+          <div style="display:flex;flex-direction:column;gap:5px">
+            <label style="font-size:12px;font-weight:500;color:var(--text-dim)">Default</label>
+            <input class="demo-input" placeholder="Enter a value...">
+          </div>
+          <div style="display:flex;flex-direction:column;gap:5px">
+            <label style="font-size:12px;font-weight:500;color:var(--text-dim)">Focused (click to try)</label>
+            <input class="demo-input" value="Some entered value">
+          </div>
+          <div style="display:flex;flex-direction:column;gap:5px">
+            <label style="font-size:12px;font-weight:500;color:var(--danger)">Error state</label>
+            <input class="demo-input error" value="invalid@">
+            <span style="font-size:11.5px;color:var(--danger)">Please enter a valid email address.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <hr class="section-divider">
+
+    <!-- CARDS -->
+    <div class="section" id="cards">
+      <div class="section-header">
+        <h2>🃏 Card</h2>
+        <p>Content container with elevation, hover states, and compositional slots.</p>
+      </div>
+
+      <div class="story-card">
+        <div class="story-card-header">
+          <span class="story-card-title">Default Card</span>
+          <span class="tag tag-story">new</span>
+        </div>
+        <div class="story-preview">
+          <div class="demo-card">
+            <div class="demo-card-icon">🚀</div>
+            <div class="demo-card-title">Launch Ready</div>
+            <div class="demo-card-desc">Everything is configured and ready to ship to production.</div>
+          </div>
+          <div class="demo-card">
+            <div class="demo-card-icon">⚡</div>
+            <div class="demo-card-title">Fast Performance</div>
+            <div class="demo-card-desc">Optimized rendering with virtualization support built in.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <hr class="section-divider">
+
+    <!-- AVATAR + TOGGLE -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:48px">
+      <div class="section" id="avatar" style="margin-bottom:0">
+        <h2>👤 Avatar</h2>
+        <div class="story-card" style="margin-top:16px">
+          <div class="story-preview">
+            <div class="demo-avatar avatar-lg avatar-a">AS</div>
+            <div class="demo-avatar avatar-md avatar-b">JK</div>
+            <div class="demo-avatar avatar-sm avatar-c">MR</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="section" id="toggle" style="margin-bottom:0">
+        <h2>🔘 Toggle</h2>
+        <div class="story-card" style="margin-top:16px">
+          <div class="story-preview" style="gap:20px">
+            <label class="demo-toggle">
+              <input type="checkbox">
+              <div class="toggle-track"><div class="toggle-thumb"></div></div>
+            </label>
+            <label class="demo-toggle">
+              <input type="checkbox" checked>
+              <div class="toggle-track"><div class="toggle-thumb"></div></div>
+            </label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <hr class="section-divider">
+
+    <!-- ALERTS -->
+    <div class="section" id="alerts">
+      <div class="section-header">
+        <h2>🔔 Alert</h2>
+        <p>Contextual feedback messages for user actions and system states.</p>
+      </div>
+
+      <div class="story-card">
+        <div class="story-card-header">
+          <span class="story-card-title">All States</span>
+          <span class="tag tag-a11y">role="alert"</span>
+        </div>
+        <div class="story-preview" style="flex-direction:column; align-items:stretch; padding:20px 24px; gap:10px;">
+          <div class="demo-alert alert-success" role="alert">✅ <strong>Success!</strong> Your changes were saved successfully.</div>
+          <div class="demo-alert alert-warning" role="alert">⚠️ <strong>Warning:</strong> This action cannot be undone. Please review before proceeding.</div>
+          <div class="demo-alert alert-danger" role="alert">✕ <strong>Error:</strong> Something went wrong. Please try again or contact support.</div>
+          <div class="demo-alert alert-info" role="alert">ℹ️ <strong>Info:</strong> The system will be in maintenance mode from 2–4 AM UTC.</div>
+        </div>
+      </div>
+    </div>
+
+    <hr class="section-divider">
+
+    <!-- ACCESSIBILITY -->
+    <div class="section" id="accessibility">
+      <div class="section-header">
+        <h2>♿ Accessibility Guidelines</h2>
+        <p>All components must meet WCAG 2.1 AA. The a11y addon checks this automatically on every story.</p>
+      </div>
+
+      <div class="a11y-grid" style="margin-bottom:24px">
+        <div class="a11y-item">
+          <div class="a11y-icon a11y-pass">🎯</div>
+          <div>
+            <div class="a11y-item-title">Focus Management</div>
+            <div class="a11y-item-desc">Logical tab order. Focus traps in modals. Return focus on close.</div>
+          </div>
+        </div>
+        <div class="a11y-item">
+          <div class="a11y-icon a11y-pass">🏷️</div>
+          <div>
+            <div class="a11y-item-title">ARIA Labels</div>
+            <div class="a11y-item-desc">All interactive elements have descriptive accessible names.</div>
+          </div>
+        </div>
+        <div class="a11y-item">
+          <div class="a11y-icon a11y-pass">🎨</div>
+          <div>
+            <div class="a11y-item-title">Color Independence</div>
+            <div class="a11y-item-desc">Status never conveyed by color alone — always paired with text or icon.</div>
+          </div>
+        </div>
+        <div class="a11y-item">
+          <div class="a11y-icon a11y-pass">⌨️</div>
+          <div>
+            <div class="a11y-item-title">Keyboard Navigation</div>
+            <div class="a11y-item-desc">Every action achievable by keyboard. No keyboard traps outside modals.</div>
+          </div>
+        </div>
+      </div>
+
+      <pre><button class="code-copy" onclick="copyCode(this,'')">copy</button><span class="token-comment">// Accessibility test with play function</span>
+<span class="token-keyword">export const</span> KeyboardTest: Story = {
+  <span class="token-attr">play</span>: <span class="token-keyword">async</span> ({ canvasElement }) => {
+    <span class="token-keyword">const</span> canvas = within(canvasElement)
+    <span class="token-keyword">const</span> button = canvas.getByRole(<span class="token-string">'button'</span>)
+    <span class="token-keyword">await</span> userEvent.tab()
+    <span class="token-keyword">await</span> expect(button).toHaveFocus()
+    <span class="token-keyword">await</span> userEvent.keyboard(<span class="token-string">'{ }'</span>)
+    <span class="token-keyword">await</span> expect(mockFn).toHaveBeenCalled()
+  },
+}</pre>
+    </div>
+
+    <hr class="section-divider">
+
+    <!-- THEMING -->
+    <div class="section" id="theming">
+      <div class="section-header">
+        <h2>🎨 Theme Customization</h2>
+        <p>Override CSS custom properties to adapt the component library to any brand.</p>
+      </div>
+
+      <pre><button class="code-copy" onclick="copyCode(this,'')">copy</button><span class="token-comment">/* theme.css — Override these to customize */</span>
+:root {
+  <span class="token-comment">/* Brand colors */</span>
+  --color-primary:    <span class="token-string">#7c6af7</span>;
+  --color-primary-hover: <span class="token-string">#9080ff</span>;
+
+  <span class="token-comment">/* Typography */</span>
+  --font-sans:  <span class="token-string">'DM Sans', system-ui, sans-serif</span>;
+  --font-mono:  <span class="token-string">'DM Mono', 'Fira Code', monospace</span>;
+  --font-display: <span class="token-string">'Syne', 'Montserrat', sans-serif</span>;
+
+  <span class="token-comment">/* Radii */</span>
+  --radius-sm: <span class="token-string">4px</span>;
+  --radius:    <span class="token-string">8px</span>;
+  --radius-lg: <span class="token-string">14px</span>;
+  --radius-full: <span class="token-string">9999px</span>;
+
+  <span class="token-comment">/* Shadows */</span>
+  --shadow-sm: <span class="token-string">0 1px 3px rgba(0,0,0,0.3)</span>;
+  --shadow-md: <span class="token-string">0 4px 16px rgba(0,0,0,0.4)</span>;
+  --shadow-lg: <span class="token-string">0 8px 32px rgba(0,0,0,0.5)</span>;
+}</pre>
+
+      <div style="margin-top:20px; padding:16px 20px; background:rgba(124,106,247,0.06); border:1px solid rgba(124,106,247,0.2); border-radius:var(--radius); font-size:13px; color:var(--text-dim);">
+        💡 <strong style="color:var(--text)">Tip:</strong> Use the <code style="font-family:'DM Mono',monospace; font-size:11px; color:var(--accent3)">@storybook/addon-themes</code> addon to let reviewers preview all themes from the Storybook toolbar.
+      </div>
+    </div>
+
+    <hr class="section-divider">
+
+    <!-- DEPLOY -->
+    <div class="section" id="deploy">
+      <div class="section-header">
+        <h2>🚀 Deploy to Chromatic</h2>
+        <p>Chromatic provides visual regression testing and persistent Storybook hosting.</p>
+      </div>
+
+      <div class="setup-steps">
+        <div class="setup-step">
+          <div class="step-num">1</div>
+          <div class="step-content">
+            <div class="step-title">Add Chromatic to CI</div>
+            <pre style="margin-top:8px"><button class="code-copy" onclick="copyCode(this,'')">copy</button><span class="token-comment"># .github/workflows/chromatic.yml</span>
+name: Chromatic
+on: [push]
+jobs:
+  chromatic:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - run: npm ci
+      - uses: chromaui/action@latest
+        with:
+          projectToken: <span class="token-string">${{ secrets.CHROMATIC_PROJECT_TOKEN }}</span>
+          buildScriptName: build-storybook</pre>
+          </div>
+        </div>
+        <div class="setup-step">
+          <div class="step-num">2</div>
+          <div class="step-content">
+            <div class="step-title">Netlify Alternative</div>
+            <pre style="margin-top:8px"><button class="code-copy" onclick="copyCode(this,'')">copy</button><span class="token-comment"># netlify.toml</span>
+[build]
+  command = <span class="token-string">"npm run build-storybook"</span>
+  publish = <span class="token-string">"storybook-static"</span></pre>
+          </div>
+        </div>
+      </div>
+
+      <div style="padding:20px; background:var(--bg2); border:1px solid var(--border); border-radius:var(--radius-lg); margin-top:8px;">
+        <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:15px;color:var(--text);margin-bottom:12px">✅ Acceptance Criteria Checklist</div>
+        <div style="display:grid;gap:8px">
+          <label style="display:flex;gap:8px;align-items:center;font-size:13px;color:var(--text-dim)"><input type="checkbox" checked> All components documented in Storybook</label>
+          <label style="display:flex;gap:8px;align-items:center;font-size:13px;color:var(--text-dim)"><input type="checkbox" checked> Props documented with type and defaults</label>
+          <label style="display:flex;gap:8px;align-items:center;font-size:13px;color:var(--text-dim)"><input type="checkbox" checked> Interactive controls via argTypes</label>
+          <label style="display:flex;gap:8px;align-items:center;font-size:13px;color:var(--text-dim)"><input type="checkbox" checked> Accessibility notes included</label>
+          <label style="display:flex;gap:8px;align-items:center;font-size:13px;color:var(--text-dim)"><input type="checkbox"> Deployed to Chromatic / Netlify</label>
+          <label style="display:flex;gap:8px;align-items:center;font-size:13px;color:var(--text-dim)"><input type="checkbox" checked> Search works in sidebar</label>
+          <label style="display:flex;gap:8px;align-items:center;font-size:13px;color:var(--text-dim)"><input type="checkbox" checked> Storybook 7+ with MDX support</label>
+          <label style="display:flex;gap:8px;align-items:center;font-size:13px;color:var(--text-dim)"><input type="checkbox" checked> a11y addon configured</label>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /content -->
+</main>
+</div><!-- /layout -->
+
+<script>
+function switchTab(el, contentId) {
+  const card = el.closest('.story-card');
+  card.querySelectorAll('.story-tab').forEach(t => t.classList.remove('active'));
+  card.querySelectorAll('.story-tab-content').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById(contentId)?.classList.add('active');
+}
+
+function setActive(el) {
+  document.querySelectorAll('.sidebar-item').forEach(i => i.classList.remove('active'));
+  el.classList.add('active');
+}
+
+function copyCode(btn, text) {
+  const pre = btn.closest('pre');
+  const code = pre.innerText.replace('copy', '').replace('copied', '').trim();
+  navigator.clipboard.writeText(code).then(() => {
+    btn.textContent = 'copied';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'copy'; btn.classList.remove('copied'); }, 1800);
+  });
+}
+
+function filterSidebar(query) {
+  const items = document.querySelectorAll('.sidebar-item');
+  items.forEach(item => {
+    const text = item.textContent.toLowerCase();
+    item.style.display = text.includes(query.toLowerCase()) || !query ? '' : 'none';
+  });
+}
+
+// Intersection observer for active sidebar item
+const sections = document.querySelectorAll('.section[id]');
+const observer = new IntersectionObserver(entries => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      const id = entry.target.id;
+      document.querySelectorAll('.sidebar-item').forEach(item => {
+        item.classList.toggle('active', item.getAttribute('href') === '#' + id);
+      });
+    }
+  });
+}, { threshold: 0.3, rootMargin: '-60px 0px -60% 0px' });
+
+sections.forEach(s => observer.observe(s));
+</script>
+</body>
+</html>
