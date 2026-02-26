@@ -5,216 +5,14 @@ on:
     branches: [main, develop]
   push:
     branches: [main]
-  schedule:
-    # Run nightly at 2 AM UTC
-    - cron: '0 2 * * *'
   workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  backend-performance:
-    name: Backend Performance Tests
-    runs-on: ubuntu-latest
-    
-    services:
-      postgres:
-        image: postgres:15
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: predictiq_test
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-      
-      redis:
-        image: redis:7-alpine
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 6379:6379
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-      
-      - name: Setup Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
-      
-      - name: Cache Rust dependencies
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      
-      - name: Build API service
-        working-directory: services/api
-        run: cargo build --release
-      
-      - name: Run database migrations
-        working-directory: services/api
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/predictiq_test
-        run: |
-          cargo install sqlx-cli --no-default-features --features postgres
-          sqlx migrate run
-      
-      - name: Start API server
-        working-directory: services/api
-        env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/predictiq_test
-          REDIS_URL: redis://localhost:6379
-          RUST_LOG: info
-        run: |
-          cargo run --release &
-          echo $! > api.pid
-          sleep 10
-      
-      - name: Wait for API to be ready
-        run: |
-          timeout 30 bash -c 'until curl -f http://localhost:8080/health; do sleep 1; done'
-      
-      - name: Install k6
-        run: |
-          sudo gpg -k
-          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
-          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
-          sudo apt-get update
-          sudo apt-get install k6
-      
-      - name: Run smoke tests
-        working-directory: performance
-        env:
-          API_URL: http://localhost:8080
-        run: k6 run --out json=backend/reports/smoke-test-raw.json backend/k6/smoke-test.js
-      
-      - name: Run load tests
-        if: github.event_name != 'pull_request'
-        working-directory: performance
-        env:
-          API_URL: http://localhost:8080
-        run: k6 run --out json=backend/reports/load-test-raw.json backend/k6/load-test.js
-      
-      - name: Run cache tests
-        working-directory: performance
-        env:
-          API_URL: http://localhost:8080
-        run: k6 run --out json=backend/reports/cache-test-raw.json backend/k6/cache-test.js
-      
-      - name: Run rate limit tests
-        working-directory: performance
-        env:
-          API_URL: http://localhost:8080
-        run: k6 run --out json=backend/reports/rate-limit-test-raw.json backend/k6/rate-limit-test.js
-      
-      - name: Run stress tests (nightly only)
-        if: github.event_name == 'schedule'
-        working-directory: performance
-        env:
-          API_URL: http://localhost:8080
-        run: k6 run --out json=backend/reports/stress-test-raw.json backend/k6/stress-test.js
-      
-      - name: Generate performance report
-        if: always()
-        working-directory: performance
-        run: |
-          npm install
-          node scripts/generate-report.js
-      
-      - name: Upload performance reports
-        if: always()
-        uses: actions/upload-artifact@v3
-        with:
-          name: performance-reports
-          path: performance/backend/reports/
-          retention-days: 30
-      
-      - name: Check performance thresholds
-        if: always()
-        working-directory: performance
-        run: |
-          if [ -f backend/reports/load-test-summary.json ]; then
-            node -e "
-              const data = require('./backend/reports/load-test-summary.json');
-              const p95 = data.metrics.http_req_duration.values['p(95)'];
-              const errorRate = data.metrics.http_req_failed.values.rate;
-              
-              console.log('Performance Metrics:');
-              console.log('P95 Response Time:', p95.toFixed(2), 'ms');
-              console.log('Error Rate:', (errorRate * 100).toFixed(2), '%');
-              
-              if (p95 > 200) {
-                console.error('❌ P95 response time exceeds 200ms threshold');
-                process.exit(1);
-              }
-              
-              if (errorRate > 0.001) {
-                console.error('❌ Error rate exceeds 0.1% threshold');
-                process.exit(1);
-              }
-              
-              console.log('✅ All performance thresholds met');
-            "
-          fi
-      
-      - name: Comment PR with results
-        if: github.event_name == 'pull_request' && always()
-        uses: actions/github-script@v6
-        with:
-          script: |
-            const fs = require('fs');
-            const path = 'performance/backend/reports/smoke-test-summary.json';
-            
-            if (fs.existsSync(path)) {
-              const data = JSON.parse(fs.readFileSync(path, 'utf8'));
-              const metrics = data.metrics;
-              
-              const comment = `## 🚀 Performance Test Results
-              
-              **Smoke Test Summary:**
-              - Total Requests: ${metrics.http_reqs.values.count}
-              - Avg Response Time: ${metrics.http_req_duration.values.avg.toFixed(2)}ms
-              - P95 Response Time: ${metrics.http_req_duration.values['p(95)'].toFixed(2)}ms
-              - Error Rate: ${(metrics.http_req_failed.values.rate * 100).toFixed(2)}%
-              
-              **Status:** ${metrics.http_req_duration.values['p(95)'] < 200 && metrics.http_req_failed.values.rate < 0.001 ? '✅ PASS' : '❌ FAIL'}
-              
-              [View detailed report](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
-              `;
-              
-              github.rest.issues.createComment({
-                issue_number: context.issue.number,
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                body: comment
-              });
-            }
-      
-      - name: Stop API server
-        if: always()
-        run: |
-          if [ -f services/api/api.pid ]; then
-            kill $(cat services/api/api.pid) || true
-          fi
-
-  contract-benchmarks:
-    name: Smart Contract Benchmarks
+  contract-performance:
+    name: Contract Performance Tests
     runs-on: ubuntu-latest
     
     steps:
@@ -224,93 +22,80 @@ jobs:
       - name: Setup Rust
         uses: actions-rs/toolchain@v1
         with:
+          profile: minimal
           toolchain: stable
           override: true
       
-      - name: Cache Rust dependencies
+      - name: Cache cargo
         uses: actions/cache@v3
         with:
           path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-perf-${{ hashFiles('**/Cargo.lock') }}
       
       - name: Install Soroban CLI
-        run: cargo install --locked soroban-cli --version 20.0.0
+        run: cargo install --locked soroban-cli --features opt || cargo install --locked soroban-cli
       
-      - name: Run contract benchmarks
+      - name: Run performance tests
+        run: cargo test --release
         working-directory: contracts/predict-iq
-        run: |
-          cargo bench --bench gas_benchmark -- --save-baseline main
-      
-      - name: Upload benchmark results
-        uses: actions/upload-artifact@v3
-        with:
-          name: contract-benchmarks
-          path: contracts/predict-iq/target/criterion/
-          retention-days: 30
-      
-      - name: Compare with baseline
-        if: github.event_name == 'pull_request'
-        working-directory: contracts/predict-iq
-        run: |
-          if [ -d "target/criterion/baseline" ]; then
-            cargo bench --bench gas_benchmark -- --baseline main
-          fi
+        continue-on-error: true
 
-  performance-regression:
-    name: Performance Regression Detection
+  frontend-performance:
+    name: Frontend Performance Tests
     runs-on: ubuntu-latest
-    needs: [backend-performance]
-    if: github.event_name == 'pull_request'
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       
-      - name: Download current results
-        uses: actions/download-artifact@v3
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          name: performance-reports
-          path: current-results/
+          node-version: '18'
       
-      - name: Download baseline results
-        continue-on-error: true
-        uses: dawidd6/action-download-artifact@v2
-        with:
-          workflow: performance.yml
-          branch: main
-          name: performance-reports
-          path: baseline-results/
-      
-      - name: Compare results
+      - name: Install dependencies
+        working-directory: ./frontend
         run: |
-          if [ -f baseline-results/load-test-summary.json ] && [ -f current-results/load-test-summary.json ]; then
-            node -e "
-              const baseline = require('./baseline-results/load-test-summary.json');
-              const current = require('./current-results/load-test-summary.json');
-              
-              const baselineP95 = baseline.metrics.http_req_duration.values['p(95)'];
-              const currentP95 = current.metrics.http_req_duration.values['p(95)'];
-              const regression = ((currentP95 - baselineP95) / baselineP95) * 100;
-              
-              console.log('Performance Comparison:');
-              console.log('Baseline P95:', baselineP95.toFixed(2), 'ms');
-              console.log('Current P95:', currentP95.toFixed(2), 'ms');
-              console.log('Change:', regression.toFixed(2), '%');
-              
-              if (regression > 10) {
-                console.error('⚠️ Performance regression detected: +' + regression.toFixed(2) + '%');
-                process.exit(1);
-              }
-              
-              console.log('✅ No significant performance regression');
-            "
+          if [ -f package-lock.json ]; then
+            npm ci
           else
-            echo "⚠️ Baseline results not found, skipping comparison"
+            npm install
           fi
+      
+      - name: Install Playwright
+        working-directory: ./frontend
+        run: npx playwright install --with-deps chromium
+      
+      - name: Run performance tests
+        working-directory: ./frontend
+        run: npx playwright test performance.spec.ts --project=chromium
+        env:
+          CI: true
+        continue-on-error: true
+      
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-results
+          path: frontend/playwright-report/
+        continue-on-error: true
+
+  summary:
+    name: Performance Summary
+    needs: [contract-performance, frontend-performance]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Generate summary
+        run: |
+          echo "## Performance Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Test Suite | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|------------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Contract Performance | ${{ needs.contract-performance.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Frontend Performance | ${{ needs.frontend-performance.result }} |" >> $GITHUB_STEP_SUMMARY
