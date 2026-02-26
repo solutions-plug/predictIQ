@@ -1,0 +1,37 @@
+[build]
+target = "wasm32-unknown-unknown"
+
+[target.wasm32-unknown-unknown]
+rustflags = [
+    "-C", "link-arg=-zstack-size=65536",
+    "-C", "opt-level=z",
+    "-C", "lto=fat",
+    "-C", "codegen-units=1",
+]
+
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = false
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.release-with-logs]
+inherits = "release"
+debug = true
+
+[alias]
+# Test aliases
+test-unit = "test --lib"
+test-integration = "test --test '*'"
+test-all = "test --workspace"
+test-bench = "test --benches"
+
+# Coverage aliases
+cov = "llvm-cov --html --open"
+cov-check = "llvm-cov --fail-under-lines 80"
+
+# Build aliases
+build-opt = "build --target wasm32-unknown-unknown --release"

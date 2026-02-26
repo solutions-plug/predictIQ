@@ -1,0 +1,282 @@
+name: Accessibility Testing
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'frontend/**'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'frontend/**'
+
+env:
+  NODE_VERSION: '18.x'
+
+jobs:
+  jest-axe-tests:
+    name: Jest-Axe Accessibility Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run accessibility tests
+        run: npm run test:a11y
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: jest-axe-results
+          path: frontend/coverage/
+
+  lighthouse-audit:
+    name: Lighthouse Accessibility Audit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Start server
+        run: npm start &
+        env:
+          PORT: 3000
+
+      - name: Wait for server
+        run: npx wait-on http://localhost:3000 --timeout 60000
+
+      - name: Run Lighthouse audit
+        run: npm run lighthouse
+        env:
+          TEST_URL: http://localhost:3000
+
+      - name: Check Lighthouse score
+        run: |
+          SCORE=$(node -e "const report = require('./lighthouse-reports/lighthouse-latest.json'); console.log(report.categories.accessibility.score * 100);")
+          echo "Lighthouse Accessibility Score: $SCORE"
+          if [ "$SCORE" -lt "100" ]; then
+            echo "❌ Lighthouse score below 100"
+            exit 1
+          fi
+          echo "✅ Lighthouse score is 100"
+
+      - name: Upload Lighthouse reports
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: lighthouse-reports
+          path: frontend/lighthouse-reports/
+
+  axe-core-audit:
+    name: Axe-Core Full Page Audit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Start server
+        run: npm start &
+        env:
+          PORT: 3000
+
+      - name: Wait for server
+        run: npx wait-on http://localhost:3000 --timeout 60000
+
+      - name: Run axe-core audit
+        run: npm run axe
+        env:
+          TEST_URL: http://localhost:3000
+
+      - name: Upload axe reports
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: axe-reports
+          path: frontend/axe-reports/
+
+  pa11y-audit:
+    name: Pa11y Accessibility Audit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Start server
+        run: npm start &
+        env:
+          PORT: 3000
+
+      - name: Wait for server
+        run: npx wait-on http://localhost:3000 --timeout 60000
+
+      - name: Run Pa11y audit
+        run: |
+          npx pa11y http://localhost:3000 \
+            --standard WCAG2AA \
+            --reporter json \
+            --threshold 0 \
+            > pa11y-report.json || true
+
+      - name: Check Pa11y results
+        run: |
+          ISSUES=$(node -e "const report = require('./pa11y-report.json'); console.log(report.issues ? report.issues.length : 0);")
+          echo "Pa11y Issues Found: $ISSUES"
+          if [ "$ISSUES" -gt "0" ]; then
+            echo "❌ Pa11y found accessibility issues"
+            cat pa11y-report.json
+            exit 1
+          fi
+          echo "✅ No Pa11y issues found"
+
+      - name: Upload Pa11y report
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: pa11y-report
+          path: frontend/pa11y-report.json
+
+  keyboard-navigation-tests:
+    name: Keyboard Navigation Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run keyboard navigation tests
+        run: npm test -- --testPathPattern="keyboard"
+
+  color-contrast-check:
+    name: Color Contrast Validation
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build application
+        run: npm run build
+
+      - name: Start server
+        run: npm start &
+        env:
+          PORT: 3000
+
+      - name: Wait for server
+        run: npx wait-on http://localhost:3000 --timeout 60000
+
+      - name: Check color contrast
+        run: |
+          npx pa11y http://localhost:3000 \
+            --standard WCAG2AA \
+            --include-notices \
+            --include-warnings \
+            --reporter cli
+
+  all-tests-passed:
+    name: All Accessibility Tests Passed
+    needs:
+      - jest-axe-tests
+      - lighthouse-audit
+      - axe-core-audit
+      - pa11y-audit
+      - keyboard-navigation-tests
+      - color-contrast-check
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Success
+        run: |
+          echo "✅ All accessibility tests passed!"
+          echo "- Jest-Axe tests passed"
+          echo "- Lighthouse score: 100/100"
+          echo "- Axe-core audit passed"
+          echo "- Pa11y audit passed"
+          echo "- Keyboard navigation tests passed"
+          echo "- Color contrast validation passed"

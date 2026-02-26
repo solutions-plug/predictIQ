@@ -1,0 +1,302 @@
+name: Comprehensive Test Suite
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v3
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Soroban CLI
+        run: |
+          cargo install --locked soroban-cli --features opt
+
+      - name: Run unit tests
+        run: cargo test --lib --workspace
+        working-directory: contracts/predict-iq
+
+      - name: Run module tests
+        run: cargo test --lib --features testutils
+        working-directory: contracts/predict-iq
+
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Soroban CLI
+        run: cargo install --locked soroban-cli --features opt
+
+      - name: Run integration tests
+        run: cargo test --test '*' --workspace
+        working-directory: contracts/predict-iq
+
+  gas-benchmarks:
+    name: Gas Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Soroban CLI
+        run: cargo install --locked soroban-cli --features opt
+
+      - name: Run gas benchmarks
+        run: cargo test --benches --features testutils
+        working-directory: contracts/predict-iq
+
+      - name: Check benchmark results
+        run: |
+          echo "Benchmark results:"
+          cat target/criterion/*/report/index.html || echo "No criterion reports found"
+
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov
+
+      - name: Install Soroban CLI
+        run: cargo install --locked soroban-cli --features opt
+
+      - name: Generate coverage
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+        working-directory: contracts/predict-iq
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./contracts/predict-iq/lcov.info
+          fail_ci_if_error: true
+          verbose: true
+
+      - name: Check coverage threshold
+        run: |
+          coverage=$(cargo llvm-cov --workspace --summary-only | grep -oP 'TOTAL.*\K[0-9.]+(?=%)')
+          echo "Coverage: $coverage%"
+          if (( $(echo "$coverage < 80" | bc -l) )); then
+            echo "Coverage $coverage% is below 80% threshold"
+            exit 1
+          fi
+        working-directory: contracts/predict-iq
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Run security audit
+        run: cargo audit
+        working-directory: contracts/predict-iq
+
+  clippy:
+    name: Clippy Lints
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+          components: clippy
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+        working-directory: contracts/predict-iq
+
+  format:
+    name: Code Formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+        working-directory: contracts/predict-iq
+
+  snapshot-tests:
+    name: Snapshot Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      - name: Install Soroban CLI
+        run: cargo install --locked soroban-cli --features opt
+
+      - name: Run snapshot tests
+        run: cargo test --features testutils
+        working-directory: contracts/predict-iq
+
+      - name: Check for snapshot changes
+        run: |
+          if git diff --exit-code test_snapshots/; then
+            echo "Snapshots are up to date"
+          else
+            echo "Snapshot changes detected - review carefully"
+            git diff test_snapshots/
+            exit 1
+          fi
+        working-directory: contracts/predict-iq
+
+  build-optimized:
+    name: Build Optimized Contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+          target: wasm32-unknown-unknown
+
+      - name: Install Soroban CLI
+        run: cargo install --locked soroban-cli --features opt
+
+      - name: Build optimized WASM
+        run: cargo build --target wasm32-unknown-unknown --release
+        working-directory: contracts/predict-iq
+
+      - name: Optimize WASM
+        run: |
+          soroban contract optimize \
+            --wasm target/wasm32-unknown-unknown/release/predict_iq.wasm \
+            --wasm-out target/wasm32-unknown-unknown/release/predict_iq_optimized.wasm
+        working-directory: contracts/predict-iq
+
+      - name: Check WASM size
+        run: |
+          size=$(stat -f%z target/wasm32-unknown-unknown/release/predict_iq_optimized.wasm 2>/dev/null || stat -c%s target/wasm32-unknown-unknown/release/predict_iq_optimized.wasm)
+          echo "Optimized WASM size: $size bytes"
+          max_size=65536  # 64KB limit
+          if [ $size -gt $max_size ]; then
+            echo "WASM size $size exceeds limit of $max_size bytes"
+            exit 1
+          fi
+        working-directory: contracts/predict-iq
+
+  all-tests-passed:
+    name: All Tests Passed
+    needs:
+      - unit-tests
+      - integration-tests
+      - gas-benchmarks
+      - coverage
+      - security-audit
+      - clippy
+      - format
+      - snapshot-tests
+      - build-optimized
+    runs-on: ubuntu-latest
+    steps:
+      - name: Success
+        run: echo "All tests passed successfully!"

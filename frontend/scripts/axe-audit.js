@@ -1,0 +1,138 @@
+const { AxePuppeteer } = require('@axe-core/puppeteer');
+const puppeteer = require('puppeteer');
+const fs = require('fs');
+const path = require('path');
+
+/**
+ * Axe-core Accessibility Audit Script
+ * Comprehensive WCAG 2.1 AA validation
+ */
+
+const URL = process.env.TEST_URL || 'http://localhost:3000';
+const WCAG_LEVEL = 'wcag2aa'; // or 'wcag21aa'
+
+async function runAxeAudit() {
+  console.log('🔍 Starting Axe-core Accessibility Audit...\n');
+  console.log(`Testing URL: ${URL}`);
+  console.log(`WCAG Level: ${WCAG_LEVEL}\n`);
+
+  let browser;
+  let violations = [];
+
+  try {
+    // Launch browser
+    browser = await puppeteer.launch({
+      headless: 'new',
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    });
+
+    const page = await browser.newPage();
+    await page.setBypassCSP(true);
+
+    // Navigate to page
+    console.log('Loading page...');
+    await page.goto(URL, { waitUntil: 'networkidle0' });
+
+    // Run axe
+    console.log('Running axe-core analysis...\n');
+    const results = await new AxePuppeteer(page)
+      .withTags([WCAG_LEVEL, 'best-practice'])
+      .analyze();
+
+    violations = results.violations;
+
+    // Save results
+    const reportsDir = path.join(__dirname, '../axe-reports');
+    if (!fs.existsSync(reportsDir)) {
+      fs.mkdirSync(reportsDir, { recursive: true });
+    }
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    fs.writeFileSync(
+      path.join(reportsDir, `axe-report-${timestamp}.json`),
+      JSON.stringify(results, null, 2)
+    );
+
+    console.log(`📊 Report saved to: ${reportsDir}\n`);
+
+    // Display results
+    console.log('='.repeat(60));
+    console.log('AXE-CORE ACCESSIBILITY AUDIT RESULTS');
+    console.log('='.repeat(60));
+    console.log(`\nViolations Found: ${violations.length}`);
+    console.log(`Passes: ${results.passes.length}`);
+    console.log(`Incomplete: ${results.incomplete.length}\n`);
+
+    if (violations.length === 0) {
+      console.log('✅ No accessibility violations found!');
+      console.log('='.repeat(60));
+      return true;
+    }
+
+    // Group violations by impact
+    const critical = violations.filter(v => v.impact === 'critical');
+    const serious = violations.filter(v => v.impact === 'serious');
+    const moderate = violations.filter(v => v.impact === 'moderate');
+    const minor = violations.filter(v => v.impact === 'minor');
+
+    console.log('VIOLATIONS BY IMPACT:');
+    console.log(`  🔴 Critical: ${critical.length}`);
+    console.log(`  🟠 Serious: ${serious.length}`);
+    console.log(`  🟡 Moderate: ${moderate.length}`);
+    console.log(`  🟢 Minor: ${minor.length}\n`);
+
+    // Display detailed violations
+    console.log('DETAILED VIOLATIONS:');
+    console.log('-'.repeat(60));
+
+    violations.forEach((violation, index) => {
+      const impactEmoji = {
+        critical: '🔴',
+        serious: '🟠',
+        moderate: '🟡',
+        minor: '🟢',
+      }[violation.impact] || '⚪';
+
+      console.log(`\n${index + 1}. ${impactEmoji} ${violation.id.toUpperCase()}`);
+      console.log(`   Impact: ${violation.impact}`);
+      console.log(`   Description: ${violation.description}`);
+      console.log(`   Help: ${violation.help}`);
+      console.log(`   WCAG: ${violation.tags.filter(t => t.startsWith('wcag')).join(', ')}`);
+      console.log(`   Affected elements: ${violation.nodes.length}`);
+
+      violation.nodes.forEach((node, nodeIndex) => {
+        console.log(`\n   Element ${nodeIndex + 1}:`);
+        console.log(`     HTML: ${node.html.substring(0, 100)}...`);
+        console.log(`     Target: ${node.target.join(' > ')}`);
+        console.log(`     Fix: ${node.failureSummary}`);
+      });
+    });
+
+    console.log('\n' + '='.repeat(60));
+    console.log('❌ FAILED: Accessibility violations found!');
+    console.log('='.repeat(60));
+
+    return false;
+  } catch (error) {
+    console.error('❌ Error running axe audit:', error);
+    return false;
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+  }
+}
+
+// Run audit if executed directly
+if (require.main === module) {
+  runAxeAudit()
+    .then(passed => {
+      process.exit(passed ? 0 : 1);
+    })
+    .catch(error => {
+      console.error('Fatal error:', error);
+      process.exit(1);
+    });
+}
+
+module.exports = { runAxeAudit };
