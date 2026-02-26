@@ -48,22 +48,33 @@ make test
 
 ```
 PredictIQ/
+├── .archive/                 # Historical documentation
+├── .github/                  # GitHub templates and workflows
+│   ├── PULL_REQUEST_TEMPLATE.md
+│   └── workflows/
 ├── contracts/
 │   └── predict-iq/           # Main prediction market contract
 │       ├── src/              # Contract source code
 │       └── Makefile          # Build and test commands
 ├── docs/                     # Comprehensive documentation
-│   ├── api/                  # API reference
-│   ├── contracts/            # Contract-specific docs
+│   ├── README.md             # Documentation index
 │   ├── gas/                  # Gas optimization guides
-│   ├── operations/           # Deployment and operations
-│   └── security/             # Security documentation
-├── Cargo.toml                # Workspace configuration
-└── README.md                 # This file
+│   ├── security/             # Security documentation
+│   └── quick-reference/      # Quick reference guides
+├── tests/                    # Test files
+├── README.md                 # This file
+├── CONTRIBUTING.md           # Contribution guidelines
+├── DEVELOPMENT.md            # Development setup guide
+├── ARCHITECTURE.md           # System architecture
+├── API_SPEC.md               # API specification
+├── CHANGELOG.md              # Version history
+└── Cargo.toml                # Workspace configuration
 ```
 
 **Key Components:**
-- **`predict-iq`**: Main prediction market contract with oracle integration, voting, disputes, and governance
+- **`contracts/predict-iq/`**: Main prediction market contract with oracle integration, voting, disputes, and governance
+- **`docs/`**: Organized documentation by category
+- **`.archive/`**: Historical documentation for reference
 
 ---
 
@@ -289,32 +300,39 @@ soroban contract inspect \
 
 ## 📚 Documentation
 
-### Quick Links
+### 🔗 Quick Links
 
-- **[📖 Documentation Index](./docs/README.md)** - Complete documentation overview
-- **[🚀 API Documentation](./docs/api/API_DOCUMENTATION.md)** - Complete API reference and integration guides
-- **[📋 Contract README](./contracts/predict-iq/README.md)** - Detailed contract documentation
+| Document | Description |
+|----------|-------------|
+| **[📖 Documentation Index](./docs/README.md)** | Complete documentation overview |
+| **[🚀 Getting Started](./DEVELOPMENT.md)** | Development setup and workflows |
+| **[🤝 Contributing](./CONTRIBUTING.md)** | Contribution guidelines |
+| **[🏗️ Architecture](./ARCHITECTURE.md)** | System design and architecture |
+| **[📋 API Specification](./API_SPEC.md)** | API reference and integration |
+| **[📝 Changelog](./CHANGELOG.md)** | Version history and changes |
 
-### Documentation Categories
+### Documentation by Category
 
-#### 🔒 Security
-- **[Security Best Practices](./docs/security/SECURITY_BEST_PRACTICES.md)** - Development security guidelines
-- **[Attack Vectors](./docs/security/ATTACK-VECTORS.md)** - Known threats and mitigations
-- **[Audit Checklist](./docs/security/AUDIT_CHECKLIST.md)** - Security audit requirements
-- **[Security Testing Guide](./docs/security/SECURITY_TESTING_GUIDE.md)** - Security testing procedures
+#### 🚀 Getting Started
+- **[Development Guide](./DEVELOPMENT.md)** - Complete setup instructions
+- **[Quick Start](./docs/quick-reference/QUICK_START.md)** - Get up and running quickly
+- **[Contributing Guidelines](./CONTRIBUTING.md)** - How to contribute
+
+#### 🏗️ Architecture & Design
+- **[Architecture Overview](./ARCHITECTURE.md)** - System design and components
+- **[API Specification](./API_SPEC.md)** - Complete API reference
 
 #### ⛽ Gas Optimization
-- **[Gas Optimization](./docs/gas/GAS_OPTIMIZATION.md)** - Optimization strategies
-- **[Gas Cost Analysis](./docs/gas/GAS_COST_ANALYSIS.md)** - Detailed cost breakdown
-- **[Gas Monitoring](./docs/gas/GAS_MONITORING.md)** - Monitoring tools and techniques
-- **[Gas Benchmarking](./docs/gas/GAS_BENCHMARKING.md)** - Performance benchmarks
+- **[Gas Optimization Guide](./docs/gas/GAS_OPTIMIZATION.md)** - Optimization strategies
+- **[Quick Start Gas Optimization](./docs/gas/QUICK_START_GAS_OPTIMIZATION.md)** - Quick tips
 
-#### 🛠️ Operations
-- **[Incident Response](./docs/operations/INCIDENT_RESPONSE.md)** - Incident management procedures
+#### 🔒 Security
+- **[Multisig Emergency Pause](./docs/security/MULTISIG_EMERGENCY_PAUSE.md)** - Emergency controls
+- **[Security Best Practices](./ARCHITECTURE.md#security-architecture)** - Security guidelines
 
-#### 📋 Contracts
-- **[Types System](./docs/contracts/TYPES_SYSTEM.md)** - Data structures and types
-- **[Voting System](./docs/contracts/VOTING_SYSTEM.md)** - Voting and dispute resolution
+#### 📚 Reference
+- **[Quick Reference Guides](./docs/quick-reference/)** - Command references and cheat sheets
+- **[Contract Documentation](./contracts/predict-iq/README.md)** - Detailed contract docs
 
 ---
 
