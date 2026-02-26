@@ -4,3 +4,10 @@
 .env.*
 !.env.example
 .kiro/
+
+# E2E Test Artifacts
+frontend/playwright-report/
+frontend/test-results/
+frontend/.playwright/
+frontend/playwright/.cache/
+

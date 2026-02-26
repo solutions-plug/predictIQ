@@ -13,10 +13,22 @@
     "test:coverage": "jest --coverage",
     "test:a11y": "jest --testPathPattern=accessibility",
     "test:ci": "jest --ci --coverage --maxWorkers=2",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:headed": "playwright test --headed",
+    "test:e2e:debug": "playwright test --debug",
+    "test:e2e:chrome": "playwright test --project=chromium",
+    "test:e2e:firefox": "playwright test --project=firefox",
+    "test:e2e:safari": "playwright test --project=webkit",
+    "test:e2e:mobile": "playwright test --project=mobile-chrome --project=mobile-safari",
+    "test:e2e:ci": "node scripts/run-e2e-tests.js",
+    "test:e2e:report": "playwright show-report",
+    "test:all": "npm run test && npm run test:e2e",
     "lighthouse": "node scripts/lighthouse-audit.js",
     "axe": "node scripts/axe-audit.js",
     "a11y:manual": "node scripts/manual-testing-checklist.js",
-    "a11y:all": "npm run test:a11y && npm run lighthouse && npm run axe"
+    "a11y:all": "npm run test:a11y && npm run lighthouse && npm run axe",
+    "playwright:install": "playwright install --with-deps"
   },
   "dependencies": {
     "next": "^14.0.0",
@@ -25,6 +37,7 @@
   },
   "devDependencies": {
     "@axe-core/react": "^4.8.0",
+    "@playwright/test": "^1.40.0",
     "@testing-library/jest-dom": "^6.1.5",
     "@testing-library/react": "^14.1.2",
     "@testing-library/user-event": "^14.5.1",
