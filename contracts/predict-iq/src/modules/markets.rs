@@ -24,14 +24,29 @@ pub fn create_market(
 ) -> Result<u64, ErrorCode> {
     creator.require_auth();
 
+    crate::modules::circuit_breaker::require_closed(e)?;
+
     // Gas optimization: Limit number of outcomes to prevent excessive iteration
+    if options.len() < 2 {
+        return Err(ErrorCode::InvalidOutcome);
+    }
     if options.len() > crate::types::MAX_OUTCOMES_PER_MARKET {
         return Err(ErrorCode::TooManyOutcomes);
+    }
+
+    // Validate deadlines
+    if deadline <= e.ledger().timestamp() || resolution_deadline <= deadline {
+        return Err(ErrorCode::InvalidDeadline);
     }
 
     // Validate parent market if this is a conditional market
     if parent_id > 0 {
         let parent_market = get_market(e, parent_id).ok_or(ErrorCode::MarketNotFound)?;
+
+        // Validate parent_outcome_idx is within parent's options range
+        if parent_outcome_idx >= parent_market.options.len() {
+            return Err(ErrorCode::InvalidOutcome);
+        }
 
         // Parent must be resolved
         if parent_market.status != MarketStatus::Resolved {
@@ -44,11 +59,6 @@ pub fn create_market(
             .ok_or(ErrorCode::ParentMarketNotResolved)?;
         if parent_winning_outcome != parent_outcome_idx {
             return Err(ErrorCode::ParentMarketInvalidOutcome);
-        }
-
-        // Validate parent_outcome_idx is within parent's options range
-        if parent_outcome_idx >= parent_market.options.len() {
-            return Err(ErrorCode::InvalidOutcome);
         }
     }
 
@@ -107,6 +117,7 @@ pub fn create_market(
         outcome_stakes: soroban_sdk::Map::new(e),
         pending_resolution_timestamp: None,
         dispute_snapshot_ledger: None,
+        dispute_timestamp: None,
     };
 
     e.storage()
@@ -247,15 +258,15 @@ pub fn prune_market(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
 
     // Market must be resolved
     if market.status != MarketStatus::Resolved {
-        return Err(ErrorCode::MarketNotActive);
+        return Err(ErrorCode::MarketNotResolved);
     }
 
     // Check if 30 days have passed since resolution
-    let resolved_at = market.resolved_at.ok_or(ErrorCode::MarketNotActive)?;
+    let resolved_at = market.resolved_at.ok_or(ErrorCode::MarketNotResolved)?;
     let current_time = e.ledger().timestamp();
     
     if current_time < resolved_at + PRUNE_GRACE_PERIOD {
-        return Err(ErrorCode::MarketNotActive);
+        return Err(ErrorCode::GracePeriodActive);
     }
 
     // Remove market from persistent storage

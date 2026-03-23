@@ -33,6 +33,7 @@ pub struct Market {
     pub outcome_stakes: Map<u32, i128>, // Stake per outcome
     pub pending_resolution_timestamp: Option<u64>, // Timestamp when resolution was initiated
     pub dispute_snapshot_ledger: Option<u32>, // Ledger sequence for snapshot voting
+    pub dispute_timestamp: Option<u64>, // Timestamp when dispute was filed
 }
 
 #[contracttype]
@@ -92,6 +93,8 @@ pub struct OracleConfig {
     pub oracle_address: Address,
     pub feed_id: String,
     pub min_responses: Option<u32>, // Optimized: None defaults to 1
+    pub max_staleness_seconds: i64, // Max age of price data in seconds
+    pub max_confidence_bps: u64,    // Max confidence interval in basis points
 }
 
 // Gas optimization constants
@@ -111,6 +114,7 @@ pub enum ConfigKey {
     GuardianSet,
     PendingUpgrade,
     UpgradeVotes,
+    GovernanceToken,
 }
 
 #[contracttype]

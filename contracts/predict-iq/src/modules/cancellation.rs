@@ -69,7 +69,7 @@ pub fn withdraw_refund(e: &Env, bettor: Address, market_id: u64) -> Result<i128,
     let market = markets::get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
     
     if market.status != MarketStatus::Cancelled {
-        return Err(ErrorCode::MarketNotCancelled);
+        return Err(ErrorCode::MarketNotActive);
     }
     
     let bet_key = crate::modules::bets::DataKey::Bet(market_id, bettor.clone());

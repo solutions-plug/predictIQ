@@ -98,6 +98,22 @@
                     },
                     {
                       "key": {
+                        "symbol": "max_confidence_bps"
+                      },
+                      "val": {
+                        "u64": 100
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "max_staleness_seconds"
+                      },
+                      "val": {
+                        "i64": 3600
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "min_responses"
                       },
                       "val": {
@@ -123,6 +139,12 @@
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                },
+                {
+                  "u64": 0
+                },
+                {
+                  "u32": 0
                 }
               ]
             }
@@ -413,6 +435,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "dispute_snapshot_ledger"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
+                        "symbol": "dispute_timestamp"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
                         "symbol": "id"
                       },
                       "val": {
@@ -450,6 +484,22 @@
                           },
                           {
                             "key": {
+                              "symbol": "max_confidence_bps"
+                            },
+                            "val": {
+                              "u64": 100
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "max_staleness_seconds"
+                            },
+                            "val": {
+                              "i64": 3600
+                            }
+                          },
+                          {
+                            "key": {
                               "symbol": "min_responses"
                             },
                             "val": {
@@ -469,6 +519,30 @@
                     },
                     {
                       "key": {
+                        "symbol": "outcome_stakes"
+                      },
+                      "val": {
+                        "map": []
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "parent_id"
+                      },
+                      "val": {
+                        "u64": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "parent_outcome_idx"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "payout_mode"
                       },
                       "val": {
@@ -481,11 +555,23 @@
                     },
                     {
                       "key": {
+                        "symbol": "pending_resolution_timestamp"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
                         "symbol": "resolution_deadline"
                       },
                       "val": {
                         "u64": 2000
                       }
+                    },
+                    {
+                      "key": {
+                        "symbol": "resolved_at"
+                      },
+                      "val": "void"
                     },
                     {
                       "key": {
@@ -513,6 +599,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "token_address"
+                      },
+                      "val": {
+                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM"
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "total_staked"
                       },
                       "val": {
@@ -534,7 +628,7 @@
             },
             "ext": "v0"
           },
-          4095
+          518400
         ]
       ],
       [

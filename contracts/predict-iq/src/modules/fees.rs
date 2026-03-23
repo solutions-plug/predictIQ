@@ -1,7 +1,7 @@
 use crate::errors::ErrorCode;
 use crate::modules::admin;
 use crate::types::{ConfigKey, MarketTier};
-use soroban_sdk::{contracttype, Address, Env};
+use soroban_sdk::{contracttype, symbol_short, Address, Env, Symbol};
 
 #[contracttype]
 pub enum DataKey {
@@ -59,7 +59,6 @@ pub fn collect_fee(e: &Env, token: Address, amount: i128) {
         .set(&DataKey::TotalFeesCollected, &overall);
 
     // Emit standardized fee collection event using soroban_sdk
-    use soroban_sdk::symbol_short;
     e.events().publish((symbol_short!("fee_colct"),), amount);
 }
 

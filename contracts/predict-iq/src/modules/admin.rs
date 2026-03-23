@@ -11,7 +11,7 @@ pub fn get_admin(e: &Env) -> Option<Address> {
 }
 
 pub fn require_admin(e: &Env) -> Result<(), ErrorCode> {
-    let admin: Address = get_admin(e).ok_or(ErrorCode::AdminNotSet)?;
+    let admin: Address = get_admin(e).ok_or(ErrorCode::NotAuthorized)?;
     admin.require_auth();
     Ok(())
 }
@@ -51,7 +51,7 @@ pub fn get_guardian(e: &Env) -> Option<Address> {
 }
 
 pub fn require_guardian(e: &Env) -> Result<(), ErrorCode> {
-    let guardian: Address = get_guardian(e).ok_or(ErrorCode::GuardianNotSet)?;
+    let guardian: Address = get_guardian(e).ok_or(ErrorCode::NotAuthorized)?;
     guardian.require_auth();
     Ok(())
 }

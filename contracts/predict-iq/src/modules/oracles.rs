@@ -1,6 +1,6 @@
 use crate::errors::ErrorCode;
 use crate::types::OracleConfig;
-use soroban_sdk::{contracttype, Env};
+use soroban_sdk::{contracttype, symbol_short, Env, Symbol};
 
 #[contracttype]
 pub enum OracleData {

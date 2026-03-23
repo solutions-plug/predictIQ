@@ -29,6 +29,7 @@ pub fn file_dispute(e: &Env, disciplinarian: Address, market_id: u64) -> Result<
     }
 
     market.status = MarketStatus::Disputed;
+    market.dispute_timestamp = Some(e.ledger().timestamp());
     // Extend resolution deadline for voting period
     market.resolution_deadline += 86400 * 3; // 3 days extension
     let new_deadline = market.resolution_deadline;

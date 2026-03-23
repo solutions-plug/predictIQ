@@ -32,10 +32,7 @@ pub fn get_state(e: &Env) -> CircuitBreakerState {
 
 pub fn require_closed(e: &Env) -> Result<(), ErrorCode> {
     let state = get_state(e);
-    if state == CircuitBreakerState::Open {
-        return Err(ErrorCode::CircuitBreakerOpen);
-    }
-    if state == CircuitBreakerState::Paused {
+    if state == CircuitBreakerState::Open || state == CircuitBreakerState::Paused {
         return Err(ErrorCode::ContractPaused);
     }
     Ok(())
