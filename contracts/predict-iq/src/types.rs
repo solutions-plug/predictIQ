@@ -71,9 +71,11 @@ pub struct Bet {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Vote {
-    pub market_id: u64,
-    pub voter: Address,
+    /// The outcome index this vote is cast for.
     pub outcome: u32,
+    /// Voting weight (token balance at snapshot or locked amount).
+    /// `market_id` and `voter` are omitted — they are already encoded in
+    /// `DataKey::Vote(market_id, voter)` and repeating them wastes gas.
     pub weight: i128,
 }
 

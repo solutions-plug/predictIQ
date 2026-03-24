@@ -1350,3 +1350,129 @@ fn test_vote_on_upgrade_refreshes_ttl() {
     let (votes_for, _) = client.get_upgrade_votes().unwrap();
     assert_eq!(votes_for, 1);
 }
+
+// ===================== Vote Struct Optimization Tests (Issue #68) =====================
+
+#[test]
+fn test_voting_works_with_optimized_vote_struct() {
+    // Verifies that cast_vote, tally accumulation, and finalize_resolution all
+    // work correctly after removing market_id/voter from the Vote struct.
+    let (e, _admin, contract_id, client) = setup_test_env();
+
+    let token_admin = Address::generate(&e);
+    let token_id = e.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_address = token_id.address();
+    let token_client = soroban_sdk::token::StellarAssetClient::new(&e, &token_address);
+
+    client.set_governance_token(&token_address);
+
+    let creator = Address::generate(&e);
+    let native_token = Address::generate(&e);
+    let resolution_deadline = 2000u64;
+
+    let market_id = client.create_market(
+        &creator,
+        &String::from_str(&e, "Optimized vote test"),
+        &{
+            let mut opts = Vec::new(&e);
+            opts.push_back(String::from_str(&e, "Yes"));
+            opts.push_back(String::from_str(&e, "No"));
+            opts
+        },
+        &1000,
+        &resolution_deadline,
+        &types::OracleConfig {
+            oracle_address: Address::generate(&e),
+            feed_id: String::from_str(&e, "test"),
+            min_responses: Some(1),
+        },
+        &types::MarketTier::Basic,
+        &native_token,
+        &0,
+        &0,
+    );
+
+    // Move to PendingResolution then dispute
+    client.set_oracle_result(&market_id, &0);
+    e.ledger().with_mut(|li| li.timestamp = resolution_deadline);
+    client.attempt_oracle_resolution(&market_id);
+
+    let disputer = Address::generate(&e);
+    e.ledger().with_mut(|li| li.timestamp = resolution_deadline + 1000);
+    client.file_dispute(&disputer, &market_id);
+
+    // Two voters — outcome 1 gets 70%, outcome 0 gets 30%
+    let voter_a = Address::generate(&e);
+    let voter_b = Address::generate(&e);
+    token_client.mint(&voter_a, &7000);
+    token_client.mint(&voter_b, &3000);
+
+    client.cast_vote(&voter_a, &market_id, &1, &7000);
+    client.cast_vote(&voter_b, &market_id, &0, &3000);
+
+    // Advance past 72h voting period
+    e.ledger().with_mut(|li| {
+        li.timestamp = resolution_deadline + 1000 + 259200;
+    });
+
+    client.finalize_resolution(&market_id);
+
+    let market = client.get_market(&market_id).unwrap();
+    assert_eq!(market.status, types::MarketStatus::Resolved);
+    assert_eq!(market.winning_outcome, Some(1));
+}
+
+#[test]
+fn test_double_vote_still_rejected_with_optimized_struct() {
+    let (e, _admin, _contract_id, client) = setup_test_env();
+
+    let token_admin = Address::generate(&e);
+    let token_id = e.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_address = token_id.address();
+    let token_client = soroban_sdk::token::StellarAssetClient::new(&e, &token_address);
+
+    client.set_governance_token(&token_address);
+
+    let creator = Address::generate(&e);
+    let native_token = Address::generate(&e);
+    let resolution_deadline = 2000u64;
+
+    let market_id = client.create_market(
+        &creator,
+        &String::from_str(&e, "Double vote test"),
+        &{
+            let mut opts = Vec::new(&e);
+            opts.push_back(String::from_str(&e, "Yes"));
+            opts.push_back(String::from_str(&e, "No"));
+            opts
+        },
+        &1000,
+        &resolution_deadline,
+        &types::OracleConfig {
+            oracle_address: Address::generate(&e),
+            feed_id: String::from_str(&e, "test"),
+            min_responses: Some(1),
+        },
+        &types::MarketTier::Basic,
+        &native_token,
+        &0,
+        &0,
+    );
+
+    client.set_oracle_result(&market_id, &0);
+    e.ledger().with_mut(|li| li.timestamp = resolution_deadline);
+    client.attempt_oracle_resolution(&market_id);
+
+    let disputer = Address::generate(&e);
+    e.ledger().with_mut(|li| li.timestamp = resolution_deadline + 1000);
+    client.file_dispute(&disputer, &market_id);
+
+    let voter = Address::generate(&e);
+    token_client.mint(&voter, &5000);
+
+    client.cast_vote(&voter, &market_id, &0, &5000);
+
+    // Second vote from same voter must be rejected
+    let result = client.try_cast_vote(&voter, &market_id, &1, &5000);
+    assert_eq!(result, Err(Ok(crate::errors::ErrorCode::AlreadyVoted)));
+}
