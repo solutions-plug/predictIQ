@@ -64,7 +64,7 @@ pub fn finalize_resolution(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
         },
         MarketStatus::Disputed => {
             // Check if 72h voting period has passed
-            let dispute_ts = market.dispute_timestamp.ok_or(ErrorCode::MarketNotDisputed)?;
+            let dispute_ts = market.pending_resolution_timestamp.ok_or(ErrorCode::MarketNotDisputed)?;
             if e.ledger().timestamp() < dispute_ts + VOTING_PERIOD_SECONDS {
                 return Err(ErrorCode::VotingNotStarted);
             }
@@ -88,33 +88,36 @@ pub fn finalize_resolution(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
     }
 }
 
-/// Calculate voting outcome with 60% majority requirement
+/// Calculate voting outcome with 60% majority requirement.
+///
+/// Single-pass O(n) tally — no intermediate allocations.
+/// `n` is bounded by `MAX_OUTCOMES_PER_MARKET` (32), so this is safe to call
+/// from the permissionless `finalize_resolution` without gas-griefing risk.
 fn calculate_voting_outcome(e: &Env, market: &crate::types::Market) -> Result<u32, ErrorCode> {
+    let num_outcomes = market.options.len();
+
+    // Defensive: enforce the cap even for markets that pre-date the constant.
+    if num_outcomes > crate::types::MAX_OUTCOMES_PER_MARKET {
+        return Err(ErrorCode::TooManyOutcomes);
+    }
+
     let mut total_votes: i128 = 0;
-    let mut tallies: soroban_sdk::Vec<(u32, i128)> = soroban_sdk::Vec::new(e);
-    
-    for outcome in 0..market.options.len() {
-        let tally = voting::get_tally(e, market.id, outcome);
-        total_votes += tally;
-        tallies.push_back((outcome, tally));
-    }
-    
-    if total_votes == 0 {
-        return Err(ErrorCode::NoMajorityReached);
-    }
-    
-    // Find outcome with highest votes
     let mut max_outcome = 0u32;
     let mut max_votes = 0i128;
-    
-    for i in 0..tallies.len() {
-        let (outcome, votes) = tallies.get(i).unwrap();
-        if votes > max_votes {
-            max_votes = votes;
+
+    for outcome in 0..num_outcomes {
+        let tally = voting::get_tally(e, market.id, outcome);
+        total_votes += tally;
+        if tally > max_votes {
+            max_votes = tally;
             max_outcome = outcome;
         }
     }
-    
+
+    if total_votes == 0 {
+        return Err(ErrorCode::NoMajorityReached);
+    }
+
     // Check if majority exceeds 60%
     let majority_pct = (max_votes * 10000) / total_votes;
     if majority_pct >= MAJORITY_THRESHOLD_BPS {

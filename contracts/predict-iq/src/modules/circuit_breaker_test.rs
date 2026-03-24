@@ -15,7 +15,7 @@ fn setup() -> (Env, PredictIQClient<'static>, Address, Address) {
     let guardian = Address::generate(&env);
 
     client.initialize(&admin, &100);
-    client.set_guardian(&guardian).unwrap();
+    client.set_guardian(&guardian);
 
     (env, client, admin, guardian)
 }
@@ -68,6 +68,8 @@ fn test_pause_blocks_operations() {
         oracle_address: Address::generate(&env),
         feed_id: String::from_str(&env, "test"),
         min_responses: Some(1),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 100,
     };
 
     let token = Address::generate(&env);
@@ -111,6 +113,8 @@ fn test_unpause_allows_operations() {
         oracle_address: Address::generate(&env),
         feed_id: String::from_str(&env, "test"),
         min_responses: Some(1),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 100,
     };
 
     let token = Address::generate(&env);
@@ -177,6 +181,8 @@ fn test_require_closed_when_open() {
         oracle_address: Address::generate(&env),
         feed_id: String::from_str(&env, "test"),
         min_responses: Some(1),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 100,
     };
 
     let token = Address::generate(&env);

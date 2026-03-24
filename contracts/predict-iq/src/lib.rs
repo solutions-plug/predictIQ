@@ -1,4 +1,4 @@
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 use soroban_sdk::{contract, contractimpl, Address, Env, String, Vec};
 
 mod errors;
@@ -6,7 +6,8 @@ mod modules;
 mod test;
 pub mod types;
 
-use crate::errors::ErrorCode;
+pub use errors::ErrorCode;
+
 use crate::modules::admin;
 use crate::types::{CircuitBreakerState, ConfigKey};
 
@@ -81,10 +82,6 @@ impl PredictIQ {
         )
     }
 
-<<<<<<< features/issue-13-Database-Schema-and-Migrations
-    pub fn claim_winnings(e: Env, bettor: Address, market_id: u64) -> Result<i128, ErrorCode> {
-        crate::modules::bets::claim_winnings(&e, bettor, market_id)
-=======
     pub fn claim_winnings(
         e: Env,
         bettor: Address,
@@ -98,10 +95,10 @@ impl PredictIQ {
         e: Env,
         bettor: Address,
         market_id: u64,
+        outcome: u32,
         token_address: Address,
     ) -> Result<i128, ErrorCode> {
         crate::modules::bets::withdraw_refund(&e, bettor, market_id, token_address)
->>>>>>> main
     }
 
     pub fn get_market(e: Env, id: u64) -> Option<crate::types::Market> {

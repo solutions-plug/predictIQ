@@ -1,7 +1,7 @@
 use crate::errors::ErrorCode;
 use crate::modules::markets;
-use crate::types::{MarketStatus, Vote};
-use soroban_sdk::{contracttype, Address, Env};
+use crate::types::{ConfigKey, LockedTokens, MarketStatus, Vote};
+use soroban_sdk::{contracttype, token, Address, Env, Symbol};
 
 #[contracttype]
 pub enum DataKey {
@@ -56,6 +56,7 @@ pub fn cast_vote(
                 return Err(ErrorCode::InsufficientVotingWeight);
             }
 
+            e.current_contract_address().require_auth();
             token_client.transfer(&voter, &e.current_contract_address(), &weight);
 
             let locked = LockedTokens {
@@ -77,8 +78,6 @@ pub fn cast_vote(
     }
 
     let vote = Vote {
-        market_id,
-        voter: voter.clone(),
         outcome,
         weight: actual_weight,
     };
@@ -103,11 +102,15 @@ fn try_get_balance_at(
     account: &Address,
     ledger: u32,
 ) -> Result<i128, ErrorCode> {
-    // Try to invoke balance_at method if token supports snapshots
-    let args = (account.clone(), ledger).into_val(e);
+    use soroban_sdk::{IntoVal, Val};
+    let args: soroban_sdk::Vec<Val> = soroban_sdk::vec![
+        e,
+        account.clone().into_val(e),
+        ledger.into_val(e),
+    ];
 
-    match e.try_invoke_contract::<Val, ErrorCode>(token, &Symbol::new(e, "balance_at"), args) {
-        Ok(Ok(val)) => i128::try_from_val(e, &val).map_err(|_| ErrorCode::OracleFailure),
+    match e.try_invoke_contract::<i128, ErrorCode>(token, &Symbol::new(e, "balance_at"), args) {
+        Ok(Ok(balance)) => Ok(balance),
         _ => Err(ErrorCode::OracleFailure),
     }
 }
@@ -133,6 +136,7 @@ pub fn unlock_tokens(e: &Env, voter: Address, market_id: u64) -> Result<(), Erro
         .ok_or(ErrorCode::GovernanceTokenNotSet)?;
 
     let token_client = token::Client::new(e, &gov_token);
+    e.current_contract_address().require_auth();
     token_client.transfer(&e.current_contract_address(), &voter, &locked.amount);
 
     e.storage().persistent().remove(&lock_key);

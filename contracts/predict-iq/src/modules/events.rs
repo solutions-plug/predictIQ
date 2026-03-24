@@ -65,17 +65,18 @@ pub fn emit_resolution_finalized(
 
 /// Emit RewardsClaimed event
 /// Topics: [reward_fx, market_id, claimer]
-/// Data: (amount, is_refund)
+/// Data: (amount, token_address, is_refund)
 pub fn emit_rewards_claimed(
     e: &Env,
     market_id: u64,
     claimer: Address,
     amount: i128,
+    token_address: Address,
     is_refund: bool,
 ) {
     e.events().publish(
         (symbol_short!("reward_fx"), market_id, claimer),
-        (amount, is_refund),
+        (amount, token_address, is_refund),
     );
 }
 

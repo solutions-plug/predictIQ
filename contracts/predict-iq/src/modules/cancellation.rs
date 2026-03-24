@@ -62,17 +62,19 @@ pub fn cancel_market_vote(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
     Ok(())
 }
 
-/// Withdraw refund for cancelled market (100% principal, zero fees)
-pub fn withdraw_refund(e: &Env, bettor: Address, market_id: u64) -> Result<i128, ErrorCode> {
+/// Withdraw refund for cancelled market (100% principal, zero fees).
+/// `outcome` identifies which outcome position to refund. Bettors who placed
+/// on multiple outcomes must call this once per outcome to reclaim all funds.
+pub fn withdraw_refund(e: &Env, bettor: Address, market_id: u64, outcome: u32) -> Result<i128, ErrorCode> {
     bettor.require_auth();
     
     let market = markets::get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
     
     if market.status != MarketStatus::Cancelled {
-        return Err(ErrorCode::MarketNotCancelled);
+        return Err(ErrorCode::MarketNotActive);
     }
     
-    let bet_key = crate::modules::bets::DataKey::Bet(market_id, bettor.clone());
+    let bet_key = crate::modules::bets::DataKey::Bet(market_id, bettor.clone(), outcome);
     let bet: crate::types::Bet = e.storage().persistent()
         .get(&bet_key)
         .ok_or(ErrorCode::BetNotFound)?;
@@ -80,14 +82,15 @@ pub fn withdraw_refund(e: &Env, bettor: Address, market_id: u64) -> Result<i128,
     let refund_amount = bet.amount;
     
     e.storage().persistent().remove(&bet_key);
-    
+
     // Use SAC-safe transfer for refund
+    e.current_contract_address().require_auth();
     sac::safe_transfer(e, &market.token_address, &e.current_contract_address(), &bettor, &refund_amount)?;
     
-    e.events().publish(
-        (Symbol::new(e, "refund_withdrawn"), market_id, bettor),
-        refund_amount,
-    );
+    // Emit standardized RewardsClaimed event (refund variant), aligned with bets.rs standard
+    // Topics: [reward_fx, market_id, bettor]
+    // Data: (refund_amount, token_address, is_refund=true)
+    crate::modules::events::emit_rewards_claimed(e, market_id, bettor, refund_amount, market.token_address, true);
     
     Ok(refund_amount)
 }

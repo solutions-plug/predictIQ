@@ -24,14 +24,29 @@ pub fn create_market(
 ) -> Result<u64, ErrorCode> {
     creator.require_auth();
 
+    crate::modules::circuit_breaker::require_closed(e)?;
+
     // Gas optimization: Limit number of outcomes to prevent excessive iteration
+    if options.len() < 2 {
+        return Err(ErrorCode::InvalidOutcome);
+    }
     if options.len() > crate::types::MAX_OUTCOMES_PER_MARKET {
         return Err(ErrorCode::TooManyOutcomes);
+    }
+
+    // Validate deadlines
+    if deadline <= e.ledger().timestamp() || resolution_deadline <= deadline {
+        return Err(ErrorCode::InvalidDeadline);
     }
 
     // Validate parent market if this is a conditional market
     if parent_id > 0 {
         let parent_market = get_market(e, parent_id).ok_or(ErrorCode::MarketNotFound)?;
+
+        // Validate parent_outcome_idx is within parent's options range
+        if parent_outcome_idx >= parent_market.options.len() {
+            return Err(ErrorCode::InvalidOutcome);
+        }
 
         // Parent must be resolved
         if parent_market.status != MarketStatus::Resolved {
@@ -44,11 +59,6 @@ pub fn create_market(
             .ok_or(ErrorCode::ParentMarketNotResolved)?;
         if parent_winning_outcome != parent_outcome_idx {
             return Err(ErrorCode::ParentMarketInvalidOutcome);
-        }
-
-        // Validate parent_outcome_idx is within parent's options range
-        if parent_outcome_idx >= parent_market.options.len() {
-            return Err(ErrorCode::InvalidOutcome);
         }
     }
 
@@ -82,6 +92,12 @@ pub fn create_market(
 
     let num_outcomes = options.len() as u32;
 
+    // Pre-initialize outcome_stakes map with 0 for all outcomes to optimize gas
+    let mut outcome_stakes = soroban_sdk::Map::new(e);
+    for i in 0..num_outcomes {
+        outcome_stakes.set(i, 0);
+    }
+
     let market = Market {
         id: count,
         creator: creator.clone(),
@@ -104,9 +120,10 @@ pub fn create_market(
         parent_outcome_idx,
         resolved_at: None,
         token_address: native_token,
-        outcome_stakes: soroban_sdk::Map::new(e),
+        outcome_stakes,
         pending_resolution_timestamp: None,
         dispute_snapshot_ledger: None,
+        dispute_timestamp: None,
     };
 
     e.storage()
@@ -163,15 +180,9 @@ pub fn set_payout_mode(
 }
 
 // Gas-optimized market count for specific outcome
-pub fn count_bets_for_outcome(e: &Env, market_id: u64, _outcome: u32) -> u32 {
-    // This would need a separate index in production
-    // For now, return estimate based on storage patterns
-    let key = crate::modules::bets::DataKey::Bet(market_id, e.current_contract_address());
-    if e.storage().persistent().has(&key) {
-        1
-    } else {
-        0
-    }
+pub fn count_bets_for_outcome(_e: &Env, _market_id: u64, _outcome: u32) -> u32 {
+    // Placeholder — a production implementation would maintain a separate index.
+    0
 }
 
 pub fn get_creator_reputation(e: &Env, creator: &Address) -> CreatorReputation {
@@ -205,6 +216,9 @@ pub fn set_creation_deposit(e: &Env, amount: i128) -> Result<(), ErrorCode> {
     e.storage()
         .persistent()
         .set(&ConfigKey::CreationDeposit, &amount);
+    e.storage()
+        .persistent()
+        .extend_ttl(&ConfigKey::CreationDeposit, crate::types::GOV_TTL_LOW_THRESHOLD, crate::types::GOV_TTL_HIGH_THRESHOLD);
     Ok(())
 }
 
@@ -247,15 +261,15 @@ pub fn prune_market(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
 
     // Market must be resolved
     if market.status != MarketStatus::Resolved {
-        return Err(ErrorCode::MarketNotActive);
+        return Err(ErrorCode::MarketNotResolved);
     }
 
     // Check if 30 days have passed since resolution
-    let resolved_at = market.resolved_at.ok_or(ErrorCode::MarketNotActive)?;
+    let resolved_at = market.resolved_at.ok_or(ErrorCode::MarketNotResolved)?;
     let current_time = e.ledger().timestamp();
     
     if current_time < resolved_at + PRUNE_GRACE_PERIOD {
-        return Err(ErrorCode::MarketNotActive);
+        return Err(ErrorCode::GracePeriodActive);
     }
 
     // Remove market from persistent storage

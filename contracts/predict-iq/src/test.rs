@@ -1,6 +1,6 @@
 #![cfg(test)]
 use super::*;
-use soroban_sdk::testutils::{Address as _, Ledger};
+use soroban_sdk::testutils::{Address as _, Ledger as _};
 use soroban_sdk::{token, Address, Env, String, Vec};
 
 fn setup_test_env() -> (Env, Address, soroban_sdk::Address, PredictIQClient<'static>) {
@@ -32,6 +32,8 @@ fn create_test_market(
         oracle_address: Address::generate(e),
         feed_id: String::from_str(e, "test_feed"),
         min_responses: Some(1),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 100,
     };
 
     client.create_market(
@@ -75,9 +77,13 @@ fn test_market_creation_fails_without_deposit() {
             oracle_address: Address::generate(&e),
             feed_id: String::from_str(&e, "test"),
             min_responses: Some(1),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 100,
         },
         &types::MarketTier::Basic,
         &native_token,
+        &0u64,
+        &0u32,
     );
 
     // Will fail due to missing token contract (simulates insufficient balance)
@@ -286,7 +292,7 @@ fn test_place_bet_blocked_when_paused() {
     let creator = Address::generate(&e);
     let native_token = Address::generate(&e);
 
-    e.ledger().with_mut(|li| li.timestamp = 500);
+    e.ledger().set_timestamp(500);
 
     let market_id = create_test_market(
         &client,
@@ -300,7 +306,7 @@ fn test_place_bet_blocked_when_paused() {
     client.pause();
 
     // Try to place bet - should fail with ContractPaused error
-    let result = client.try_place_bet(&bettor, &market_id, &0, &1000, &token_address);
+    let result = client.try_place_bet(&bettor, &market_id, &0, &1000, &token_address, &None);
     assert_eq!(result, Err(Ok(ErrorCode::ContractPaused)));
 }
 
@@ -319,7 +325,7 @@ fn test_partial_freeze_claim_winnings_works_when_paused() {
     let creator = Address::generate(&e);
     let native_token = Address::generate(&e);
 
-    e.ledger().with_mut(|li| li.timestamp = 500);
+    e.ledger().set_timestamp(500);
 
     let market_id = create_test_market(
         &client,
@@ -354,7 +360,7 @@ fn test_only_guardian_can_unpause() {
     let creator = Address::generate(&e);
     let native_token = Address::generate(&e);
 
-    e.ledger().with_mut(|li| li.timestamp = 500);
+    e.ledger().set_timestamp(500);
 
     let market_id = create_test_market(
         &client,
@@ -368,7 +374,7 @@ fn test_only_guardian_can_unpause() {
     let token_address = Address::generate(&e);
 
     // This should succeed now that contract is unpaused
-    let result = client.try_place_bet(&bettor, &market_id, &0, &1000, &token_address);
+    let result = client.try_place_bet(&bettor, &market_id, &0, &1000, &token_address, &None);
     assert_ne!(result, Err(Ok(ErrorCode::ContractPaused)));
 }
 
@@ -464,7 +470,7 @@ fn test_initiate_upgrade_starts_timelock() {
     let wasm_hash = String::from_str(&e, "abcd1234");
 
     // Set initial ledger time
-    e.ledger().with_mut(|li| li.timestamp = 1000);
+    e.ledger().set_timestamp(1000);
 
     let result = client.try_initiate_upgrade(&wasm_hash);
     assert!(result.is_ok());
@@ -489,7 +495,7 @@ fn test_execute_upgrade_before_timelock_fails() {
     client.initialize_guardians(&guardians);
 
     let wasm_hash = String::from_str(&e, "abcd1234");
-    e.ledger().with_mut(|li| li.timestamp = 1000);
+    e.ledger().set_timestamp(1000);
 
     client.initiate_upgrade(&wasm_hash);
 
@@ -515,7 +521,7 @@ fn test_execute_upgrade_after_timelock_succeeds() {
     client.initialize_guardians(&guardians);
 
     let wasm_hash = String::from_str(&e, "abcd1234");
-    e.ledger().with_mut(|li| li.timestamp = 1000);
+    e.ledger().set_timestamp(1000);
 
     client.initiate_upgrade(&wasm_hash);
 
@@ -523,7 +529,7 @@ fn test_execute_upgrade_after_timelock_succeeds() {
     client.vote_for_upgrade(&guardian, &true);
 
     // Advance time past 48 hours (172800 seconds)
-    e.ledger().with_mut(|li| li.timestamp = 1000 + 172800 + 1);
+    e.ledger().set_timestamp(1000 + 172800 + 1);
 
     // Now execute should succeed
     let result = client.try_execute_upgrade();
@@ -560,7 +566,7 @@ fn test_insufficient_votes_to_execute() {
     client.initialize_guardians(&guardians);
 
     let wasm_hash = String::from_str(&e, "abcd1234");
-    e.ledger().with_mut(|li| li.timestamp = 1000);
+    e.ledger().set_timestamp(1000);
 
     client.initiate_upgrade(&wasm_hash);
 
@@ -568,7 +574,7 @@ fn test_insufficient_votes_to_execute() {
     client.vote_for_upgrade(&guardian1, &true);
 
     // Advance time past 48 hours
-    e.ledger().with_mut(|li| li.timestamp = 1000 + 172800 + 1);
+    e.ledger().set_timestamp(1000 + 172800 + 1);
 
     // Execute should fail - insufficient votes
     let result = client.try_execute_upgrade();
@@ -600,7 +606,7 @@ fn test_majority_vote_required() {
     client.initialize_guardians(&guardians);
 
     let wasm_hash = String::from_str(&e, "abcd1234");
-    e.ledger().with_mut(|li| li.timestamp = 1000);
+    e.ledger().set_timestamp(1000);
 
     client.initiate_upgrade(&wasm_hash);
 
@@ -609,7 +615,7 @@ fn test_majority_vote_required() {
     client.vote_for_upgrade(&guardian2, &true);
 
     // Advance time past 48 hours
-    e.ledger().with_mut(|li| li.timestamp = 1000 + 172800 + 1);
+    e.ledger().set_timestamp(1000 + 172800 + 1);
 
     // Execute should succeed with majority
     let result = client.try_execute_upgrade();
@@ -630,7 +636,7 @@ fn test_cannot_vote_twice() {
     client.initialize_guardians(&guardians);
 
     let wasm_hash = String::from_str(&e, "abcd1234");
-    e.ledger().with_mut(|li| li.timestamp = 1000);
+    e.ledger().set_timestamp(1000);
 
     client.initiate_upgrade(&wasm_hash);
 
@@ -658,7 +664,7 @@ fn test_only_guardians_can_vote() {
     client.initialize_guardians(&guardians);
 
     let wasm_hash = String::from_str(&e, "abcd1234");
-    e.ledger().with_mut(|li| li.timestamp = 1000);
+    e.ledger().set_timestamp(1000);
 
     client.initiate_upgrade(&wasm_hash);
 
@@ -687,7 +693,7 @@ fn test_get_upgrade_votes() {
     client.initialize_guardians(&guardians);
 
     let wasm_hash = String::from_str(&e, "abcd1234");
-    e.ledger().with_mut(|li| li.timestamp = 1000);
+    e.ledger().set_timestamp(1000);
 
     client.initiate_upgrade(&wasm_hash);
 
@@ -731,7 +737,7 @@ fn test_persistent_state_preserved_on_upgrade() {
 
     // Initiate upgrade
     let wasm_hash = String::from_str(&e, "abcd1234");
-    e.ledger().with_mut(|li| li.timestamp = 1000);
+    e.ledger().set_timestamp(1000);
     client.initiate_upgrade(&wasm_hash);
 
     // Verify state is still accessible after initiating upgrade
@@ -753,7 +759,7 @@ fn test_create_conditional_market_parent_not_resolved() {
     let creator = Address::generate(&e);
     let native_token = Address::generate(&e);
 
-    e.ledger().with_mut(|li| li.timestamp = 500);
+    e.ledger().set_timestamp(500);
 
     // Create parent market
     let parent_id = create_test_market(
@@ -774,6 +780,8 @@ fn test_create_conditional_market_parent_not_resolved() {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "test_feed"),
         min_responses: Some(1),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 100,
     };
 
     let result = client.try_create_market(
@@ -801,7 +809,7 @@ fn test_create_conditional_market_parent_wrong_outcome() {
     let creator = Address::generate(&e);
     let native_token = Address::generate(&e);
 
-    e.ledger().with_mut(|li| li.timestamp = 500);
+    e.ledger().set_timestamp(500);
 
     // Create and resolve parent market with outcome 0
     let parent_id = create_test_market(
@@ -823,6 +831,8 @@ fn test_create_conditional_market_parent_wrong_outcome() {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "test_feed"),
         min_responses: Some(1),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 100,
     };
 
     let result = client.try_create_market(
@@ -850,7 +860,7 @@ fn test_create_conditional_market_success() {
     let creator = Address::generate(&e);
     let native_token = Address::generate(&e);
 
-    e.ledger().with_mut(|li| li.timestamp = 500);
+    e.ledger().set_timestamp(500);
 
     // Create and resolve parent market with outcome 0
     let parent_id = create_test_market(
@@ -872,6 +882,8 @@ fn test_create_conditional_market_success() {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "test_feed"),
         min_responses: Some(1),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 100,
     };
 
     let child_id = client.create_market(
@@ -906,7 +918,7 @@ fn test_place_bet_on_conditional_market_parent_not_resolved() {
     let bettor = Address::generate(&e);
     let token_address = Address::generate(&e);
 
-    e.ledger().with_mut(|li| li.timestamp = 500);
+    e.ledger().set_timestamp(500);
 
     // Create parent market
     let parent_id = create_test_market(
@@ -930,6 +942,8 @@ fn test_place_bet_on_conditional_market_parent_not_resolved() {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "test_feed"),
         min_responses: Some(1),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 100,
     };
 
     let child_id = client.create_market(
@@ -950,7 +964,7 @@ fn test_place_bet_on_conditional_market_parent_not_resolved() {
     // For this test, we'll just verify the bet placement logic checks parent status
 
     // Try to place bet - should succeed since parent is resolved with correct outcome
-    let result = client.try_place_bet(&bettor, &child_id, &0, &1000, &token_address);
+    let result = client.try_place_bet(&bettor, &child_id, &0, &1000, &token_address, &None);
 
     // Will fail due to missing token contract, but not due to parent validation
     assert_ne!(result, Err(Ok(ErrorCode::ParentMarketNotResolved)));
@@ -966,7 +980,7 @@ fn test_place_bet_on_conditional_market_parent_wrong_outcome() {
     let bettor = Address::generate(&e);
     let token_address = Address::generate(&e);
 
-    e.ledger().with_mut(|li| li.timestamp = 500);
+    e.ledger().set_timestamp(500);
 
     // Create parent market and resolve with outcome 0
     let parent_id = create_test_market(
@@ -988,6 +1002,8 @@ fn test_place_bet_on_conditional_market_parent_wrong_outcome() {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "test_feed"),
         min_responses: Some(1),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 100,
     };
 
     let child_id = client.create_market(
@@ -1007,7 +1023,7 @@ fn test_place_bet_on_conditional_market_parent_wrong_outcome() {
     // In production, this would be prevented, but we test the validation logic
 
     // Try to place bet - should succeed since parent resolved correctly
-    let result = client.try_place_bet(&bettor, &child_id, &0, &1000, &token_address);
+    let result = client.try_place_bet(&bettor, &child_id, &0, &1000, &token_address, &None);
 
     // Will fail due to missing token contract, but not due to parent validation
     assert_ne!(result, Err(Ok(ErrorCode::ParentMarketInvalidOutcome)));
@@ -1021,7 +1037,7 @@ fn test_independent_market_has_no_parent() {
     let creator = Address::generate(&e);
     let native_token = Address::generate(&e);
 
-    e.ledger().with_mut(|li| li.timestamp = 500);
+    e.ledger().set_timestamp(500);
 
     // Create independent market (parent_id = 0)
     let market_id = create_test_market(
@@ -1045,7 +1061,7 @@ fn test_multi_level_conditional_markets() {
     let creator = Address::generate(&e);
     let native_token = Address::generate(&e);
 
-    e.ledger().with_mut(|li| li.timestamp = 500);
+    e.ledger().set_timestamp(500);
 
     // Create level 1 market
     let level1_id = create_test_market(
@@ -1067,6 +1083,8 @@ fn test_multi_level_conditional_markets() {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "test_feed"),
         min_responses: Some(1),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 100,
     };
 
     let level2_id = client.create_market(
@@ -1112,7 +1130,7 @@ fn test_create_conditional_market_invalid_parent_outcome_idx() {
     let creator = Address::generate(&e);
     let native_token = Address::generate(&e);
 
-    e.ledger().with_mut(|li| li.timestamp = 500);
+    e.ledger().set_timestamp(500);
 
     // Create parent market with 2 outcomes (0 and 1)
     let parent_id = create_test_market(
@@ -1134,6 +1152,8 @@ fn test_create_conditional_market_invalid_parent_outcome_idx() {
         oracle_address: Address::generate(&e),
         feed_id: String::from_str(&e, "test_feed"),
         min_responses: Some(1),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 100,
     };
 
     let result = client.try_create_market(
@@ -1151,4 +1171,328 @@ fn test_create_conditional_market_invalid_parent_outcome_idx() {
 
     // Should fail with InvalidOutcome
     assert_eq!(result, Err(Ok(ErrorCode::InvalidOutcome)));
+}
+
+// ===================== Gas-Griefing / DoS Resistance Tests (Issue #59) =====================
+
+/// Build a Vec<String> with `count` identical placeholder entries.
+/// Content is irrelevant for outcome-count validation tests.
+fn make_options(e: &Env, count: u32) -> Vec<String> {
+    let mut options = Vec::new(e);
+    let label = String::from_str(e, "opt");
+    for _ in 0..count {
+        options.push_back(label.clone());
+    }
+    options
+}
+
+#[test]
+fn test_create_market_with_255_outcomes_is_rejected() {
+    let (e, _admin, _contract_id, client) = setup_test_env();
+
+    client.set_creation_deposit(&0);
+    let creator = Address::generate(&e);
+    let native_token = Address::generate(&e);
+
+    // 255 outcomes — well above MAX_OUTCOMES_PER_MARKET (32)
+    let options = make_options(&e, 255);
+
+    let oracle_config = types::OracleConfig {
+        oracle_address: Address::generate(&e),
+        feed_id: String::from_str(&e, "test_feed"),
+        min_responses: Some(1),
+    };
+
+    let result = client.try_create_market(
+        &creator,
+        &String::from_str(&e, "Gas griefing market"),
+        &options,
+        &1000,
+        &2000,
+        &oracle_config,
+        &types::MarketTier::Basic,
+        &native_token,
+        &0,
+        &0,
+    );
+
+    // Must be rejected — a 255-outcome market must never reach finalize_resolution
+    assert_eq!(result, Err(Ok(ErrorCode::TooManyOutcomes)));
+}
+
+#[test]
+fn test_create_market_at_max_outcomes_succeeds() {
+    let (e, _admin, _contract_id, client) = setup_test_env();
+
+    client.set_creation_deposit(&0);
+    let creator = Address::generate(&e);
+    let native_token = Address::generate(&e);
+
+    // Exactly MAX_OUTCOMES_PER_MARKET (32) should be accepted
+    let options = make_options(&e, types::MAX_OUTCOMES_PER_MARKET);
+
+    let oracle_config = types::OracleConfig {
+        oracle_address: Address::generate(&e),
+        feed_id: String::from_str(&e, "test_feed"),
+        min_responses: Some(1),
+    };
+
+    let result = client.try_create_market(
+        &creator,
+        &String::from_str(&e, "Max outcomes market"),
+        &options,
+        &1000,
+        &2000,
+        &oracle_config,
+        &types::MarketTier::Basic,
+        &native_token,
+        &0,
+        &0,
+    );
+
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_create_market_one_above_max_outcomes_is_rejected() {
+    let (e, _admin, _contract_id, client) = setup_test_env();
+
+    client.set_creation_deposit(&0);
+    let creator = Address::generate(&e);
+    let native_token = Address::generate(&e);
+
+    // MAX_OUTCOMES_PER_MARKET + 1 must be rejected
+    let options = make_options(&e, types::MAX_OUTCOMES_PER_MARKET + 1);
+
+    let oracle_config = types::OracleConfig {
+        oracle_address: Address::generate(&e),
+        feed_id: String::from_str(&e, "test_feed"),
+        min_responses: Some(1),
+    };
+
+    let result = client.try_create_market(
+        &creator,
+        &String::from_str(&e, "Over-limit market"),
+        &options,
+        &1000,
+        &2000,
+        &oracle_config,
+        &types::MarketTier::Basic,
+        &native_token,
+        &0,
+        &0,
+    );
+
+    assert_eq!(result, Err(Ok(ErrorCode::TooManyOutcomes)));
+}
+
+// ===================== Governance TTL Durability Tests (Issue #85) =====================
+
+#[test]
+fn test_pending_upgrade_survives_3_months_inactivity() {
+    let (e, _admin, _contract_id, client) = setup_test_env();
+
+    let guardian = Address::generate(&e);
+    let mut guardians = Vec::new(&e);
+    guardians.push_back(types::Guardian {
+        address: guardian.clone(),
+        voting_power: 1,
+    });
+    client.initialize_guardians(&guardians);
+
+    let wasm_hash = String::from_str(&e, "deadbeef1234");
+    e.ledger().with_mut(|li| li.timestamp = 1000);
+
+    client.initiate_upgrade(&wasm_hash);
+
+    // Simulate ~3 months of network inactivity:
+    // 90 days * 86400 seconds/day / 5 seconds per ledger = 1_555_200 ledgers
+    e.ledger().with_mut(|li| {
+        li.sequence = li.sequence + 1_555_200;
+        li.timestamp = 1000 + (90 * 86400);
+    });
+
+    // PendingUpgrade must still be readable — TTL was set to 180 days on write
+    let pending = client.get_pending_upgrade();
+    assert!(pending.is_some(), "PendingUpgrade expired after 3 months of inactivity");
+    assert_eq!(pending.unwrap().wasm_hash, wasm_hash);
+}
+
+#[test]
+fn test_guardian_set_survives_3_months_inactivity() {
+    let (e, _admin, _contract_id, client) = setup_test_env();
+
+    let guardian = Address::generate(&e);
+    let mut guardians = Vec::new(&e);
+    guardians.push_back(types::Guardian {
+        address: guardian.clone(),
+        voting_power: 1,
+    });
+    client.initialize_guardians(&guardians);
+
+    // Advance 3 months
+    e.ledger().with_mut(|li| {
+        li.sequence = li.sequence + 1_555_200;
+        li.timestamp = 90 * 86400;
+    });
+
+    let stored = client.get_guardians();
+    assert_eq!(stored.len(), 1, "GuardianSet expired after 3 months of inactivity");
+    assert_eq!(stored.get(0).unwrap().address, guardian);
+}
+
+#[test]
+fn test_vote_on_upgrade_refreshes_ttl() {
+    let (e, _admin, _contract_id, client) = setup_test_env();
+
+    let guardian = Address::generate(&e);
+    let mut guardians = Vec::new(&e);
+    guardians.push_back(types::Guardian {
+        address: guardian.clone(),
+        voting_power: 1,
+    });
+    client.initialize_guardians(&guardians);
+
+    e.ledger().with_mut(|li| li.timestamp = 1000);
+    client.initiate_upgrade(&String::from_str(&e, "cafebabe"));
+
+    // Vote refreshes the TTL on PendingUpgrade
+    client.vote_for_upgrade(&guardian, &true);
+
+    // Advance another 3 months after the vote
+    e.ledger().with_mut(|li| {
+        li.sequence = li.sequence + 1_555_200;
+        li.timestamp = 1000 + (90 * 86400);
+    });
+
+    let pending = client.get_pending_upgrade();
+    assert!(pending.is_some(), "PendingUpgrade expired after vote + 3 months inactivity");
+    let (votes_for, _) = client.get_upgrade_votes().unwrap();
+    assert_eq!(votes_for, 1);
+}
+
+// ===================== Vote Struct Optimization Tests (Issue #68) =====================
+
+#[test]
+fn test_voting_works_with_optimized_vote_struct() {
+    // Verifies that cast_vote, tally accumulation, and finalize_resolution all
+    // work correctly after removing market_id/voter from the Vote struct.
+    let (e, _admin, contract_id, client) = setup_test_env();
+
+    let token_admin = Address::generate(&e);
+    let token_id = e.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_address = token_id.address();
+    let token_client = soroban_sdk::token::StellarAssetClient::new(&e, &token_address);
+
+    client.set_governance_token(&token_address);
+
+    let creator = Address::generate(&e);
+    let native_token = Address::generate(&e);
+    let resolution_deadline = 2000u64;
+
+    let market_id = client.create_market(
+        &creator,
+        &String::from_str(&e, "Optimized vote test"),
+        &{
+            let mut opts = Vec::new(&e);
+            opts.push_back(String::from_str(&e, "Yes"));
+            opts.push_back(String::from_str(&e, "No"));
+            opts
+        },
+        &1000,
+        &resolution_deadline,
+        &types::OracleConfig {
+            oracle_address: Address::generate(&e),
+            feed_id: String::from_str(&e, "test"),
+            min_responses: Some(1),
+        },
+        &types::MarketTier::Basic,
+        &native_token,
+        &0,
+        &0,
+    );
+
+    // Move to PendingResolution then dispute
+    client.set_oracle_result(&market_id, &0);
+    e.ledger().with_mut(|li| li.timestamp = resolution_deadline);
+    client.attempt_oracle_resolution(&market_id);
+
+    let disputer = Address::generate(&e);
+    e.ledger().with_mut(|li| li.timestamp = resolution_deadline + 1000);
+    client.file_dispute(&disputer, &market_id);
+
+    // Two voters — outcome 1 gets 70%, outcome 0 gets 30%
+    let voter_a = Address::generate(&e);
+    let voter_b = Address::generate(&e);
+    token_client.mint(&voter_a, &7000);
+    token_client.mint(&voter_b, &3000);
+
+    client.cast_vote(&voter_a, &market_id, &1, &7000);
+    client.cast_vote(&voter_b, &market_id, &0, &3000);
+
+    // Advance past 72h voting period
+    e.ledger().with_mut(|li| {
+        li.timestamp = resolution_deadline + 1000 + 259200;
+    });
+
+    client.finalize_resolution(&market_id);
+
+    let market = client.get_market(&market_id).unwrap();
+    assert_eq!(market.status, types::MarketStatus::Resolved);
+    assert_eq!(market.winning_outcome, Some(1));
+}
+
+#[test]
+fn test_double_vote_still_rejected_with_optimized_struct() {
+    let (e, _admin, _contract_id, client) = setup_test_env();
+
+    let token_admin = Address::generate(&e);
+    let token_id = e.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_address = token_id.address();
+    let token_client = soroban_sdk::token::StellarAssetClient::new(&e, &token_address);
+
+    client.set_governance_token(&token_address);
+
+    let creator = Address::generate(&e);
+    let native_token = Address::generate(&e);
+    let resolution_deadline = 2000u64;
+
+    let market_id = client.create_market(
+        &creator,
+        &String::from_str(&e, "Double vote test"),
+        &{
+            let mut opts = Vec::new(&e);
+            opts.push_back(String::from_str(&e, "Yes"));
+            opts.push_back(String::from_str(&e, "No"));
+            opts
+        },
+        &1000,
+        &resolution_deadline,
+        &types::OracleConfig {
+            oracle_address: Address::generate(&e),
+            feed_id: String::from_str(&e, "test"),
+            min_responses: Some(1),
+        },
+        &types::MarketTier::Basic,
+        &native_token,
+        &0,
+        &0,
+    );
+
+    client.set_oracle_result(&market_id, &0);
+    e.ledger().with_mut(|li| li.timestamp = resolution_deadline);
+    client.attempt_oracle_resolution(&market_id);
+
+    let disputer = Address::generate(&e);
+    e.ledger().with_mut(|li| li.timestamp = resolution_deadline + 1000);
+    client.file_dispute(&disputer, &market_id);
+
+    let voter = Address::generate(&e);
+    token_client.mint(&voter, &5000);
+
+    client.cast_vote(&voter, &market_id, &0, &5000);
+
+    // Second vote from same voter must be rejected
+    let result = client.try_cast_vote(&voter, &market_id, &1, &5000);
+    assert_eq!(result, Err(Ok(crate::errors::ErrorCode::AlreadyVoted)));
 }
