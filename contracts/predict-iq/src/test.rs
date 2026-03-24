@@ -1152,3 +1152,116 @@ fn test_create_conditional_market_invalid_parent_outcome_idx() {
     // Should fail with InvalidOutcome
     assert_eq!(result, Err(Ok(ErrorCode::InvalidOutcome)));
 }
+
+// ===================== Gas-Griefing / DoS Resistance Tests (Issue #59) =====================
+
+/// Build a Vec<String> with `count` identical placeholder entries.
+/// Content is irrelevant for outcome-count validation tests.
+fn make_options(e: &Env, count: u32) -> Vec<String> {
+    let mut options = Vec::new(e);
+    let label = String::from_str(e, "opt");
+    for _ in 0..count {
+        options.push_back(label.clone());
+    }
+    options
+}
+
+#[test]
+fn test_create_market_with_255_outcomes_is_rejected() {
+    let (e, _admin, _contract_id, client) = setup_test_env();
+
+    client.set_creation_deposit(&0);
+    let creator = Address::generate(&e);
+    let native_token = Address::generate(&e);
+
+    // 255 outcomes — well above MAX_OUTCOMES_PER_MARKET (32)
+    let options = make_options(&e, 255);
+
+    let oracle_config = types::OracleConfig {
+        oracle_address: Address::generate(&e),
+        feed_id: String::from_str(&e, "test_feed"),
+        min_responses: Some(1),
+    };
+
+    let result = client.try_create_market(
+        &creator,
+        &String::from_str(&e, "Gas griefing market"),
+        &options,
+        &1000,
+        &2000,
+        &oracle_config,
+        &types::MarketTier::Basic,
+        &native_token,
+        &0,
+        &0,
+    );
+
+    // Must be rejected — a 255-outcome market must never reach finalize_resolution
+    assert_eq!(result, Err(Ok(ErrorCode::TooManyOutcomes)));
+}
+
+#[test]
+fn test_create_market_at_max_outcomes_succeeds() {
+    let (e, _admin, _contract_id, client) = setup_test_env();
+
+    client.set_creation_deposit(&0);
+    let creator = Address::generate(&e);
+    let native_token = Address::generate(&e);
+
+    // Exactly MAX_OUTCOMES_PER_MARKET (32) should be accepted
+    let options = make_options(&e, types::MAX_OUTCOMES_PER_MARKET);
+
+    let oracle_config = types::OracleConfig {
+        oracle_address: Address::generate(&e),
+        feed_id: String::from_str(&e, "test_feed"),
+        min_responses: Some(1),
+    };
+
+    let result = client.try_create_market(
+        &creator,
+        &String::from_str(&e, "Max outcomes market"),
+        &options,
+        &1000,
+        &2000,
+        &oracle_config,
+        &types::MarketTier::Basic,
+        &native_token,
+        &0,
+        &0,
+    );
+
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_create_market_one_above_max_outcomes_is_rejected() {
+    let (e, _admin, _contract_id, client) = setup_test_env();
+
+    client.set_creation_deposit(&0);
+    let creator = Address::generate(&e);
+    let native_token = Address::generate(&e);
+
+    // MAX_OUTCOMES_PER_MARKET + 1 must be rejected
+    let options = make_options(&e, types::MAX_OUTCOMES_PER_MARKET + 1);
+
+    let oracle_config = types::OracleConfig {
+        oracle_address: Address::generate(&e),
+        feed_id: String::from_str(&e, "test_feed"),
+        min_responses: Some(1),
+    };
+
+    let result = client.try_create_market(
+        &creator,
+        &String::from_str(&e, "Over-limit market"),
+        &options,
+        &1000,
+        &2000,
+        &oracle_config,
+        &types::MarketTier::Basic,
+        &native_token,
+        &0,
+        &0,
+    );
+
+    assert_eq!(result, Err(Ok(ErrorCode::TooManyOutcomes)));
+}

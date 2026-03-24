@@ -96,7 +96,10 @@ pub struct OracleConfig {
 
 // Gas optimization constants
 pub const MAX_PUSH_PAYOUT_WINNERS: u32 = 50; // Threshold for switching to pull mode
-pub const MAX_OUTCOMES_PER_MARKET: u32 = 100; // Limit to prevent excessive iteration
+/// Hard cap on outcomes per market. Kept intentionally low to bound the
+/// iteration cost in `calculate_voting_outcome` (called from the permissionless
+/// `finalize_resolution`) and prevent gas-griefing / DoS attacks.
+pub const MAX_OUTCOMES_PER_MARKET: u32 = 32;
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
