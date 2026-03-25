@@ -4,10 +4,17 @@ use crate::types::{ConfigKey, LockedTokens, MarketStatus, Vote};
 use soroban_sdk::{contracttype, token, Address, Env, Symbol};
 
 #[contracttype]
+#[derive(Clone)]
 pub enum DataKey {
-    Vote(u64, Address),         // market_id, voter - variant index 0 ensures unique serialization
-    VoteTally(u64, u32),        // market_id, outcome -> total_weight - variant index 1
-    LockedTokens(u64, Address), // market_id, voter - variant index 2 ensures unique serialization
+    /// Vote record for a market and voter
+    /// Variant index 0 ensures unique serialization, preventing collisions with LockedTokens
+    Vote(u64, Address),
+    /// VoteTally tracks total voting weight per outcome
+    /// Variant index 1 ensures unique serialization
+    VoteTally(u64, u32),
+    /// LockedTokens record for voting escrow
+    /// Variant index 2 ensures unique serialization, preventing collisions with Vote
+    LockedTokens(u64, Address),
 }
 
 pub fn cast_vote(
@@ -31,10 +38,11 @@ pub fn cast_vote(
 
     let vote_key = DataKey::Vote(market_id, voter.clone());
     
-    // Issue #175: Allow vote revision - if vote exists, update the tally
+    // Issue #175: Allow vote revision - voters can change their vote before resolution deadline
+    // This enables more flexible governance where voters can respond to new information
     let old_vote: Option<Vote> = e.storage().persistent().get(&vote_key);
     if let Some(old_vote_data) = old_vote {
-        // Decrement the old outcome tally
+        // Decrement the old outcome tally when vote is revised
         let old_tally_key = DataKey::VoteTally(market_id, old_vote_data.outcome);
         let mut old_tally: i128 = e.storage().persistent().get(&old_tally_key).unwrap_or(0);
         old_tally -= old_vote_data.weight;

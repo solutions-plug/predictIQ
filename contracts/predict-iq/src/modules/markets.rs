@@ -26,6 +26,7 @@ pub fn create_market(
 
     crate::modules::circuit_breaker::require_closed(e)?;
 
+    // Issue #176: Validate minimum options - require at least 2 options (implicitly > 0)
     // Gas optimization: Limit number of outcomes to prevent excessive iteration
     if options.len() < 2 {
         return Err(ErrorCode::InvalidOutcome);
@@ -34,7 +35,8 @@ pub fn create_market(
         return Err(ErrorCode::TooManyOutcomes);
     }
 
-    // Validate deadlines
+    // Issue #177: Validate deadlines are in the future
+    // Validate deadlines: deadline must be in the future, resolution_deadline must be after deadline
     if deadline <= e.ledger().timestamp() || resolution_deadline <= deadline {
         return Err(ErrorCode::InvalidDeadline);
     }
