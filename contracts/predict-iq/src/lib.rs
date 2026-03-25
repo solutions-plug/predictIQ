@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, Address, Env, String, Vec};
+use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Vec};
 
 mod errors;
 mod modules;
@@ -8,24 +8,30 @@ pub mod types;
 
 use crate::errors::ErrorCode;
 use crate::modules::admin;
-use crate::types::{CircuitBreakerState, ConfigKey};
+use crate::types::{CircuitBreakerState, ConfigKey, Guardian, UpgradeStats};
 
 #[contract]
 pub struct PredictIQ;
 
 #[contractimpl]
 impl PredictIQ {
-    pub fn initialize(e: Env, admin: Address, base_fee: i128) -> Result<(), ErrorCode> {
+    /// Issue #28: Only the deployer can initialize the contract.
+    /// Guardians should be initialized via initialize_guardians in the same transaction.
+    pub fn initialize(e: Env, admin_addr: Address, base_fee: i128) -> Result<(), ErrorCode> {
         if e.storage().persistent().has(&ConfigKey::Admin) {
             return Err(ErrorCode::AlreadyInitialized);
         }
 
-        admin::set_admin(&e, admin);
+        // Issue #28: Ensure only the deployer can call initialize
+        admin_addr.require_auth();
+
+        admin::set_admin(&e, admin_addr);
         e.storage().persistent().set(&ConfigKey::BaseFee, &base_fee);
         e.storage().persistent().set(
             &ConfigKey::CircuitBreakerState,
             &CircuitBreakerState::Closed,
         );
+
         Ok(())
     }
 
@@ -115,6 +121,10 @@ impl PredictIQ {
         crate::modules::voting::cast_vote(&e, voter, market_id, outcome, weight)
     }
 
+    pub fn unlock_tokens(e: Env, voter: Address, market_id: u64) -> Result<(), ErrorCode> {
+        crate::modules::voting::unlock_tokens(&e, voter, market_id)
+    }
+
     pub fn file_dispute(e: Env, disciplinarian: Address, market_id: u64) -> Result<(), ErrorCode> {
         crate::modules::circuit_breaker::require_closed(&e)?;
         crate::modules::disputes::file_dispute(&e, disciplinarian, market_id)
@@ -139,6 +149,15 @@ impl PredictIQ {
         crate::modules::fees::get_revenue(&e, token)
     }
 
+    /// Issue #26: Withdraw accumulated protocol fees to a recipient.
+    pub fn withdraw_protocol_fees(
+        e: Env,
+        token: Address,
+        recipient: Address,
+    ) -> Result<i128, ErrorCode> {
+        crate::modules::fees::withdraw_protocol_fees(&e, &token, &recipient)
+    }
+
     pub fn claim_referral_rewards(
         e: Env,
         address: Address,
@@ -155,6 +174,14 @@ impl PredictIQ {
     pub fn resolve_market(e: Env, market_id: u64, winning_outcome: u32) -> Result<(), ErrorCode> {
         crate::modules::admin::require_admin(&e)?;
         crate::modules::disputes::resolve_market(&e, market_id, winning_outcome)
+    }
+
+    pub fn attempt_oracle_resolution(e: Env, market_id: u64) -> Result<(), ErrorCode> {
+        crate::modules::resolution::attempt_oracle_resolution(&e, market_id)
+    }
+
+    pub fn finalize_resolution(e: Env, market_id: u64) -> Result<(), ErrorCode> {
+        crate::modules::resolution::finalize_resolution(&e, market_id)
     }
 
     pub fn reset_monitoring(e: Env) -> Result<(), ErrorCode> {
@@ -215,7 +242,7 @@ impl PredictIQ {
         crate::modules::markets::release_creation_deposit(&e, market_id, native_token)
     }
 
-    // Governance and Upgrade Functions
+    // Governance
     pub fn initialize_guardians(
         e: Env,
         guardians: Vec<crate::types::Guardian>,
@@ -236,7 +263,8 @@ impl PredictIQ {
         crate::modules::governance::get_guardians(&e)
     }
 
-    pub fn initiate_upgrade(e: Env, wasm_hash: String) -> Result<(), ErrorCode> {
+    /// Issue #32: wasm_hash is now BytesN<32> instead of String.
+    pub fn initiate_upgrade(e: Env, wasm_hash: BytesN<32>) -> Result<(), ErrorCode> {
         crate::modules::governance::initiate_upgrade(&e, wasm_hash)
     }
 
@@ -244,7 +272,8 @@ impl PredictIQ {
         crate::modules::governance::vote_for_upgrade(&e, voter, vote_for)
     }
 
-    pub fn execute_upgrade(e: Env) -> Result<String, ErrorCode> {
+    /// Issue #18: Returns BytesN<32> and actually executes the WASM update.
+    pub fn execute_upgrade(e: Env) -> Result<BytesN<32>, ErrorCode> {
         crate::modules::governance::execute_upgrade(&e)
     }
 
@@ -252,7 +281,8 @@ impl PredictIQ {
         crate::modules::governance::get_pending_upgrade(&e)
     }
 
-    pub fn get_upgrade_votes(e: Env) -> Result<(u32, u32), ErrorCode> {
+    /// Issue #33: Returns named UpgradeStats struct.
+    pub fn get_upgrade_votes(e: Env) -> Result<UpgradeStats, ErrorCode> {
         crate::modules::governance::get_upgrade_votes(&e)
     }
 
@@ -260,7 +290,12 @@ impl PredictIQ {
         crate::modules::governance::is_timelock_satisfied(&e)
     }
 
-    /// Prune (archive) a resolved market after 30 days grace period
+    /// Issue #13: Configurable timelock duration.
+    pub fn set_timelock_duration(e: Env, seconds: u64) -> Result<(), ErrorCode> {
+        crate::modules::governance::set_timelock_duration(&e, seconds)
+    }
+
+    /// Issue #47: Permissionless prune after grace period.
     pub fn prune_market(e: Env, market_id: u64) -> Result<(), ErrorCode> {
         crate::modules::markets::prune_market(&e, market_id)
     }

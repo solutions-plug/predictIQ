@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Map, String, Vec};
+use soroban_sdk::{contracttype, Address, BytesN, Map, String, Vec};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -23,23 +23,30 @@ pub struct Market {
     pub winning_outcome: Option<u32>,
     pub oracle_config: OracleConfig,
     pub total_staked: i128,
-    pub payout_mode: PayoutMode, // New: determines push vs pull payouts
+    /// Immutable after creation — set once in create_market (Issue #23).
+    pub payout_mode: PayoutMode,
     pub tier: MarketTier,
     pub creation_deposit: i128,
-    pub parent_id: u64,          // 0 means no parent (independent market)
-    pub parent_outcome_idx: u32, // Required outcome of parent market
-    pub resolved_at: Option<u64>, // Timestamp when market was resolved (for TTL pruning)
-    pub token_address: Address,   // Token used for betting
-    pub outcome_stakes: Map<u32, i128>, // Stake per outcome
-    pub pending_resolution_timestamp: Option<u64>, // Timestamp when resolution was initiated
-    pub dispute_snapshot_ledger: Option<u32>, // Ledger sequence for snapshot voting
+    pub parent_id: u64,
+    pub parent_outcome_idx: u32,
+    pub resolved_at: Option<u64>,
+    pub token_address: Address,
+    pub outcome_stakes: Map<u32, i128>,
+    pub pending_resolution_timestamp: Option<u64>,
+    pub dispute_snapshot_ledger: Option<u32>,
+    /// Timestamp when dispute was filed — used by resolution.rs (Issue #8).
+    pub dispute_timestamp: Option<u64>,
+    /// Total amount claimed so far — used to guard prune_market (Issue #17).
+    pub total_claimed: i128,
+    /// Actual winner count per outcome, maintained during place_bet (Issue #24).
+    pub winner_counts: Map<u32, u32>,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PayoutMode {
-    Push, // Contract distributes to all winners (small markets)
-    Pull, // Winners claim individually (large markets)
+    Push,
+    Pull,
 }
 
 #[contracttype]
@@ -71,11 +78,7 @@ pub struct Bet {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Vote {
-    /// The outcome index this vote is cast for.
     pub outcome: u32,
-    /// Voting weight (token balance at snapshot or locked amount).
-    /// `market_id` and `voter` are omitted — they are already encoded in
-    /// `DataKey::Vote(market_id, voter)` and repeating them wastes gas.
     pub weight: i128,
 }
 
@@ -88,19 +91,31 @@ pub struct LockedTokens {
     pub unlock_time: u64,
 }
 
+/// Issue #16: Added missing fields used in oracles.rs.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OracleConfig {
     pub oracle_address: Address,
     pub feed_id: String,
-    pub min_responses: Option<u32>, // Optimized: None defaults to 1
+    pub min_responses: Option<u32>,
+    /// Maximum age of a price in seconds before it is considered stale.
+    /// None defaults to 3600 (1 hour).
+    pub max_staleness_seconds: Option<u64>,
+    /// Maximum confidence interval as basis points of price (e.g. 100 = 1%).
+    /// None defaults to 200 (2%).
+    pub max_confidence_bps: Option<u64>,
 }
 
-// Gas optimization constants
-pub const MAX_PUSH_PAYOUT_WINNERS: u32 = 50; // Threshold for switching to pull mode
-/// Hard cap on outcomes per market. Kept intentionally low to bound the
-/// iteration cost in `calculate_voting_outcome` (called from the permissionless
-/// `finalize_resolution`) and prevent gas-griefing / DoS attacks.
+/// Issue #33: Named struct instead of raw tuple for upgrade vote stats.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeStats {
+    pub votes_for: u32,
+    pub votes_against: u32,
+}
+
+pub const MAX_PUSH_PAYOUT_WINNERS: u32 = 50;
+/// Hard cap on outcomes per market — bounds iteration cost in finalize_resolution.
 pub const MAX_OUTCOMES_PER_MARKET: u32 = 32;
 
 #[contracttype]
@@ -116,6 +131,10 @@ pub enum ConfigKey {
     GuardianSet,
     PendingUpgrade,
     UpgradeVotes,
+    /// Issue #3: Was missing — used in voting.rs for governance token address.
+    GovernanceToken,
+    /// Issue #13: Configurable timelock duration (seconds).
+    TimelockDuration,
 }
 
 #[contracttype]
@@ -124,10 +143,9 @@ pub enum CircuitBreakerState {
     Closed,
     Open,
     HalfOpen,
-    Paused, // Emergency pause state - blocks high-risk operations
+    Paused,
 }
 
-// Governance and Upgrade Types
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Guardian {
@@ -135,26 +153,25 @@ pub struct Guardian {
     pub voting_power: u32,
 }
 
+/// Issue #32: wasm_hash changed from String to BytesN<32>.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PendingUpgrade {
-    pub wasm_hash: String,
+    pub wasm_hash: BytesN<32>,
     pub initiated_at: u64,
     pub votes_for: Vec<Address>,
     pub votes_against: Vec<Address>,
 }
 
-// Constants for upgrade governance
-pub const TIMELOCK_DURATION: u64 = 48 * 60 * 60; // 48 hours in seconds
-pub const MAJORITY_THRESHOLD_PERCENT: u32 = 51; // 51% for majority
+/// Issue #13: Default timelock — 48 hours. Overridable via ConfigKey::TimelockDuration.
+pub const TIMELOCK_DURATION: u64 = 48 * 60 * 60;
+pub const MAJORITY_THRESHOLD_PERCENT: u32 = 51;
 
 // TTL Management Constants (in ledgers, ~5 seconds per ledger)
-pub const TTL_LOW_THRESHOLD: u32 = 17_280; // ~1 day (86400 seconds / 5)
-pub const TTL_HIGH_THRESHOLD: u32 = 518_400; // ~30 days (2592000 seconds / 5)
+pub const TTL_LOW_THRESHOLD: u32 = 17_280;   // ~1 day
+/// Issue #36: Raised from 30 days to 90 days so data outlives the prune grace period.
+pub const TTL_HIGH_THRESHOLD: u32 = 1_555_200; // ~90 days
 pub const PRUNE_GRACE_PERIOD: u64 = 2_592_000; // 30 days in seconds
 
-/// Governance TTL constants — much longer than market data because governance
-/// processes (upgrades, guardian votes) can span months of inactivity.
-/// ~90 days expressed in ledgers (~5 seconds per ledger).
 pub const GOV_TTL_LOW_THRESHOLD: u32 = 1_555_200;  // ~90 days
 pub const GOV_TTL_HIGH_THRESHOLD: u32 = 3_110_400; // ~180 days

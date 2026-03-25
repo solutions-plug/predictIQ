@@ -1,13 +1,15 @@
 use crate::errors::ErrorCode;
 use crate::modules::markets;
-use crate::types::{MarketStatus, Vote};
-use soroban_sdk::{contracttype, Address, Env};
+use crate::types::{ConfigKey, LockedTokens, MarketStatus, Vote};
+use soroban_sdk::{contracttype, token, Address, Env, IntoVal, Symbol, Val};
 
 #[contracttype]
 pub enum DataKey {
     Vote(u64, Address),         // market_id, voter
     VoteTally(u64, u32),        // market_id, outcome -> total_weight
     LockedTokens(u64, Address), // market_id, voter
+    /// Issue #37: Per-user locked balance ledger to prevent pool drain.
+    LockedBalance(u64, Address), // market_id, voter -> amount
 }
 
 pub fn cast_vote(
@@ -38,18 +40,17 @@ pub fn cast_vote(
         .dispute_snapshot_ledger
         .ok_or(ErrorCode::MarketNotDisputed)?;
 
-    // Get governance token
+    // Issue #3: GovernanceToken now exists in ConfigKey
     let gov_token: Address = e
         .storage()
         .instance()
         .get(&ConfigKey::GovernanceToken)
         .ok_or(ErrorCode::GovernanceTokenNotSet)?;
 
-    // Try snapshot-based balance first
     let actual_weight = match try_get_balance_at(e, &gov_token, &voter, snapshot_ledger) {
         Ok(balance) => balance,
         Err(_) => {
-            // Fallback: lock tokens for 3-day resolution period
+            // Issue #37: Fallback — lock tokens and track per-user balance
             let token_client = token::Client::new(e, &gov_token);
             let current_balance = token_client.balance(&voter);
             if current_balance < weight {
@@ -57,6 +58,13 @@ pub fn cast_vote(
             }
 
             token_client.transfer(&voter, &e.current_contract_address(), &weight);
+
+            // Track per-user locked amount so multiple users don't collide
+            let lock_key = DataKey::LockedBalance(market_id, voter.clone());
+            let existing: i128 = e.storage().persistent().get(&lock_key).unwrap_or(0);
+            e.storage()
+                .persistent()
+                .set(&lock_key, &(existing + weight));
 
             let locked = LockedTokens {
                 voter: voter.clone(),
@@ -88,9 +96,7 @@ pub fn cast_vote(
     current_tally += actual_weight;
     e.storage().persistent().set(&tally_key, &current_tally);
 
-    // Emit standardized VoteCast event
-    // Topics: [VoteCast, market_id, voter]
-    crate::modules::events::emit_vote_cast(e, market_id, voter, outcome, weight);
+    crate::modules::events::emit_vote_cast(e, market_id, voter, outcome, actual_weight);
 
     Ok(())
 }
@@ -101,7 +107,6 @@ fn try_get_balance_at(
     account: &Address,
     ledger: u32,
 ) -> Result<i128, ErrorCode> {
-    // Try to invoke balance_at method if token supports snapshots
     let args = (account.clone(), ledger).into_val(e);
 
     match e.try_invoke_contract::<Val, ErrorCode>(token, &Symbol::new(e, "balance_at"), args) {
@@ -110,8 +115,16 @@ fn try_get_balance_at(
     }
 }
 
+/// Issue #20: Require market to be Resolved before unlocking tokens.
 pub fn unlock_tokens(e: &Env, voter: Address, market_id: u64) -> Result<(), ErrorCode> {
     voter.require_auth();
+
+    let market = markets::get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
+
+    // Issue #20: Only allow unlock after market is fully resolved
+    if market.status != MarketStatus::Resolved {
+        return Err(ErrorCode::VotingNotStarted);
+    }
 
     let lock_key = DataKey::LockedTokens(market_id, voter.clone());
     let locked: LockedTokens = e
@@ -119,10 +132,6 @@ pub fn unlock_tokens(e: &Env, voter: Address, market_id: u64) -> Result<(), Erro
         .persistent()
         .get(&lock_key)
         .ok_or(ErrorCode::BetNotFound)?;
-
-    if e.ledger().timestamp() < locked.unlock_time {
-        return Err(ErrorCode::VotingNotStarted);
-    }
 
     let gov_token: Address = e
         .storage()
@@ -134,6 +143,9 @@ pub fn unlock_tokens(e: &Env, voter: Address, market_id: u64) -> Result<(), Erro
     token_client.transfer(&e.current_contract_address(), &voter, &locked.amount);
 
     e.storage().persistent().remove(&lock_key);
+    e.storage()
+        .persistent()
+        .remove(&DataKey::LockedBalance(market_id, voter));
 
     Ok(())
 }

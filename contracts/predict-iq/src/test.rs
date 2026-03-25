@@ -461,7 +461,7 @@ fn test_initiate_upgrade_starts_timelock() {
 
     client.initialize_guardians(&guardians);
 
-    let wasm_hash = String::from_str(&e, "abcd1234");
+    let wasm_hash = soroban_sdk::BytesN::from_array(&e, &[0xab,0xcd,0x12,0x34,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]);
 
     // Set initial ledger time
     e.ledger().with_mut(|li| li.timestamp = 1000);
@@ -488,7 +488,7 @@ fn test_execute_upgrade_before_timelock_fails() {
 
     client.initialize_guardians(&guardians);
 
-    let wasm_hash = String::from_str(&e, "abcd1234");
+    let wasm_hash = soroban_sdk::BytesN::from_array(&e, &[0xab,0xcd,0x12,0x34,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]);
     e.ledger().with_mut(|li| li.timestamp = 1000);
 
     client.initiate_upgrade(&wasm_hash);
@@ -514,7 +514,7 @@ fn test_execute_upgrade_after_timelock_succeeds() {
 
     client.initialize_guardians(&guardians);
 
-    let wasm_hash = String::from_str(&e, "abcd1234");
+    let wasm_hash = soroban_sdk::BytesN::from_array(&e, &[0xab,0xcd,0x12,0x34,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]);
     e.ledger().with_mut(|li| li.timestamp = 1000);
 
     client.initiate_upgrade(&wasm_hash);
@@ -559,7 +559,7 @@ fn test_insufficient_votes_to_execute() {
 
     client.initialize_guardians(&guardians);
 
-    let wasm_hash = String::from_str(&e, "abcd1234");
+    let wasm_hash = soroban_sdk::BytesN::from_array(&e, &[0xab,0xcd,0x12,0x34,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]);
     e.ledger().with_mut(|li| li.timestamp = 1000);
 
     client.initiate_upgrade(&wasm_hash);
@@ -599,7 +599,7 @@ fn test_majority_vote_required() {
 
     client.initialize_guardians(&guardians);
 
-    let wasm_hash = String::from_str(&e, "abcd1234");
+    let wasm_hash = soroban_sdk::BytesN::from_array(&e, &[0xab,0xcd,0x12,0x34,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]);
     e.ledger().with_mut(|li| li.timestamp = 1000);
 
     client.initiate_upgrade(&wasm_hash);
@@ -629,7 +629,7 @@ fn test_cannot_vote_twice() {
 
     client.initialize_guardians(&guardians);
 
-    let wasm_hash = String::from_str(&e, "abcd1234");
+    let wasm_hash = soroban_sdk::BytesN::from_array(&e, &[0xab,0xcd,0x12,0x34,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]);
     e.ledger().with_mut(|li| li.timestamp = 1000);
 
     client.initiate_upgrade(&wasm_hash);
@@ -657,7 +657,7 @@ fn test_only_guardians_can_vote() {
 
     client.initialize_guardians(&guardians);
 
-    let wasm_hash = String::from_str(&e, "abcd1234");
+    let wasm_hash = soroban_sdk::BytesN::from_array(&e, &[0xab,0xcd,0x12,0x34,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]);
     e.ledger().with_mut(|li| li.timestamp = 1000);
 
     client.initiate_upgrade(&wasm_hash);
@@ -686,29 +686,29 @@ fn test_get_upgrade_votes() {
 
     client.initialize_guardians(&guardians);
 
-    let wasm_hash = String::from_str(&e, "abcd1234");
+    let wasm_hash = soroban_sdk::BytesN::from_array(&e, &[0xab,0xcd,0x12,0x34,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]);
     e.ledger().with_mut(|li| li.timestamp = 1000);
 
     client.initiate_upgrade(&wasm_hash);
 
     // Initial votes should be (0, 0)
-    let (for_count, against_count) = client.get_upgrade_votes();
-    assert_eq!(for_count, 0);
-    assert_eq!(against_count, 0);
+    let votes = client.get_upgrade_votes();
+    assert_eq!(votes.votes_for, 0);
+    assert_eq!(votes.votes_against, 0);
 
     // One guardian votes for
     client.vote_for_upgrade(&guardian1, &true);
 
-    let (for_count, against_count) = client.get_upgrade_votes();
-    assert_eq!(for_count, 1);
-    assert_eq!(against_count, 0);
+    let votes = client.get_upgrade_votes();
+    assert_eq!(votes.votes_for, 1);
+    assert_eq!(votes.votes_against, 0);
 
     // Another votes against
     client.vote_for_upgrade(&guardian2, &false);
 
-    let (for_count, against_count) = client.get_upgrade_votes();
-    assert_eq!(for_count, 1);
-    assert_eq!(against_count, 1);
+    let votes = client.get_upgrade_votes();
+    assert_eq!(votes.votes_for, 1);
+    assert_eq!(votes.votes_against, 1);
 }
 
 #[test]
@@ -730,7 +730,7 @@ fn test_persistent_state_preserved_on_upgrade() {
     assert_eq!(stored_fee, 100);
 
     // Initiate upgrade
-    let wasm_hash = String::from_str(&e, "abcd1234");
+    let wasm_hash = soroban_sdk::BytesN::from_array(&e, &[0xab,0xcd,0x12,0x34,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]);
     e.ledger().with_mut(|li| li.timestamp = 1000);
     client.initiate_upgrade(&wasm_hash);
 
@@ -1280,7 +1280,7 @@ fn test_pending_upgrade_survives_3_months_inactivity() {
     });
     client.initialize_guardians(&guardians);
 
-    let wasm_hash = String::from_str(&e, "deadbeef1234");
+    let wasm_hash = soroban_sdk::BytesN::from_array(&e, &[0xde,0xad,0xbe,0xef,0x12,0x34,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]);
     e.ledger().with_mut(|li| li.timestamp = 1000);
 
     client.initiate_upgrade(&wasm_hash);
@@ -1334,7 +1334,7 @@ fn test_vote_on_upgrade_refreshes_ttl() {
     client.initialize_guardians(&guardians);
 
     e.ledger().with_mut(|li| li.timestamp = 1000);
-    client.initiate_upgrade(&String::from_str(&e, "cafebabe"));
+    client.initiate_upgrade(&soroban_sdk::BytesN::from_array(&e, &[0xca,0xfe,0xba,0xbe,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]));
 
     // Vote refreshes the TTL on PendingUpgrade
     client.vote_for_upgrade(&guardian, &true);
@@ -1347,7 +1347,7 @@ fn test_vote_on_upgrade_refreshes_ttl() {
 
     let pending = client.get_pending_upgrade();
     assert!(pending.is_some(), "PendingUpgrade expired after vote + 3 months inactivity");
-    let (votes_for, _) = client.get_upgrade_votes().unwrap();
+    let votes_for = client.get_upgrade_votes().votes_for;
     assert_eq!(votes_for, 1);
 }
 
@@ -1476,3 +1476,5 @@ fn test_double_vote_still_rejected_with_optimized_struct() {
     let result = client.try_cast_vote(&voter, &market_id, &1, &5000);
     assert_eq!(result, Err(Ok(crate::errors::ErrorCode::AlreadyVoted)));
 }
+
+

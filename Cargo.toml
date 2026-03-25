@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["contracts/*", "services/*"]
+members = ["contracts/*"]
+exclude = ["services/tts", "services/api"]
 
 [workspace.dependencies]
 soroban-sdk = "22.0.0"

@@ -1,5 +1,8 @@
+/// Issue #38: All monitoring state moved to persistent storage so it stays
+/// consistent with the circuit breaker state (also persistent).
+/// Issue #44: Emit MonitorReset event when counters are cleared.
 use crate::types::CircuitBreakerState;
-use soroban_sdk::{contracttype, Env};
+use soroban_sdk::{contracttype, symbol_short, Env};
 
 #[contracttype]
 pub enum DataKey {
@@ -10,26 +13,27 @@ pub enum DataKey {
 pub fn track_error(e: &Env) {
     let mut count: u32 = e
         .storage()
-        .instance()
+        .persistent()
         .get(&DataKey::ErrorCount)
         .unwrap_or(0);
     count += 1;
-    e.storage().instance().set(&DataKey::ErrorCount, &count);
+    e.storage().persistent().set(&DataKey::ErrorCount, &count);
 
     if count > 10 {
-        // Threshold for automatic trigger
-        // Automatically open the circuit breaker
         e.storage().persistent().set(
             &crate::types::ConfigKey::CircuitBreakerState,
             &CircuitBreakerState::Open,
         );
 
-        // Emit standardized circuit breaker event using soroban_sdk
-        use soroban_sdk::symbol_short;
-        e.events().publish((symbol_short!("cb_auto"),), count);
+        e.events()
+            .publish((symbol_short!("cb_auto"),), count);
     }
 }
 
+/// Issue #44: Emit MonitorReset event so devops can track resets on-chain.
 pub fn reset_monitoring(e: &Env) {
-    e.storage().instance().set(&DataKey::ErrorCount, &0u32);
+    e.storage().persistent().set(&DataKey::ErrorCount, &0u32);
+
+    e.events()
+        .publish((symbol_short!("mon_reset"),), 0u32);
 }
