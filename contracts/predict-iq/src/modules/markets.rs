@@ -101,12 +101,7 @@ pub fn create_market(
         token_client.transfer(&creator, &e.current_contract_address(), &creation_deposit);
     }
 
-    let mut count: u64 = e
-        .storage()
-        .instance()
-        .get(&DataKey::MarketCount)
-        .unwrap_or(0);
-    count += 1;
+    let count = allocate_market_id(e)?;
 
     let num_outcomes = options.len() as u32;
 
@@ -164,6 +159,24 @@ pub fn create_market(
     Ok(count)
 }
 
+pub fn allocate_market_id(e: &Env) -> Result<u64, ErrorCode> {
+    let current_count: u64 = e
+        .storage()
+        .instance()
+        .get(&DataKey::MarketCount)
+        .unwrap_or(0);
+
+    let next_id = current_count
+        .checked_add(1)
+        .ok_or(ErrorCode::MarketIdOverflow)?;
+
+    if e.storage().persistent().has(&DataKey::Market(next_id)) {
+        return Err(ErrorCode::MarketIdCollision);
+    }
+
+    e.storage().instance().set(&DataKey::MarketCount, &next_id);
+
+    Ok(next_id)
 /// Validates that a parent market exists, is resolved, and resolved to the required outcome.
 /// Called by both create_market and place_bet to enforce consistent conditional market rules.
 pub fn validate_parent_market(

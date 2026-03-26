@@ -89,6 +89,8 @@ pub enum ErrorCode {
     UpgradeFailed = 132,
     ParentMarketNotResolved = 133,
     ParentMarketInvalidOutcome = 134,
+    MarketIdOverflow = 135,
+    MarketIdCollision = 136,
     InsufficientVotingWeight = 135,
     MarketNotCancelled = 136,
     BetNotFound = 137,
