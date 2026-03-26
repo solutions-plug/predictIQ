@@ -145,7 +145,8 @@ fn test_stage3_dispute_filed_within_24h() {
     
     let market = client.get_market(&market_id).unwrap();
     assert_eq!(market.status, types::MarketStatus::Disputed);
-    assert!(market.dispute_timestamp.is_some());
+    // dispute window is tracked via pending_resolution_timestamp (set at oracle resolution)
+    assert!(market.pending_resolution_timestamp.is_some());
 }
 
 #[test]
@@ -338,4 +339,146 @@ fn test_payouts_blocked_until_resolved() {
     // Now claim should work
     let payout = client.claim_winnings(&bettor, &market_id);
     assert!(payout > 0);
+}
+
+#[test]
+fn test_resolved_at_populated_after_oracle_finalization() {
+    let (e, _admin, _, client) = setup_test_env();
+
+    let resolution_deadline = 2000;
+    let market_id = create_test_market(&client, &e, resolution_deadline);
+
+    client.set_oracle_result(&market_id, &0);
+
+    e.ledger().with_mut(|li| {
+        li.timestamp = resolution_deadline;
+    });
+
+    client.attempt_oracle_resolution(&market_id);
+
+    let finalize_time = resolution_deadline + 86400; // T+24h
+    e.ledger().with_mut(|li| {
+        li.timestamp = finalize_time;
+    });
+
+    client.finalize_resolution(&market_id);
+
+    let market = client.get_market(&market_id).unwrap();
+    assert_eq!(market.status, types::MarketStatus::Resolved);
+    // resolved_at must be set so prune_market can enforce the 30-day grace period
+    assert_eq!(market.resolved_at, Some(finalize_time));
+}
+
+#[test]
+fn test_prune_market_succeeds_after_30_days() {
+    let (e, _admin, _, client) = setup_test_env();
+
+    let resolution_deadline = 2000;
+    let market_id = create_test_market(&client, &e, resolution_deadline);
+
+    client.set_oracle_result(&market_id, &0);
+
+    e.ledger().with_mut(|li| {
+        li.timestamp = resolution_deadline;
+    });
+
+    client.attempt_oracle_resolution(&market_id);
+
+    let finalize_time = resolution_deadline + 86400;
+    e.ledger().with_mut(|li| {
+        li.timestamp = finalize_time;
+    });
+
+    client.finalize_resolution(&market_id);
+
+    // Advance to exactly 30 days after resolution
+    let prune_time = finalize_time + 2_592_000; // PRUNE_GRACE_PERIOD
+    e.ledger().with_mut(|li| {
+        li.timestamp = prune_time;
+    });
+
+    // Should succeed — 30-day grace period has elapsed
+    client.prune_market(&market_id);
+
+    // Market must no longer exist in storage
+    assert!(client.get_market(&market_id).is_none());
+}
+
+#[test]
+#[should_panic]
+fn test_prune_market_fails_before_30_days() {
+    let (e, _admin, _, client) = setup_test_env();
+
+    let resolution_deadline = 2000;
+    let market_id = create_test_market(&client, &e, resolution_deadline);
+
+    client.set_oracle_result(&market_id, &0);
+
+    e.ledger().with_mut(|li| {
+        li.timestamp = resolution_deadline;
+    });
+
+    client.attempt_oracle_resolution(&market_id);
+
+    let finalize_time = resolution_deadline + 86400;
+    e.ledger().with_mut(|li| {
+        li.timestamp = finalize_time;
+    });
+
+    client.finalize_resolution(&market_id);
+
+    // Only 15 days after resolution — should fail
+    e.ledger().with_mut(|li| {
+        li.timestamp = finalize_time + 1_296_000; // 15 days
+    });
+
+    client.prune_market(&market_id);
+}
+
+#[test]
+fn test_resolved_at_populated_after_dispute_resolution() {
+    let (e, _admin, contract_id, client) = setup_test_env();
+
+    let token_admin = Address::generate(&e);
+    let token_id = e.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_address = token_id.address();
+    let token_client = token::StellarAssetClient::new(&e, &token_address);
+
+    client.set_governance_token(&token_address);
+
+    let resolution_deadline = 2000;
+    let market_id = create_test_market(&client, &e, resolution_deadline);
+
+    client.set_oracle_result(&market_id, &0);
+
+    e.ledger().with_mut(|li| {
+        li.timestamp = resolution_deadline;
+    });
+
+    client.attempt_oracle_resolution(&market_id);
+
+    // File dispute within 24h
+    let disputer = Address::generate(&e);
+    e.ledger().with_mut(|li| {
+        li.timestamp = resolution_deadline + 10000;
+    });
+    client.file_dispute(&disputer, &market_id);
+
+    // Cast votes with clear majority
+    let voter = Address::generate(&e);
+    token_client.mint(&voter, &7000);
+    client.cast_vote(&voter, &market_id, &1, &7000);
+
+    // Advance past 24h dispute window + 72h voting period
+    let finalize_time = resolution_deadline + 86400 + 259200;
+    e.ledger().with_mut(|li| {
+        li.timestamp = finalize_time;
+    });
+
+    client.finalize_resolution(&market_id);
+
+    let market = client.get_market(&market_id).unwrap();
+    assert_eq!(market.status, types::MarketStatus::Resolved);
+    // resolved_at must be set on the dispute path too
+    assert_eq!(market.resolved_at, Some(finalize_time));
 }
