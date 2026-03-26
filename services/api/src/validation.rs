@@ -76,17 +76,15 @@ pub async fn content_type_validation_middleware(
     let headers = request.headers();
 
     // Only validate POST, PUT, PATCH requests
-    if matches!(
-        method.as_str(),
-        "POST" | "PUT" | "PATCH"
-    ) {
+    if matches!(method.as_str(), "POST" | "PUT" | "PATCH") {
         if let Some(content_type) = headers.get("content-type") {
             let ct = content_type.to_str().unwrap_or("");
-            
+
             // Allow only JSON and form data
-            if !ct.starts_with("application/json") 
+            if !ct.starts_with("application/json")
                 && !ct.starts_with("application/x-www-form-urlencoded")
-                && !ct.starts_with("multipart/form-data") {
+                && !ct.starts_with("multipart/form-data")
+            {
                 return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
             }
         } else {

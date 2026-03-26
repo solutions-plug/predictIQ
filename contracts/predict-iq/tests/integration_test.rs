@@ -121,7 +121,14 @@ fn test_referral_system_integration() {
     token_client.mint(&bettor, &10_000);
 
     // Place bet with referrer
-    client.place_bet(&bettor, &market_id, &0, &1_000, &token, &Some(referrer.clone()));
+    client.place_bet(
+        &bettor,
+        &market_id,
+        &0,
+        &1_000,
+        &token,
+        &Some(referrer.clone()),
+    );
 
     // Referrer should have pending rewards
     let rewards_before = token_client.balance(&referrer);
@@ -148,10 +155,7 @@ fn test_conditional_market_chain() {
     // Create child market conditional on parent outcome 0
     let options = Vec::from_array(
         &env,
-        [
-            String::from_str(&env, "Yes"),
-            String::from_str(&env, "No"),
-        ],
+        [String::from_str(&env, "Yes"), String::from_str(&env, "No")],
     );
 
     let oracle_config = predict_iq::types::OracleConfig {

@@ -1,6 +1,7 @@
 use crate::errors::ErrorCode;
 use crate::modules::markets;
 use crate::types::{ConfigKey, LockedTokens, MarketStatus, Vote};
+use soroban_sdk::{contracttype, token, Address, Env, Symbol, Val};
 use soroban_sdk::{contracttype, token, Address, Env, Symbol};
 
 #[contracttype]
@@ -102,6 +103,12 @@ fn try_get_balance_at(
     account: &Address,
     ledger: u32,
 ) -> Result<i128, ErrorCode> {
+    use soroban_sdk::{IntoVal, TryFromVal};
+    let args: soroban_sdk::Vec<Val> =
+        soroban_sdk::vec![e, account.clone().into_val(e), ledger.into_val(e)];
+
+    match e.try_invoke_contract::<Val, ErrorCode>(token, &Symbol::new(e, "balance_at"), args) {
+        Ok(Ok(val)) => i128::try_from_val(e, &val).map_err(|_| ErrorCode::OracleFailure),
     use soroban_sdk::{IntoVal, Val};
     let args: soroban_sdk::Vec<Val> = soroban_sdk::vec![
         e,
@@ -126,7 +133,7 @@ pub fn unlock_tokens(e: &Env, voter: Address, market_id: u64) -> Result<(), Erro
         .ok_or(ErrorCode::BetNotFound)?;
 
     if e.ledger().timestamp() < locked.unlock_time {
-        return Err(ErrorCode::VotingNotStarted);
+        return Err(ErrorCode::TimelockActive);
     }
 
     let gov_token: Address = e

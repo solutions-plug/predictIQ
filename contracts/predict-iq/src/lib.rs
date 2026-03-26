@@ -1,7 +1,7 @@
 #![cfg_attr(not(test), no_std)]
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Vec};
 
-mod errors;
+pub mod errors;
 mod modules;
 mod test;
 pub mod types;
@@ -16,9 +16,18 @@ pub struct PredictIQ;
 
 #[contractimpl]
 impl PredictIQ {
-    pub fn initialize(e: Env, admin: Address, base_fee: i128) -> Result<(), ErrorCode> {
+    pub fn initialize(
+        e: Env,
+        admin: Address,
+        base_fee: i128,
+        guardians: Vec<crate::types::Guardian>,
+    ) -> Result<(), ErrorCode> {
         if e.storage().persistent().has(&ConfigKey::Admin) {
             return Err(ErrorCode::AlreadyInitialized);
+        }
+
+        if guardians.is_empty() {
+            return Err(ErrorCode::NotAuthorized);
         }
 
         admin::set_admin(&e, admin);
@@ -27,6 +36,7 @@ impl PredictIQ {
             &ConfigKey::CircuitBreakerState,
             &CircuitBreakerState::Closed,
         );
+        crate::modules::governance::initialize_guardians(&e, guardians)?;
         Ok(())
     }
 
@@ -82,6 +92,16 @@ impl PredictIQ {
         )
     }
 
+    pub fn claim_winnings(e: Env, bettor: Address, market_id: u64) -> Result<i128, ErrorCode> {
+        crate::modules::bets::claim_winnings(&e, bettor, market_id)
+    }
+
+    pub fn withdraw_refund(e: Env, bettor: Address, market_id: u64) -> Result<i128, ErrorCode> {
+        crate::modules::cancellation::withdraw_refund(&e, bettor, market_id)
+    }
+
+    pub fn cancel_market_admin(e: Env, market_id: u64) -> Result<(), ErrorCode> {
+        crate::modules::cancellation::cancel_market_admin(&e, market_id)
     pub fn claim_winnings(
         e: Env,
         bettor: Address,
@@ -225,14 +245,6 @@ impl PredictIQ {
     }
 
     // Governance and Upgrade Functions
-    pub fn initialize_guardians(
-        e: Env,
-        guardians: Vec<crate::types::Guardian>,
-    ) -> Result<(), ErrorCode> {
-        crate::modules::admin::require_admin(&e)?;
-        crate::modules::governance::initialize_guardians(&e, guardians)
-    }
-
     pub fn add_guardian(e: Env, guardian: crate::types::Guardian) -> Result<(), ErrorCode> {
         crate::modules::governance::add_guardian(&e, guardian)
     }

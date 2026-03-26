@@ -46,8 +46,12 @@ impl EmailService {
 
         // Render email content
         let html_content = self.template_engine.render(template_name, template_data)?;
-        let text_content = self.template_engine.render_text(template_name, template_data);
-        let subject = self.template_engine.get_subject(template_name, template_data);
+        let text_content = self
+            .template_engine
+            .render_text(template_name, template_data);
+        let subject = self
+            .template_engine
+            .get_subject(template_name, template_data);
 
         // Build SendGrid payload
         let payload = serde_json::json!({
@@ -110,10 +114,18 @@ impl EmailService {
     }
 
     /// Preview email without sending (for testing/development)
-    pub fn preview_email(&self, template_name: &str, template_data: &Value) -> Result<EmailPreview> {
+    pub fn preview_email(
+        &self,
+        template_name: &str,
+        template_data: &Value,
+    ) -> Result<EmailPreview> {
         let html_content = self.template_engine.render(template_name, template_data)?;
-        let text_content = self.template_engine.render_text(template_name, template_data);
-        let subject = self.template_engine.get_subject(template_name, template_data);
+        let text_content = self
+            .template_engine
+            .render_text(template_name, template_data);
+        let subject = self
+            .template_engine
+            .get_subject(template_name, template_data);
 
         Ok(EmailPreview {
             subject,
@@ -174,7 +186,9 @@ mod tests {
             "email": "test@example.com"
         });
 
-        let preview = service.preview_email("newsletter_confirmation", &data).unwrap();
+        let preview = service
+            .preview_email("newsletter_confirmation", &data)
+            .unwrap();
         assert!(!preview.subject.is_empty());
         assert!(preview.html_content.contains("confirm"));
         assert!(preview.text_content.contains("confirm"));

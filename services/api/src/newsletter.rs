@@ -31,7 +31,11 @@ impl IpRateLimiter {
     }
 }
 
-pub async fn send_confirmation_email(config: &Config, email: &str, token: &str) -> anyhow::Result<()> {
+pub async fn send_confirmation_email(
+    config: &Config,
+    email: &str,
+    token: &str,
+) -> anyhow::Result<()> {
     let api_key = config
         .sendgrid_api_key
         .as_deref()

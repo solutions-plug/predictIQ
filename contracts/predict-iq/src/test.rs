@@ -8,10 +8,18 @@ fn setup_test_env() -> (Env, Address, soroban_sdk::Address, PredictIQClient<'sta
     e.mock_all_auths();
 
     let admin = Address::generate(&e);
-    let contract_id = e.register_contract(None, PredictIQ);
+    let contract_id = e.register(PredictIQ, ());
     let client = PredictIQClient::new(&e, &contract_id);
 
-    client.initialize(&admin, &100); // 1% fee
+    let init_guardians = {
+        let mut g = soroban_sdk::Vec::new(&e);
+        g.push_back(types::Guardian {
+            address: Address::generate(&e),
+            voting_power: 1,
+        });
+        g
+    };
+    client.initialize(&admin, &100, &init_guardians);
 
     (e, admin, contract_id, client)
 }
@@ -37,6 +45,7 @@ fn create_test_market(
         feed_id: String::from_str(e, "test_feed"),
         min_responses: Some(1),
         max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
         max_confidence_bps: 100,
     };
 
@@ -81,6 +90,8 @@ fn test_market_creation_fails_without_deposit() {
             oracle_address: Address::generate(&e),
             feed_id: String::from_str(&e, "test"),
             min_responses: Some(1),
+            max_staleness_seconds: 3600,
+            max_confidence_bps: 200,
         max_staleness_seconds: 3600,
         max_confidence_bps: 100,
         },
@@ -826,6 +837,7 @@ fn test_create_conditional_market_parent_not_resolved() {
         feed_id: String::from_str(&e, "test_feed"),
         min_responses: Some(1),
         max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
         max_confidence_bps: 100,
     };
 
@@ -877,6 +889,7 @@ fn test_create_conditional_market_parent_wrong_outcome() {
         feed_id: String::from_str(&e, "test_feed"),
         min_responses: Some(1),
         max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
         max_confidence_bps: 100,
     };
 
@@ -928,6 +941,7 @@ fn test_create_conditional_market_success() {
         feed_id: String::from_str(&e, "test_feed"),
         min_responses: Some(1),
         max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
         max_confidence_bps: 100,
     };
 
@@ -988,6 +1002,7 @@ fn test_place_bet_on_conditional_market_parent_not_resolved() {
         feed_id: String::from_str(&e, "test_feed"),
         min_responses: Some(1),
         max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
         max_confidence_bps: 100,
     };
 
@@ -1048,6 +1063,7 @@ fn test_place_bet_on_conditional_market_parent_wrong_outcome() {
         feed_id: String::from_str(&e, "test_feed"),
         min_responses: Some(1),
         max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
         max_confidence_bps: 100,
     };
 
@@ -1129,6 +1145,7 @@ fn test_multi_level_conditional_markets() {
         feed_id: String::from_str(&e, "test_feed"),
         min_responses: Some(1),
         max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
         max_confidence_bps: 100,
     };
 
@@ -1198,6 +1215,7 @@ fn test_create_conditional_market_invalid_parent_outcome_idx() {
         feed_id: String::from_str(&e, "test_feed"),
         min_responses: Some(1),
         max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
         max_confidence_bps: 100,
     };
 

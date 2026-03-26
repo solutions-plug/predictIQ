@@ -8,7 +8,7 @@ fn setup() -> (Env, PredictIQClient<'static>, Address) {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, PredictIQ);
+    let contract_id = env.register(PredictIQ, ());
     let client = PredictIQClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -23,10 +23,7 @@ fn test_create_market_basic() {
 
     let options = Vec::from_array(
         &env,
-        [
-            String::from_str(&env, "Yes"),
-            String::from_str(&env, "No"),
-        ],
+        [String::from_str(&env, "Yes"), String::from_str(&env, "No")],
     );
 
     let oracle_config = OracleConfig {
@@ -34,6 +31,7 @@ fn test_create_market_basic() {
         feed_id: String::from_str(&env, "test"),
         min_responses: Some(1),
         max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
         max_confidence_bps: 100,
     };
 
@@ -70,6 +68,7 @@ fn test_create_market_with_single_option_fails() {
         feed_id: String::from_str(&env, "test"),
         min_responses: Some(1),
         max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
         max_confidence_bps: 100,
     };
 
@@ -105,6 +104,7 @@ fn test_create_market_with_too_many_outcomes() {
         feed_id: String::from_str(&env, "test"),
         min_responses: Some(1),
         max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
         max_confidence_bps: 100,
     };
 
@@ -134,10 +134,7 @@ fn test_create_market_deadline_in_past() {
 
     let options = Vec::from_array(
         &env,
-        [
-            String::from_str(&env, "Yes"),
-            String::from_str(&env, "No"),
-        ],
+        [String::from_str(&env, "Yes"), String::from_str(&env, "No")],
     );
 
     let oracle_config = OracleConfig {
@@ -145,6 +142,7 @@ fn test_create_market_deadline_in_past() {
         feed_id: String::from_str(&env, "test"),
         min_responses: Some(1),
         max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
         max_confidence_bps: 100,
     };
 
@@ -172,10 +170,7 @@ fn test_create_market_resolution_before_deadline() {
 
     let options = Vec::from_array(
         &env,
-        [
-            String::from_str(&env, "Yes"),
-            String::from_str(&env, "No"),
-        ],
+        [String::from_str(&env, "Yes"), String::from_str(&env, "No")],
     );
 
     let oracle_config = OracleConfig {
@@ -183,6 +178,7 @@ fn test_create_market_resolution_before_deadline() {
         feed_id: String::from_str(&env, "test"),
         min_responses: Some(1),
         max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
         max_confidence_bps: 100,
     };
 
@@ -210,10 +206,7 @@ fn test_market_id_increments() {
 
     let options = Vec::from_array(
         &env,
-        [
-            String::from_str(&env, "Yes"),
-            String::from_str(&env, "No"),
-        ],
+        [String::from_str(&env, "Yes"), String::from_str(&env, "No")],
     );
 
     let oracle_config = OracleConfig {
@@ -221,6 +214,7 @@ fn test_market_id_increments() {
         feed_id: String::from_str(&env, "test"),
         min_responses: Some(1),
         max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
         max_confidence_bps: 100,
     };
 
@@ -310,10 +304,7 @@ fn test_market_tiers() {
 
     let options = Vec::from_array(
         &env,
-        [
-            String::from_str(&env, "Yes"),
-            String::from_str(&env, "No"),
-        ],
+        [String::from_str(&env, "Yes"), String::from_str(&env, "No")],
     );
 
     let oracle_config = OracleConfig {
@@ -321,6 +312,7 @@ fn test_market_tiers() {
         feed_id: String::from_str(&env, "test"),
         min_responses: Some(1),
         max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
         max_confidence_bps: 100,
     };
 
@@ -366,7 +358,10 @@ fn test_market_tiers() {
         &0,
     );
 
-    assert_eq!(client.get_market(&basic_id).unwrap().tier, MarketTier::Basic);
+    assert_eq!(
+        client.get_market(&basic_id).unwrap().tier,
+        MarketTier::Basic
+    );
     assert_eq!(client.get_market(&pro_id).unwrap().tier, MarketTier::Pro);
     assert_eq!(
         client.get_market(&inst_id).unwrap().tier,
@@ -380,10 +375,7 @@ fn test_prune_market_before_grace_period() {
 
     let options = Vec::from_array(
         &env,
-        [
-            String::from_str(&env, "Yes"),
-            String::from_str(&env, "No"),
-        ],
+        [String::from_str(&env, "Yes"), String::from_str(&env, "No")],
     );
 
     let oracle_config = OracleConfig {
@@ -425,10 +417,7 @@ fn test_prune_market_after_grace_period() {
 
     let options = Vec::from_array(
         &env,
-        [
-            String::from_str(&env, "Yes"),
-            String::from_str(&env, "No"),
-        ],
+        [String::from_str(&env, "Yes"), String::from_str(&env, "No")],
     );
 
     let oracle_config = OracleConfig {
@@ -473,10 +462,7 @@ fn test_prune_unresolved_market_fails() {
 
     let options = Vec::from_array(
         &env,
-        [
-            String::from_str(&env, "Yes"),
-            String::from_str(&env, "No"),
-        ],
+        [String::from_str(&env, "Yes"), String::from_str(&env, "No")],
     );
 
     let oracle_config = OracleConfig {
@@ -504,5 +490,5 @@ fn test_prune_unresolved_market_fails() {
 
     // Try to prune without resolving
     let result = client.try_prune_market(&market_id);
-    assert_eq!(result, Err(Ok(ErrorCode::MarketNotResolved)));
+    assert_eq!(result, Err(Ok(ErrorCode::MarketNotActive)));
 }

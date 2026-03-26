@@ -35,7 +35,9 @@ mod tests {
 
     #[test]
     fn test_xss_detection() {
-        assert!(sanitize::contains_sql_injection("<script>alert('xss')</script>"));
+        assert!(sanitize::contains_sql_injection(
+            "<script>alert('xss')</script>"
+        ));
         assert!(sanitize::contains_sql_injection("javascript:alert(1)"));
         assert!(sanitize::contains_sql_injection("onerror=alert(1)"));
     }
@@ -83,10 +85,18 @@ mod tests {
         assert!(signing::verify_signature(payload, &signature, secret));
 
         // Wrong payload should fail
-        assert!(!signing::verify_signature(b"wrong payload", &signature, secret));
+        assert!(!signing::verify_signature(
+            b"wrong payload",
+            &signature,
+            secret
+        ));
 
         // Wrong secret should fail
-        assert!(!signing::verify_signature(payload, &signature, "wrong-secret"));
+        assert!(!signing::verify_signature(
+            payload,
+            &signature,
+            "wrong-secret"
+        ));
     }
 
     #[test]

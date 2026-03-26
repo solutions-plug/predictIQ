@@ -329,7 +329,10 @@ impl Database {
         Ok(row.try_get("id")?)
     }
 
-    pub async fn email_get_job(&self, job_id: uuid::Uuid) -> anyhow::Result<Option<crate::email::EmailJob>> {
+    pub async fn email_get_job(
+        &self,
+        job_id: uuid::Uuid,
+    ) -> anyhow::Result<Option<crate::email::EmailJob>> {
         let row = sqlx::query(
             "SELECT id, job_type, recipient_email, template_name, template_data, status, priority,
                     attempts, max_attempts, scheduled_at, started_at, completed_at, failed_at,

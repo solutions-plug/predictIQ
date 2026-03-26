@@ -1,5 +1,9 @@
 #![cfg(test)]
 use crate::errors::ErrorCode;
+use crate::types::{MarketStatus, MarketTier, OracleConfig};
+use crate::{PredictIQ, PredictIQClient};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
 use crate::types::{Market, MarketStatus, MarketTier, OracleConfig};
 use crate::{PredictIQ, PredictIQClient};
 use soroban_sdk::{
@@ -11,7 +15,7 @@ fn setup_test_with_token() -> (Env, PredictIQClient<'static>, Address, Address, 
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, PredictIQ);
+    let contract_id = env.register(PredictIQ, ());
     let client = PredictIQClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -36,10 +40,7 @@ fn create_simple_market(
 ) -> u64 {
     let options = Vec::from_array(
         env,
-        [
-            String::from_str(env, "Yes"),
-            String::from_str(env, "No"),
-        ],
+        [String::from_str(env, "Yes"), String::from_str(env, "No")],
     );
 
     let oracle_config = OracleConfig {
@@ -47,6 +48,7 @@ fn create_simple_market(
         feed_id: String::from_str(env, "test"),
         min_responses: Some(1),
         max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
         max_confidence_bps: 100,
     };
 
@@ -226,7 +228,7 @@ fn test_claim_winnings_success() {
     // Resolve market with outcome 0 (user wins)
     client.resolve_market(&market_id, &0);
 
-    let result = client.try_claim_winnings(&user, &market_id, &token);
+    let result = client.try_claim_winnings(&user, &market_id);
     assert!(result.is_ok());
 }
 
@@ -243,7 +245,7 @@ fn test_claim_winnings_losing_bet() {
     // Resolve market with outcome 1 (user loses)
     client.resolve_market(&market_id, &1);
 
-    let result = client.try_claim_winnings(&user, &market_id, &token);
+    let result = client.try_claim_winnings(&user, &market_id);
     assert_eq!(result, Err(Ok(ErrorCode::NoWinnings)));
 }
 
@@ -257,7 +259,7 @@ fn test_claim_winnings_before_resolution() {
 
     client.place_bet(&user, &market_id, &0, &1000, &token, &None);
 
-    let result = client.try_claim_winnings(&user, &market_id, &token);
+    let result = client.try_claim_winnings(&user, &market_id);
     assert_eq!(result, Err(Ok(ErrorCode::MarketNotResolved)));
 }
 
@@ -272,24 +274,25 @@ fn test_claim_winnings_twice() {
     client.place_bet(&user, &market_id, &0, &1000, &token, &None);
     client.resolve_market(&market_id, &0);
 
-    client.claim_winnings(&user, &market_id, &token);
+    client.claim_winnings(&user, &market_id);
 
     // Second claim should fail
-    let result = client.try_claim_winnings(&user, &market_id, &token);
+    let result = client.try_claim_winnings(&user, &market_id);
     assert_eq!(result, Err(Ok(ErrorCode::AlreadyClaimed)));
 }
 
 #[test]
 fn test_claim_winnings_no_bet_placed() {
-    let (env, client, _admin, user, token) = setup_test_with_token();
+    let (env, client, _admin, _user, _token) = setup_test_with_token();
 
     env.ledger().set_timestamp(500);
 
-    let market_id = create_simple_market(&client, &env, &user, &token);
+    let other_user = Address::generate(&env);
+    let market_id = create_simple_market(&client, &env, &other_user, &_token);
 
     client.resolve_market(&market_id, &0);
 
-    let result = client.try_claim_winnings(&user, &market_id, &token);
+    let result = client.try_claim_winnings(&other_user, &market_id);
     assert_eq!(result, Err(Ok(ErrorCode::NoWinnings)));
 }
 
@@ -298,8 +301,8 @@ fn test_winnings_calculation_single_winner() {
     let (env, client, _admin, user1, token) = setup_test_with_token();
 
     let user2 = Address::generate(&env);
-    let token_client = token::StellarAssetClient::new(&env, &token);
-    token_client.mint(&user2, &100_000);
+    let token_client = token::Client::new(&env, &token);
+    token::StellarAssetClient::new(&env, &token).mint(&user2, &100_000);
 
     env.ledger().set_timestamp(500);
 
@@ -314,6 +317,9 @@ fn test_winnings_calculation_single_winner() {
     // Resolve with outcome 0 (user1 wins)
     client.resolve_market(&market_id, &0);
 
+    let balance_before = token_client.balance(&user1);
+    let winnings = client.claim_winnings(&user1, &market_id);
+    let balance_after = token_client.balance(&user1);
     let balance_before = token::Client::new(&env, &token).balance(&user1);
     let winnings = client.claim_winnings(&user1, &market_id, &token);
     let balance_after = token::Client::new(&env, &token).balance(&user1);
@@ -329,9 +335,9 @@ fn test_winnings_calculation_multiple_winners() {
 
     let user2 = Address::generate(&env);
     let user3 = Address::generate(&env);
-    let token_client = token::StellarAssetClient::new(&env, &token);
-    token_client.mint(&user2, &100_000);
-    token_client.mint(&user3, &100_000);
+    let sac = token::StellarAssetClient::new(&env, &token);
+    sac.mint(&user2, &100_000);
+    sac.mint(&user3, &100_000);
 
     env.ledger().set_timestamp(500);
 
@@ -347,8 +353,8 @@ fn test_winnings_calculation_multiple_winners() {
     // Resolve with outcome 0
     client.resolve_market(&market_id, &0);
 
-    let winnings1 = client.claim_winnings(&user1, &market_id, &token);
-    let winnings2 = client.claim_winnings(&user2, &market_id, &token);
+    let winnings1 = client.claim_winnings(&user1, &market_id);
+    let winnings2 = client.claim_winnings(&user2, &market_id);
 
     // User2 bet twice as much, should get twice the winnings
     assert!(winnings2 > winnings1);
@@ -367,7 +373,14 @@ fn test_referral_rewards_tracked() {
     let market_id = create_simple_market(&client, &env, &user, &token);
 
     // Place bet with referrer
-    client.place_bet(&user, &market_id, &0, &1000, &token, &Some(referrer.clone()));
+    client.place_bet(
+        &user,
+        &market_id,
+        &0,
+        &1000,
+        &token,
+        &Some(referrer.clone()),
+    );
 
     // Referrer should have pending rewards
     let rewards = client.try_claim_referral_rewards(&referrer, &token);

@@ -53,7 +53,8 @@ impl EmailQueue {
         };
 
         let mut conn = self.cache.manager.clone();
-        let _: () = conn.zadd(EMAIL_QUEUE_KEY, job_id.to_string(), score)
+        let _: () = conn
+            .zadd(EMAIL_QUEUE_KEY, job_id.to_string(), score)
             .await
             .context("Failed to add job to queue")?;
 
@@ -75,7 +76,8 @@ impl EmailQueue {
             let job_id = Uuid::parse_str(&job_id_str)?;
 
             // Add to processing set
-            let _: () = conn.sadd(EMAIL_PROCESSING_KEY, job_id.to_string())
+            let _: () = conn
+                .sadd(EMAIL_PROCESSING_KEY, job_id.to_string())
                 .await
                 .context("Failed to mark job as processing")?;
 
@@ -93,14 +95,21 @@ impl EmailQueue {
 
         // Remove from processing set
         let mut conn = self.cache.manager.clone();
-        let _: () = conn.srem(EMAIL_PROCESSING_KEY, job_id.to_string())
+        let _: () = conn
+            .srem(EMAIL_PROCESSING_KEY, job_id.to_string())
             .await
             .context("Failed to remove from processing set")?;
 
         // Track sent event
         if let Some(msg_id) = message_id {
             self.db
-                .email_create_event(Some(job_id), Some(&msg_id), "sent", "", serde_json::json!({}))
+                .email_create_event(
+                    Some(job_id),
+                    Some(&msg_id),
+                    "sent",
+                    "",
+                    serde_json::json!({}),
+                )
                 .await?;
         }
 
@@ -118,7 +127,8 @@ impl EmailQueue {
             if new_attempts < job.max_attempts {
                 // Schedule retry with exponential backoff
                 let backoff_seconds = 2_u64.pow(new_attempts as u32) * 60; // 2min, 4min, 8min...
-                let retry_at = chrono::Utc::now() + chrono::Duration::seconds(backoff_seconds as i64);
+                let retry_at =
+                    chrono::Utc::now() + chrono::Duration::seconds(backoff_seconds as i64);
 
                 self.db
                     .email_update_job_attempts(job_id, new_attempts, Some(error))
@@ -126,13 +136,14 @@ impl EmailQueue {
 
                 // Add to retry queue
                 let mut conn = self.cache.manager.clone();
-                let _: () = conn.zadd(
-                    EMAIL_RETRY_KEY,
-                    job_id.to_string(),
-                    retry_at.timestamp() as f64,
-                )
-                .await
-                .context("Failed to schedule retry")?;
+                let _: () = conn
+                    .zadd(
+                        EMAIL_RETRY_KEY,
+                        job_id.to_string(),
+                        retry_at.timestamp() as f64,
+                    )
+                    .await
+                    .context("Failed to schedule retry")?;
 
                 tracing::warn!(
                     "Email job {} failed (attempt {}/{}), retrying in {}s: {}",
@@ -158,7 +169,8 @@ impl EmailQueue {
 
             // Remove from processing set
             let mut conn = self.cache.manager.clone();
-            let _: () = conn.srem(EMAIL_PROCESSING_KEY, job_id.to_string())
+            let _: () = conn
+                .srem(EMAIL_PROCESSING_KEY, job_id.to_string())
                 .await
                 .context("Failed to remove from processing set")?;
         }
@@ -182,12 +194,14 @@ impl EmailQueue {
         for job_id_str in jobs {
             // Move back to main queue
             let job_id = Uuid::parse_str(&job_id_str)?;
-            let _: () = conn.zadd(EMAIL_QUEUE_KEY, &job_id_str, now)
+            let _: () = conn
+                .zadd(EMAIL_QUEUE_KEY, &job_id_str, now)
                 .await
                 .context("Failed to re-queue job")?;
 
             // Remove from retry queue
-            let _: () = conn.zrem(EMAIL_RETRY_KEY, &job_id_str)
+            let _: () = conn
+                .zrem(EMAIL_RETRY_KEY, &job_id_str)
                 .await
                 .context("Failed to remove from retry queue")?;
 
@@ -276,11 +290,7 @@ impl EmailQueue {
 
         // Send email
         let message_id = service
-            .send_email(
-                &job.recipient_email,
-                &job.template_name,
-                &job.template_data,
-            )
+            .send_email(&job.recipient_email, &job.template_name, &job.template_data)
             .await?;
 
         // Mark as completed

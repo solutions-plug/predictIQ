@@ -43,21 +43,7 @@ pub fn place_bet(
 
     // Validate parent market conditions for conditional markets
     if market.parent_id > 0 {
-        let parent_market =
-            markets::get_market(e, market.parent_id).ok_or(ErrorCode::MarketNotFound)?;
-
-        // Parent must be resolved
-        if parent_market.status != MarketStatus::Resolved {
-            return Err(ErrorCode::ParentMarketNotResolved);
-        }
-
-        // Parent must have resolved to the required outcome
-        let parent_winning_outcome = parent_market
-            .winning_outcome
-            .ok_or(ErrorCode::ParentMarketNotResolved)?;
-        if parent_winning_outcome != market.parent_outcome_idx {
-            return Err(ErrorCode::ParentMarketInvalidOutcome);
-        }
+        markets::validate_parent_market(e, market.parent_id, market.parent_outcome_idx)?;
     }
 
     if e.ledger().timestamp() >= market.deadline {
@@ -132,12 +118,7 @@ pub fn get_bet(e: &Env, market_id: u64, bettor: Address, outcome: u32) -> Option
         .get(&DataKey::Bet(market_id, bettor, outcome))
 }
 
-pub fn claim_winnings(
-    e: &Env,
-    bettor: Address,
-    market_id: u64,
-    token_address: Address,
-) -> Result<i128, ErrorCode> {
+pub fn claim_winnings(e: &Env, bettor: Address, market_id: u64) -> Result<i128, ErrorCode> {
     bettor.require_auth();
 
     let market = markets::get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
@@ -176,6 +157,8 @@ pub fn claim_winnings(
         .unwrap_or(bet.amount); // fallback: return stake if no pool data
     let winnings = (bet.amount * market.total_staked) / winning_outcome_stake;
 
+    // Transfer winnings to bettor using the market's trusted token address
+    let client = token::Client::new(e, &market.token_address);
     // Transfer winnings to bettor
     let client = token::Client::new(e, &token_address);
     e.current_contract_address().require_auth();
@@ -192,6 +175,7 @@ pub fn claim_winnings(
     Ok(winnings)
 }
 
+pub fn withdraw_refund(e: &Env, bettor: Address, market_id: u64) -> Result<i128, ErrorCode> {
 pub fn withdraw_refund(
     e: &Env,
     bettor: Address,
@@ -217,6 +201,8 @@ pub fn withdraw_refund(
     let refund_amount = bet.amount;
     let bet_outcome = bet.outcome;
 
+    // Transfer refund to bettor using the market's trusted token address
+    let client = token::Client::new(e, &market.token_address);
     // Transfer refund to bettor
     let client = token::Client::new(e, &token_address);
     e.current_contract_address().require_auth();

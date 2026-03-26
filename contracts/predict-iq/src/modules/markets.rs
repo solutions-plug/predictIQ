@@ -1,6 +1,9 @@
 use crate::errors::ErrorCode;
-use crate::types::{ConfigKey, CreatorReputation, Market, MarketStatus, MarketTier, OracleConfig, TTL_LOW_THRESHOLD, TTL_HIGH_THRESHOLD, PRUNE_GRACE_PERIOD};
-use soroban_sdk::{contracttype, token, Address, Env, String, Vec, Map};
+use crate::types::{
+    ConfigKey, CreatorReputation, Market, MarketStatus, MarketTier, OracleConfig,
+    PRUNE_GRACE_PERIOD, TTL_HIGH_THRESHOLD, TTL_LOW_THRESHOLD,
+};
+use soroban_sdk::{contracttype, token, Address, Env, String, Vec};
 
 #[contracttype]
 pub enum DataKey {
@@ -41,6 +44,10 @@ pub fn create_market(
 
     // Validate parent market if this is a conditional market
     if parent_id > 0 {
+        validate_parent_market(e, parent_id, parent_outcome_idx)?;
+
+        // Also verify parent_outcome_idx is within parent's options range
+        let parent_market = get_market(e, parent_id).ok_or(ErrorCode::MarketNotFound)?;
         let parent_market = get_market(e, parent_id).ok_or(ErrorCode::MarketNotFound)?;
 
         // Validate parent_outcome_idx is within parent's options range
@@ -139,12 +146,14 @@ pub fn create_market(
     e.storage()
         .persistent()
         .set(&DataKey::Market(count), &market);
-    
+
     // Set initial TTL for the market data
-    e.storage()
-        .persistent()
-        .extend_ttl(&DataKey::Market(count), TTL_LOW_THRESHOLD, TTL_HIGH_THRESHOLD);
-    
+    e.storage().persistent().extend_ttl(
+        &DataKey::Market(count),
+        TTL_LOW_THRESHOLD,
+        TTL_HIGH_THRESHOLD,
+    );
+
     e.storage().instance().set(&DataKey::MarketCount, &count);
 
     // Emit standardized MarketCreated event
@@ -159,6 +168,30 @@ pub fn create_market(
     );
 
     Ok(count)
+}
+
+/// Validates that a parent market exists, is resolved, and resolved to the required outcome.
+/// Called by both create_market and place_bet to enforce consistent conditional market rules.
+pub fn validate_parent_market(
+    e: &Env,
+    parent_id: u64,
+    required_outcome: u32,
+) -> Result<(), ErrorCode> {
+    let parent_market = get_market(e, parent_id).ok_or(ErrorCode::MarketNotFound)?;
+
+    if parent_market.status != MarketStatus::Resolved {
+        return Err(ErrorCode::ParentMarketNotResolved);
+    }
+
+    let parent_winning_outcome = parent_market
+        .winning_outcome
+        .ok_or(ErrorCode::ParentMarketNotResolved)?;
+
+    if parent_winning_outcome != required_outcome {
+        return Err(ErrorCode::ParentMarketInvalidOutcome);
+    }
+
+    Ok(())
 }
 
 pub fn get_market(e: &Env, id: u64) -> Option<Market> {
@@ -257,16 +290,18 @@ pub fn release_creation_deposit(
 
 /// Bump TTL for market data to prevent state expiration
 pub fn bump_market_ttl(e: &Env, market_id: u64) {
-    e.storage()
-        .persistent()
-        .extend_ttl(&DataKey::Market(market_id), TTL_LOW_THRESHOLD, TTL_HIGH_THRESHOLD);
+    e.storage().persistent().extend_ttl(
+        &DataKey::Market(market_id),
+        TTL_LOW_THRESHOLD,
+        TTL_HIGH_THRESHOLD,
+    );
 }
 
 /// Prune (archive) a market that has been resolved and all prizes claimed
 /// Can only be called 30 days after resolution
 pub fn prune_market(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
     crate::modules::admin::require_admin(e)?;
-    
+
     let market = get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
 
     // Market must be resolved
@@ -277,7 +312,7 @@ pub fn prune_market(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
     // Check if 30 days have passed since resolution
     let resolved_at = market.resolved_at.ok_or(ErrorCode::MarketNotResolved)?;
     let current_time = e.ledger().timestamp();
-    
+
     if current_time < resolved_at + PRUNE_GRACE_PERIOD {
         return Err(ErrorCode::GracePeriodActive);
     }

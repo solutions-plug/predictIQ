@@ -37,10 +37,7 @@ pub fn create_market(
 ) -> u64 {
     let options = Vec::from_array(
         env,
-        [
-            String::from_str(env, "Yes"),
-            String::from_str(env, "No"),
-        ],
+        [String::from_str(env, "Yes"), String::from_str(env, "No")],
     );
 
     let oracle_config = predict_iq::types::OracleConfig {
@@ -195,11 +192,7 @@ pub fn place_bet_helper(
 }
 
 /// Resolve market and verify status
-pub fn resolve_and_verify(
-    client: &PredictIQClient,
-    market_id: u64,
-    winning_outcome: u32,
-) {
+pub fn resolve_and_verify(client: &PredictIQClient, market_id: u64, winning_outcome: u32) {
     client.resolve_market(&market_id, &winning_outcome);
     assert_market_status(client, market_id, predict_iq::types::MarketStatus::Resolved);
 }

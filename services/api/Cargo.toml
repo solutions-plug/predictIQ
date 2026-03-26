@@ -23,7 +23,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 validator = "0.18"
-tower-governor = "0.4"
+tower_governor = "0.8"
 sha2 = "0.10"
 hmac = "0.12"
 hex = "0.4"

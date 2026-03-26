@@ -96,7 +96,10 @@ impl Default for RateLimiter {
 }
 
 /// Extract client IP from request
-pub fn extract_client_ip(headers: &HeaderMap, connect_info: Option<&ConnectInfo<std::net::SocketAddr>>) -> String {
+pub fn extract_client_ip(
+    headers: &HeaderMap,
+    connect_info: Option<&ConnectInfo<std::net::SocketAddr>>,
+) -> String {
     // Check X-Forwarded-For header (from proxy/load balancer)
     if let Some(forwarded_for) = headers.get("x-forwarded-for").and_then(|h| h.to_str().ok()) {
         if let Some(ip) = forwarded_for.split(',').next() {
@@ -142,10 +145,7 @@ pub async fn global_rate_limit_middleware(
 }
 
 /// Security headers middleware
-pub async fn security_headers_middleware(
-    request: Request,
-    next: Next,
-) -> Response {
+pub async fn security_headers_middleware(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
 
@@ -158,10 +158,7 @@ pub async fn security_headers_middleware(
     );
 
     // X-Frame-Options
-    headers.insert(
-        "x-frame-options",
-        HeaderValue::from_static("DENY"),
-    );
+    headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
 
     // X-Content-Type-Options
     headers.insert(
@@ -345,8 +342,8 @@ pub mod signing {
     }
 
     pub fn generate_signature(payload: &[u8], secret: &str) -> String {
-        let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-            .expect("HMAC can take key of any size");
+        let mut mac =
+            HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC can take key of any size");
         mac.update(payload);
         let result = mac.finalize();
         BASE64.encode(result.into_bytes())

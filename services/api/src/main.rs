@@ -60,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
     let cache = RedisCache::new(&config.redis_url).await?;
     let db = Database::new(&config.database_url, cache.clone(), metrics.clone()).await?;
     let blockchain = BlockchainClient::new(&config, cache.clone(), metrics.clone())?;
-    
+
     // Initialize email service components
     let email_service = EmailService::new(config.clone())?;
     let email_queue = EmailQueue::new(cache.clone(), db.clone());
@@ -96,7 +96,7 @@ async fn main() -> anyhow::Result<()> {
     });
 
     Arc::new(state.blockchain.clone()).start_background_tasks();
-    
+
     // Start email queue worker in background
     let queue_worker = email_queue.clone();
     let service_worker = email_service.clone();
@@ -145,7 +145,8 @@ async fn main() -> anyhow::Result<()> {
         .layer(middleware::from_fn_with_state(
             rate_limiter.clone(),
             security::global_rate_limit_middleware,
-        ));
+        ))
+        .with_state(state.clone());
 
     // Newsletter routes (with specific rate limiting)
     let newsletter_routes = Router::new()
@@ -172,7 +173,8 @@ async fn main() -> anyhow::Result<()> {
         .layer(middleware::from_fn_with_state(
             rate_limiter.clone(),
             rate_limit::newsletter_rate_limit_middleware,
-        ));
+        ))
+        .with_state(state.clone());
 
     // Admin routes (with API key auth, IP whitelist, and rate limiting)
     let admin_routes = Router::new()
@@ -185,24 +187,20 @@ async fn main() -> anyhow::Result<()> {
             "/api/v1/email/preview/:template_name",
             get(handlers::email_preview),
         )
-        .route(
-            "/api/v1/email/test",
-            post(handlers::email_send_test),
-        )
-        .route(
-            "/api/v1/email/analytics",
-            get(handlers::email_analytics),
-        )
+        .route("/api/v1/email/test", post(handlers::email_send_test))
+        .route("/api/v1/email/analytics", get(handlers::email_analytics))
         .route(
             "/api/v1/email/queue/stats",
             get(handlers::email_queue_stats),
         )
-        .route(
-            "/webhooks/sendgrid",
-            post(handlers::sendgrid_webhook),
-        )
+        .route("/webhooks/sendgrid", post(handlers::sendgrid_webhook))
         .layer(TraceLayer::new_for_http())
-        .with_state(state);
+        .with_state(state.clone());
+
+    let app = public_routes
+        .merge(newsletter_routes)
+        .merge(admin_routes)
+        .layer(cors);
 
     let listener = TcpListener::bind(bind_addr).await?;
     tracing::info!("API listening on {bind_addr}");

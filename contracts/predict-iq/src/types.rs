@@ -26,10 +26,10 @@ pub struct Market {
     pub payout_mode: PayoutMode, // Resolution-time mode flag; payouts are currently claimed via claim_winnings
     pub tier: MarketTier,
     pub creation_deposit: i128,
-    pub parent_id: u64,          // 0 means no parent (independent market)
-    pub parent_outcome_idx: u32, // Required outcome of parent market
-    pub resolved_at: Option<u64>, // Timestamp when market was resolved (for TTL pruning)
-    pub token_address: Address,   // Token used for betting
+    pub parent_id: u64,                 // 0 means no parent (independent market)
+    pub parent_outcome_idx: u32,        // Required outcome of parent market
+    pub resolved_at: Option<u64>,       // Timestamp when market was resolved (for TTL pruning)
+    pub token_address: Address,         // Token used for betting
     pub outcome_stakes: Map<u32, i128>, // Stake per outcome
     pub pending_resolution_timestamp: Option<u64>, // Timestamp when resolution was initiated
     pub dispute_snapshot_ledger: Option<u32>, // Ledger sequence for snapshot voting
@@ -94,6 +94,9 @@ pub struct LockedTokens {
 pub struct OracleConfig {
     pub oracle_address: Address,
     pub feed_id: String,
+    pub min_responses: Option<u32>,
+    pub max_staleness_seconds: u64,
+    pub max_confidence_bps: u64,
     pub min_responses: Option<u32>, // Optimized: None defaults to 1
     pub max_staleness_seconds: i64, // Max age of price data in seconds
     pub max_confidence_bps: u64,    // Max confidence interval in basis points

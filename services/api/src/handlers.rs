@@ -14,11 +14,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::ValidateEmail;
 
-use crate::{
-    cache::keys,
-    email::webhook::sendgrid_webhook_handler,
-    AppState,
-};
+use crate::{cache::keys, email::webhook::sendgrid_webhook_handler, AppState};
 
 #[derive(Debug, Serialize)]
 pub struct ApiError {
@@ -214,7 +210,7 @@ pub async fn newsletter_subscribe(
         "{}/api/v1/newsletter/confirm?token={token}",
         state.config.base_url.trim_end_matches('/')
     );
-    
+
     let template_data = serde_json::json!({
         "confirm_url": confirm_url,
         "email": email

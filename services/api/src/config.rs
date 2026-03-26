@@ -1,4 +1,9 @@
-use std::{env, net::{IpAddr, SocketAddr}, str::FromStr, time::Duration};
+use std::{
+    env,
+    net::{IpAddr, SocketAddr},
+    str::FromStr,
+    time::Duration,
+};
 
 #[derive(Clone, Debug)]
 pub enum BlockchainNetwork {
@@ -119,8 +124,7 @@ impl Config {
                 .unwrap_or(20),
             sendgrid_api_key: env::var("SENDGRID_API_KEY").ok(),
             from_email: env::var("FROM_EMAIL").ok(),
-            base_url: env::var("BASE_URL")
-                .unwrap_or_else(|_| "http://localhost:8080".to_string()),
+            base_url: env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:8080".to_string()),
             api_keys: env::var("API_KEYS")
                 .ok()
                 .map(|keys| keys.split(',').map(|k| k.trim().to_string()).collect())

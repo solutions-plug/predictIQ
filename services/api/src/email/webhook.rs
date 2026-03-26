@@ -89,13 +89,19 @@ impl WebhookHandler {
         match event_type {
             "delivered" => {
                 // Update analytics
-                self.db.email_increment_analytics_counter("delivered", None).await?;
+                self.db
+                    .email_increment_analytics_counter("delivered", None)
+                    .await?;
             }
             "open" => {
-                self.db.email_increment_analytics_counter("opened", None).await?;
+                self.db
+                    .email_increment_analytics_counter("opened", None)
+                    .await?;
             }
             "click" => {
-                self.db.email_increment_analytics_counter("clicked", None).await?;
+                self.db
+                    .email_increment_analytics_counter("clicked", None)
+                    .await?;
             }
             "bounce" => {
                 self.handle_bounce(&event).await?;
@@ -141,7 +147,9 @@ impl WebhookHandler {
             .await?;
 
         // Update analytics
-        self.db.email_increment_analytics_counter("bounced", None).await?;
+        self.db
+            .email_increment_analytics_counter("bounced", None)
+            .await?;
 
         tracing::warn!(
             "Email bounced: {} (type: {}, reason: {})",
@@ -158,11 +166,18 @@ impl WebhookHandler {
 
         // Add to suppression list
         self.db
-            .email_add_suppression(&event.email, SuppressionType::Complaint.as_str(), Some(reason), None)
+            .email_add_suppression(
+                &event.email,
+                SuppressionType::Complaint.as_str(),
+                Some(reason),
+                None,
+            )
             .await?;
 
         // Update analytics
-        self.db.email_increment_analytics_counter("complained", None).await?;
+        self.db
+            .email_increment_analytics_counter("complained", None)
+            .await?;
 
         tracing::warn!("Spam complaint received for: {}", event.email);
 
@@ -184,7 +199,9 @@ impl WebhookHandler {
         let _ = self.db.newsletter_unsubscribe(&event.email).await;
 
         // Update analytics
-        self.db.email_increment_analytics_counter("unsubscribed", None).await?;
+        self.db
+            .email_increment_analytics_counter("unsubscribed", None)
+            .await?;
 
         tracing::info!("User unsubscribed: {}", event.email);
 
