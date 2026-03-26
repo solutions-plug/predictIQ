@@ -119,6 +119,42 @@ pub fn get_bet(e: &Env, market_id: u64, bettor: Address, outcome: u32) -> Option
         .get(&DataKey::Bet(market_id, bettor, outcome))
 }
 
+fn internal_claim_amount(
+    e: &Env,
+    market_id: u64,
+    bettor: &Address,
+    token_address: &Address,
+    amount: i128,
+    bet_key: &DataKey,
+    claimed_key: Option<&DataKey>,
+    is_refund: bool,
+) -> Result<i128, ErrorCode> {
+    // Shared high-security transfer path for both winnings and refunds.
+    sac::safe_transfer(
+        e,
+        token_address,
+        &e.current_contract_address(),
+        bettor,
+        &amount,
+    )?;
+
+    if let Some(key) = claimed_key {
+        e.storage().persistent().set(key, &true);
+    }
+    e.storage().persistent().remove(bet_key);
+
+    crate::modules::events::emit_rewards_claimed(
+        e,
+        market_id,
+        bettor.clone(),
+        amount,
+        token_address.clone(),
+        is_refund,
+    );
+
+    Ok(amount)
+}
+
 pub fn claim_winnings(e: &Env, bettor: Address, market_id: u64) -> Result<i128, ErrorCode> {
     bettor.require_auth();
 
@@ -154,32 +190,18 @@ pub fn claim_winnings(e: &Env, bettor: Address, market_id: u64) -> Result<i128, 
     let winning_outcome_stake = if winning_outcome_stake > 0 { winning_outcome_stake } else { bet.amount };
     let winnings = (bet.amount * market.total_staked) / winning_outcome_stake;
 
-    // Transfer winnings to bettor using the market's trusted token address
-    let client = token::Client::new(e, &market.token_address);
-    // Transfer winnings to bettor
-    let client = token::Client::new(e, &token_address);
-    e.current_contract_address().require_auth();
-    client.transfer(&e.current_contract_address(), &bettor, &winnings);
-
-    // Mark as claimed and remove bet record
-    e.storage().persistent().set(&claimed_key, &true);
-    e.storage().persistent().remove(&bet_key);
-
-    // Emit standardized RewardsClaimed event
-    // Topics: [RewardsClaimed, market_id, bettor]
-    crate::modules::events::emit_rewards_claimed(
+    internal_claim_amount(
         e,
         market_id,
-        bettor,
+        &bettor,
+        &market.token_address,
         winnings,
-        token_address,
+        &bet_key,
+        Some(&claimed_key),
         false,
-    );
-
-    Ok(winnings)
+    )
 }
 
-pub fn withdraw_refund(e: &Env, bettor: Address, market_id: u64) -> Result<i128, ErrorCode> {
 pub fn withdraw_refund(
     e: &Env,
     bettor: Address,
@@ -195,6 +217,10 @@ pub fn withdraw_refund(
         return Err(ErrorCode::MarketNotActive);
     }
 
+    if token_address != market.token_address {
+        return Err(ErrorCode::InvalidBetAmount);
+    }
+
     let bet_key = DataKey::Bet(market_id, bettor.clone(), outcome);
     let bet: Bet = e
         .storage()
@@ -205,16 +231,6 @@ pub fn withdraw_refund(
     let refund_amount = bet.amount;
     let bet_outcome = bet.outcome;
 
-    // Transfer refund to bettor using the market's trusted token address
-    let client = token::Client::new(e, &market.token_address);
-    // Transfer refund to bettor
-    let client = token::Client::new(e, &token_address);
-    e.current_contract_address().require_auth();
-    client.transfer(&e.current_contract_address(), &bettor, &refund_amount);
-
-    // Remove this outcome's bet record — no orphan data left
-    e.storage().persistent().remove(&bet_key);
-
     // Update market accounting to maintain accuracy
     market.total_staked = market.total_staked.saturating_sub(refund_amount);
     let outcome_stake = market.outcome_stakes.get(bet_outcome).unwrap_or(0);
@@ -223,18 +239,16 @@ pub fn withdraw_refund(
         .set(bet_outcome, outcome_stake.saturating_sub(refund_amount));
     markets::update_market(e, market);
 
-    // Emit standardized RewardsClaimed event (refund variant)
-    // Topics: [RewardsClaimed, market_id, bettor]
-    crate::modules::events::emit_rewards_claimed(
+    internal_claim_amount(
         e,
         market_id,
-        bettor,
+        &bettor,
+        &token_address,
         refund_amount,
-        token_address,
+        &bet_key,
+        None,
         true,
-    );
-
-    Ok(refund_amount)
+    )
 }
 
 pub fn get_minimum_bet_amount(e: &Env) -> i128 {
