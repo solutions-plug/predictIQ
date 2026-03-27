@@ -1,7 +1,7 @@
 use crate::errors::ErrorCode;
 use crate::modules::markets;
 use crate::types::{ConfigKey, MarketStatus, PayoutMode};
-use soroban_sdk::{contracttype, Address, Env};
+use soroban_sdk::{Address, Env};
 
 #[derive(Clone)]
 pub struct ResolutionMetrics {
@@ -40,7 +40,7 @@ pub fn file_dispute(e: &Env, disciplinarian: Address, market_id: u64) -> Result<
     Ok(())
 }
 
-/// Issue #23: payout_mode is immutable after creation — do not switch it here.
+/// Issue #23: payout_mode is immutable after creation — never mutated here.
 /// Issue #24: Use actual winner_counts instead of heuristic.
 /// Issue #35: Calculate and emit actual total payout.
 pub fn resolve_market(e: &Env, market_id: u64, winning_outcome: u32) -> Result<(), ErrorCode> {

@@ -407,7 +407,7 @@ fn test_tiered_commission_rates() {
 }
 
 #[test]
-fn test_admin_can_reduce_push_threshold_for_gas_intensive_tokens() {
+fn test_push_mode_market_fails_resolution_when_winners_exceed_threshold() {
     let (e, _admin, _contract_id, client) = setup_test_env();
     client.set_creation_deposit(&0);
 
@@ -437,7 +437,7 @@ fn test_admin_can_reduce_push_threshold_for_gas_intensive_tokens() {
     client.set_max_push_payout_winners(&10);
     assert_eq!(client.get_max_push_payout_winners(), 10);
 
-    let market_lowered = create_test_market(
+    let market_id = create_test_market(
         &client,
         &e,
         &creator,
