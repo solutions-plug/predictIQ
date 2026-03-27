@@ -144,3 +144,66 @@ fn test_status_based_pagination() {
     let active_page = client.get_markets_by_status(&MarketStatus::Active, &0, &10);
     assert_eq!(active_page.len(), 3);
 }
+
+#[test]
+fn test_get_guardians_paginated() {
+    let e = Env::default();
+    e.mock_all_auths();
+    let contract_id = e.register_contract(None, PredictIQ);
+    let client = PredictIQClient::new(&e, &contract_id);
+
+    let admin = Address::generate(&e);
+    client.initialize(&admin, &0);
+
+    // Initialize 10 guardians
+    let mut guardians = Vec::new(&e);
+    for i in 1..=10 {
+        guardians.push_back(crate::types::Guardian {
+            address: Address::generate(&e),
+            voting_power: i as u32,
+        });
+    }
+    client.initialize_guardians(&guardians);
+
+    // Test Pagination
+    let page1 = client.get_guardians_paginated(&0, &4);
+    assert_eq!(page1.len(), 4);
+    assert_eq!(page1.get(0).unwrap().voting_power, 1);
+    assert_eq!(page1.get(3).unwrap().voting_power, 4);
+
+    let page2 = client.get_guardians_paginated(&4, &4);
+    assert_eq!(page2.len(), 4);
+    assert_eq!(page2.get(0).unwrap().voting_power, 5);
+    assert_eq!(page2.get(3).unwrap().voting_power, 8);
+
+    let page3 = client.get_guardians_paginated(&8, &4);
+    assert_eq!(page3.len(), 2);
+    assert_eq!(page3.get(0).unwrap().voting_power, 9);
+    assert_eq!(page3.get(1).unwrap().voting_power, 10);
+    
+    // Bounds check
+    let empty = client.get_guardians_paginated(&20, &5);
+    assert_eq!(empty.len(), 0);
+}
+
+#[test]
+fn test_pagination_edge_cases() {
+    let e = Env::default();
+    let contract_id = e.register_contract(None, PredictIQ);
+    let client = PredictIQClient::new(&e, &contract_id);
+
+    let admin = Address::generate(&e);
+    client.initialize(&admin, &0);
+
+    // Limit 0 should return empty
+    let page = client.get_markets(&0, &0);
+    assert_eq!(page.len(), 0);
+
+    // Offset beyond count
+    let page = client.get_markets(&1000, &10);
+    assert_eq!(page.len(), 0);
+
+    // Archived markets limit 0
+    let archived = client.get_archived_market_ids(&0, &0);
+    assert_eq!(archived.len(), 0);
+}

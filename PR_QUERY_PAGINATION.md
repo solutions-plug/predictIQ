@@ -40,6 +40,8 @@ Implemented a secure, resource-efficient pagination pattern for common read quer
 - `test_paginated_markets`: PASSED (Offset/Limit verification)
 - `test_paginated_archived_markets`: PASSED (Lifecycle pruning/archive verification)
 - `test_status_based_pagination`: PASSED (Filter/Page verification)
+- `test_get_guardians_paginated`: PASSED (Governance set segmentation)
+- `test_pagination_edge_cases`: PASSED (Bounds/Limit 0 verification)
 
 *Coverage: Modules `queries.rs` and `event_archive.rs` have 100% line coverage in unit tests.*
 
