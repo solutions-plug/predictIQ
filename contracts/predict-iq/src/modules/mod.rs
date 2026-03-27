@@ -1,4 +1,6 @@
 pub mod admin;
+pub mod queries;
+pub mod event_archive;
 pub mod bets;
 pub mod cancellation;
 pub mod circuit_breaker;

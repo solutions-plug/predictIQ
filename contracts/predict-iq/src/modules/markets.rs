@@ -306,5 +306,8 @@ pub fn prune_market(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
             .remove(&DataKey::OutcomeStake(market_id, i));
     }
 
+    // Record market ID in event archive for indexers
+    crate::modules::event_archive::archive_market(e, market_id);
+
     Ok(())
 }

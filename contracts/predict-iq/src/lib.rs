@@ -4,6 +4,8 @@ use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Vec};
 mod errors;
 mod modules;
 mod test;
+#[cfg(test)]
+mod query_tests;
 pub mod types;
 
 pub use errors::ErrorCode;
@@ -286,5 +288,30 @@ impl PredictIQ {
     /// Set the minimum bet amount threshold (admin only)
     pub fn set_minimum_bet_amount(e: Env, amount: i128) -> Result<(), ErrorCode> {
         crate::modules::bets::set_minimum_bet_amount(&e, amount)
+    }
+
+    /// Paginated retrieval of markets
+    pub fn get_markets(e: Env, offset: u32, limit: u32) -> Vec<crate::types::Market> {
+        crate::modules::queries::get_markets(&e, offset, limit)
+    }
+
+    /// Paginated retrieval of markets by status
+    pub fn get_markets_by_status(
+        e: Env,
+        status: crate::types::MarketStatus,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<crate::types::Market> {
+        crate::modules::queries::get_markets_by_status(&e, status, offset, limit)
+    }
+
+    /// Paginated retrieval of guardians
+    pub fn get_guardians_paginated(e: Env, offset: u32, limit: u32) -> Vec<crate::types::Guardian> {
+        crate::modules::queries::get_guardians_paginated(&e, offset, limit)
+    }
+
+    /// Paginated retrieval of archived (pruned) market IDs
+    pub fn get_archived_market_ids(e: Env, offset: u32, limit: u32) -> Vec<u64> {
+        crate::modules::event_archive::get_archived_market_ids(&e, offset, limit)
     }
 }

@@ -74,6 +74,13 @@ Quick reference guides for common tasks:
 - [Quick Start](./quick-reference/QUICK_START.md)
 - [API Specification](../API_SPEC.md)
 
+### 📚 Reference
+
+- **[Architected Patterns](./ARCHITECTURE.md)** - Overall design patterns
+- **[🔍 Query Implementation & Pagination](./api/QUERY_IMPLEMENTATION_GUIDE.md)** - Paging pattern and details
+- **[⛽ Gas Optimization Guide](./gas/GAS_OPTIMIZATION.md)** - Optimizing contract interaction
+- **[🔒 Security Best Practices](./security/SECURITY_BEST_PRACTICES.md)** - Security guidelines
+
 ### By Topic
 
 **Smart Contracts:**
