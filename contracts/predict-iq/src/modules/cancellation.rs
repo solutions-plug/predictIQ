@@ -61,6 +61,7 @@ pub fn cancel_market_vote(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
 /// Withdraw refund for cancelled market (100% principal, zero fees).
 /// `outcome` identifies which outcome position to refund. Bettors who placed
 /// on multiple outcomes must call this once per outcome to reclaim all funds.
+/// Issue #51: If the caller is the market creator, also refunds the creation deposit.
 pub fn withdraw_refund(
     e: &Env,
     bettor: Address,
@@ -69,29 +70,40 @@ pub fn withdraw_refund(
 ) -> Result<i128, ErrorCode> {
     bettor.require_auth();
 
-    let market = markets::get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
+    let mut market = markets::get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
 
     if market.status != MarketStatus::Cancelled {
         return Err(ErrorCode::MarketNotActive);
     }
 
-    let bet_key = crate::modules::bets::DataKey::Bet(market_id, bettor.clone());
-    let bet: crate::types::Bet = e
-        .storage()
-        .persistent()
-    
+    // Issue #51: Creator reclaims their locked creation deposit (once only).
+    if bettor == market.creator && market.creation_deposit > 0 {
+        let deposit = market.creation_deposit;
+        market.creation_deposit = 0;
+        markets::update_market(e, market.clone());
+        sac::safe_transfer(
+            e,
+            &market.token_address,
+            &e.current_contract_address(),
+            &bettor,
+            &deposit,
+        )?;
+        e.events().publish(
+            (Symbol::new(e, "deposit_refunded"), market_id, bettor.clone()),
+            deposit,
+        );
+        // If the creator also placed bets, fall through to refund those too.
+    }
+
     let bet_key = crate::modules::bets::DataKey::Bet(market_id, bettor.clone(), outcome);
-    let bet: crate::types::Bet = e
-        .storage()
-        .persistent()
-        .get(&bet_key)
-        .ok_or(ErrorCode::BetNotFound)?;
+    let bet: crate::types::Bet = match e.storage().persistent().get(&bet_key) {
+        Some(b) => b,
+        None => return Ok(0), // creator with no bet on this outcome — deposit already refunded
+    };
 
     let refund_amount = bet.amount;
-
     e.storage().persistent().remove(&bet_key);
 
-    // Use SAC-safe transfer for refund
     sac::safe_transfer(
         e,
         &market.token_address,
@@ -100,23 +112,6 @@ pub fn withdraw_refund(
         &refund_amount,
     )?;
 
-    e.events().publish(
-        (Symbol::new(e, "refund_withdrawn"), market_id, bettor),
-        refund_amount,
-    );
-
-    e.current_contract_address().require_auth();
-    sac::safe_transfer(
-        e,
-        &market.token_address,
-        &e.current_contract_address(),
-        &bettor,
-        &refund_amount,
-    )?;
-
-    // Emit standardized RewardsClaimed event (refund variant), aligned with bets.rs standard
-    // Topics: [reward_fx, market_id, bettor]
-    // Data: (refund_amount, token_address, is_refund=true)
     crate::modules::events::emit_rewards_claimed(
         e,
         market_id,
