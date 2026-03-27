@@ -51,7 +51,7 @@ fn test_stage1_oracle_resolution_success() {
     let market_id = create_test_market(&client, &e, resolution_deadline);
     
     // Set oracle result
-    client.set_oracle_result(&market_id, &0);
+    client.set_oracle_result(&market_id, &0, &0);
     
     // Advance time to resolution deadline
     e.ledger().with_mut(|li| {
@@ -75,7 +75,7 @@ fn test_stage2_finalize_after_72h_no_dispute() {
     let market_id = create_test_market(&client, &e, resolution_deadline);
     
     // Set oracle result and resolve
-    client.set_oracle_result(&market_id, &0);
+    client.set_oracle_result(&market_id, &0, &0);
     
     e.ledger().with_mut(|li| {
         li.timestamp = resolution_deadline;
@@ -104,7 +104,7 @@ fn test_stage2_cannot_finalize_before_72h() {
     let resolution_deadline = 2000;
     let market_id = create_test_market(&client, &e, resolution_deadline);
     
-    client.set_oracle_result(&market_id, &0);
+    client.set_oracle_result(&market_id, &0, &0);
     
     e.ledger().with_mut(|li| {
         li.timestamp = resolution_deadline;
@@ -127,7 +127,7 @@ fn test_stage3_dispute_filed_within_72h() {
     let resolution_deadline = 2000;
     let market_id = create_test_market(&client, &e, resolution_deadline);
     
-    client.set_oracle_result(&market_id, &0);
+    client.set_oracle_result(&market_id, &0, &0);
     
     e.ledger().with_mut(|li| {
         li.timestamp = resolution_deadline;
@@ -157,7 +157,7 @@ fn test_stage3_cannot_dispute_after_72h() {
     let resolution_deadline = 2000;
     let market_id = create_test_market(&client, &e, resolution_deadline);
     
-    client.set_oracle_result(&market_id, &0);
+    client.set_oracle_result(&market_id, &0, &0);
     
     e.ledger().with_mut(|li| {
         li.timestamp = resolution_deadline;
@@ -189,7 +189,7 @@ fn test_stage4_voting_resolution_with_majority() {
     let resolution_deadline = 2000;
     let market_id = create_test_market(&client, &e, resolution_deadline);
     
-    client.set_oracle_result(&market_id, &0);
+    client.set_oracle_result(&market_id, &0, &0);
     
     e.ledger().with_mut(|li| {
         li.timestamp = resolution_deadline;
@@ -247,7 +247,7 @@ fn test_stage4_no_majority_requires_admin() {
     let resolution_deadline = 2000;
     let market_id = create_test_market(&client, &e, resolution_deadline);
     
-    client.set_oracle_result(&market_id, &0);
+    client.set_oracle_result(&market_id, &0, &0);
     
     e.ledger().with_mut(|li| {
         li.timestamp = resolution_deadline;
@@ -317,7 +317,7 @@ fn test_payouts_blocked_until_resolved() {
     client.place_bet(&bettor, &market_id, &0, &1000, &token_address, &None);
     
     // Set oracle result
-    client.set_oracle_result(&market_id, &0);
+    client.set_oracle_result(&market_id, &0, &0);
     
     e.ledger().with_mut(|li| {
         li.timestamp = resolution_deadline;
@@ -348,7 +348,7 @@ fn test_resolved_at_populated_after_oracle_finalization() {
     let resolution_deadline = 2000;
     let market_id = create_test_market(&client, &e, resolution_deadline);
 
-    client.set_oracle_result(&market_id, &0);
+    client.set_oracle_result(&market_id, &0, &0);
 
     e.ledger().with_mut(|li| {
         li.timestamp = resolution_deadline;
@@ -376,7 +376,7 @@ fn test_prune_market_succeeds_after_30_days() {
     let resolution_deadline = 2000;
     let market_id = create_test_market(&client, &e, resolution_deadline);
 
-    client.set_oracle_result(&market_id, &0);
+    client.set_oracle_result(&market_id, &0, &0);
 
     e.ledger().with_mut(|li| {
         li.timestamp = resolution_deadline;
@@ -412,7 +412,7 @@ fn test_prune_market_fails_before_30_days() {
     let resolution_deadline = 2000;
     let market_id = create_test_market(&client, &e, resolution_deadline);
 
-    client.set_oracle_result(&market_id, &0);
+    client.set_oracle_result(&market_id, &0, &0);
 
     e.ledger().with_mut(|li| {
         li.timestamp = resolution_deadline;
@@ -449,7 +449,7 @@ fn test_resolved_at_populated_after_dispute_resolution() {
     let resolution_deadline = 2000;
     let market_id = create_test_market(&client, &e, resolution_deadline);
 
-    client.set_oracle_result(&market_id, &0);
+    client.set_oracle_result(&market_id, &0, &0);
 
     e.ledger().with_mut(|li| {
         li.timestamp = resolution_deadline;

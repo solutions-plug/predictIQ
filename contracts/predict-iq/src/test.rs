@@ -1916,7 +1916,7 @@ fn test_voting_works_with_optimized_vote_struct() {
     );
 
     // Move to PendingResolution then dispute
-    client.set_oracle_result(&market_id, &0);
+    client.set_oracle_result(&market_id, &0, &0);
     e.ledger().with_mut(|li| li.timestamp = resolution_deadline);
     client.attempt_oracle_resolution(&market_id);
 
@@ -1983,7 +1983,7 @@ fn test_double_vote_still_rejected_with_optimized_struct() {
         &0,
     );
 
-    client.set_oracle_result(&market_id, &0);
+    client.set_oracle_result(&market_id, &0, &0);
     e.ledger().with_mut(|li| li.timestamp = resolution_deadline);
     client.attempt_oracle_resolution(&market_id);
 
@@ -2023,3 +2023,4 @@ fn test_initialize_rejects_non_deployer() {
     let result = client.try_initialize(&attacker, &100, &guardians);
     assert!(result.is_err());
 }
+

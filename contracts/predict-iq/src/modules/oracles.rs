@@ -189,12 +189,12 @@ pub fn get_oracle_result(e: &Env, market_id: u64, oracle_id: u32) -> Option<u32>
         .get(&OracleData::Result(market_id, oracle_id))
 }
 
-pub fn set_oracle_result(e: &Env, market_id: u64, outcome: u32) -> Result<(), ErrorCode> {
+pub fn set_oracle_result(e: &Env, market_id: u64, oracle_id: u32, outcome: u32) -> Result<(), ErrorCode> {
     e.storage()
         .persistent()
-        .set(&OracleData::Result(market_id, 0), &outcome);
+        .set(&OracleData::Result(market_id, oracle_id), &outcome);
     e.storage().persistent().set(
-        &OracleData::LastUpdate(market_id, 0),
+        &OracleData::LastUpdate(market_id, oracle_id),
         &e.ledger().timestamp(),
     );
 
@@ -202,6 +202,13 @@ pub fn set_oracle_result(e: &Env, market_id: u64, outcome: u32) -> Result<(), Er
     crate::modules::events::emit_oracle_result_set(e, market_id, oracle_addr, outcome);
 
     Ok(())
+}
+
+/// Issue #9: Query the timestamp of the last update for a given (market_id, oracle_id) pair.
+pub fn get_last_update(e: &Env, market_id: u64, oracle_id: u32) -> Option<u64> {
+    e.storage()
+        .persistent()
+        .get(&OracleData::LastUpdate(market_id, oracle_id))
 }
 
 pub fn verify_oracle_health(_e: &Env, config: &OracleConfig) -> bool {

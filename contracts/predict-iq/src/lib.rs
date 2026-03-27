@@ -186,18 +186,31 @@ impl PredictIQ {
         crate::modules::fees::claim_referral_rewards(&e, &address, &token)
     }
 
-    pub fn set_oracle_result(e: Env, market_id: u64, outcome: u32) -> Result<(), ErrorCode> {
+    /// Issue #9: oracle_id parameter allows multiple oracle sources per market.
+    /// Use oracle_id = 0 for the primary/default oracle.
+    pub fn set_oracle_result(e: Env, market_id: u64, oracle_id: u32, outcome: u32) -> Result<(), ErrorCode> {
         crate::modules::admin::require_admin(&e)?;
-        crate::modules::oracles::set_oracle_result(&e, market_id, outcome)
+        crate::modules::oracles::set_oracle_result(&e, market_id, oracle_id, outcome)
+    }
+
+    /// Issue #9: Query the stored result for a specific (market_id, oracle_id) pair.
+    pub fn get_oracle_result(e: Env, market_id: u64, oracle_id: u32) -> Option<u32> {
+        crate::modules::oracles::get_oracle_result(&e, market_id, oracle_id)
+    }
+
+    /// Issue #9: Query the last-update timestamp for a specific (market_id, oracle_id) pair.
+    pub fn get_oracle_last_update(e: Env, market_id: u64, oracle_id: u32) -> Option<u64> {
+        crate::modules::oracles::get_last_update(&e, market_id, oracle_id)
+    }
+
+    /// Issue #9: Attempt oracle resolution using a specific oracle_id (default 0).
+    pub fn attempt_oracle_resolution(e: Env, market_id: u64) -> Result<(), ErrorCode> {
+        crate::modules::resolution::attempt_oracle_resolution(&e, market_id)
     }
 
     pub fn resolve_market(e: Env, market_id: u64, winning_outcome: u32) -> Result<(), ErrorCode> {
         crate::modules::admin::require_admin(&e)?;
         crate::modules::disputes::resolve_market(&e, market_id, winning_outcome)
-    }
-
-    pub fn attempt_oracle_resolution(e: Env, market_id: u64) -> Result<(), ErrorCode> {
-        crate::modules::resolution::attempt_oracle_resolution(&e, market_id)
     }
 
     pub fn finalize_resolution(e: Env, market_id: u64) -> Result<(), ErrorCode> {

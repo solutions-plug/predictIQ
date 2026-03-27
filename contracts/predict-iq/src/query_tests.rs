@@ -102,7 +102,7 @@ fn test_paginated_archived_markets() {
 
     // Manually resolve and prune
     for id in market_ids.iter() {
-        client.set_oracle_result(&id, &0);
+        client.set_oracle_result(&id, &0, &0);
         client.resolve_market(&id, &0);
         
         // Jump forward in time to allow pruning (grace period is 30 days)
@@ -144,3 +144,4 @@ fn test_status_based_pagination() {
     let active_page = client.get_markets_by_status(&MarketStatus::Active, &0, &10);
     assert_eq!(active_page.len(), 3);
 }
+
