@@ -140,9 +140,10 @@ pub fn unlock_tokens(e: &Env, voter: Address, market_id: u64) -> Result<(), Erro
 
     let market = markets::get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
 
-    // Issue #20: Only allow unlock after market is fully resolved
+    // Issue #20: Tokens remain locked throughout the entire dispute lifecycle.
+    // Only allow unlock once the market is fully Resolved.
     if market.status != MarketStatus::Resolved {
-        return Err(ErrorCode::VotingNotStarted);
+        return Err(ErrorCode::MarketNotResolved);
     }
 
     let lock_key = DataKey::LockedTokens(market_id, voter.clone());
