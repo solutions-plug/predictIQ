@@ -156,6 +156,19 @@ pub fn unlock_tokens(e: &Env, voter: Address, market_id: u64) -> Result<(), Erro
         return Err(ErrorCode::TimelockActive);
     }
 
+    // Issue #37: Use LockedBalance as the authoritative per-user amount to
+    // prevent a user from withdrawing more than they individually locked.
+    let balance_key = DataKey::LockedBalance(market_id, voter.clone());
+    let amount: i128 = e
+        .storage()
+        .persistent()
+        .get(&balance_key)
+        .unwrap_or(0);
+
+    if amount <= 0 {
+        return Err(ErrorCode::BetNotFound);
+    }
+
     let gov_token: Address = e
         .storage()
         .instance()
@@ -164,12 +177,10 @@ pub fn unlock_tokens(e: &Env, voter: Address, market_id: u64) -> Result<(), Erro
 
     let token_client = token::Client::new(e, &gov_token);
     e.current_contract_address().require_auth();
-    token_client.transfer(&e.current_contract_address(), &voter, &locked.amount);
+    token_client.transfer(&e.current_contract_address(), &voter, &amount);
 
     e.storage().persistent().remove(&lock_key);
-    e.storage()
-        .persistent()
-        .remove(&DataKey::LockedBalance(market_id, voter));
+    e.storage().persistent().remove(&balance_key);
 
     Ok(())
 }

@@ -316,3 +316,79 @@ fn test_dispute_captures_ledger_sequence() {
     let market = client.get_market(&market_id).unwrap();
     assert_eq!(market.dispute_snapshot_ledger, Some(current_sequence));
 }
+
+#[test]
+fn test_locked_balance_prevents_pool_drain() {
+    // Two users lock tokens; each must only be able to unlock their own amount.
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let admin = Address::generate(&e);
+    let contract_id = e.register(PredictIQ, ());
+    let client = PredictIQClient::new(&e, &contract_id);
+    client.initialize(&admin, &1000);
+
+    let token_admin = Address::generate(&e);
+    let token_id = e.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_address = token_id.address();
+    let stellar_token = token::StellarAssetClient::new(&e, &token_address);
+    let token_client = token::Client::new(&e, &token_address);
+    client.set_governance_token(&token_address);
+
+    let creator = Address::generate(&e);
+    let oracle_config = OracleConfig {
+        oracle_address: Address::generate(&e),
+        feed_id: String::from_str(&e, "BTC/USD"),
+        min_responses: 1,
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
+    };
+    let market_id = client.create_market(
+        &creator,
+        &String::from_str(&e, "Pool drain test"),
+        &Vec::from_array(&e, [String::from_str(&e, "Yes"), String::from_str(&e, "No")]),
+        &1000,
+        &2000,
+        &oracle_config,
+        &token_address,
+    );
+
+    let voter_a = Address::generate(&e);
+    let voter_b = Address::generate(&e);
+    stellar_token.mint(&voter_a, &3000);
+    stellar_token.mint(&voter_b, &7000);
+
+    set_market_to_pending_resolution(&e, &contract_id, market_id);
+    let disciplinarian = Address::generate(&e);
+    client.file_dispute(&disciplinarian, &market_id);
+
+    // Both voters lock tokens via fallback path
+    client.cast_vote(&voter_a, &market_id, &0, &3000);
+    client.cast_vote(&voter_b, &market_id, &1, &7000);
+
+    // Advance past resolution deadline and resolve market
+    e.ledger().with_mut(|li| li.timestamp = 2001 + (86400 * 3));
+    use crate::modules::markets::DataKey as MDataKey;
+    e.as_contract(&contract_id, || {
+        let mut market: crate::types::Market = e
+            .storage()
+            .persistent()
+            .get(&MDataKey::Market(market_id))
+            .unwrap();
+        market.status = crate::types::MarketStatus::Resolved;
+        e.storage()
+            .persistent()
+            .set(&MDataKey::Market(market_id), &market);
+    });
+
+    // voter_a unlocks — must receive exactly 3000, not 10000
+    client.unlock_tokens(&voter_a, &market_id);
+    assert_eq!(token_client.balance(&voter_a), 3000);
+
+    // voter_b unlocks — must receive exactly 7000
+    client.unlock_tokens(&voter_b, &market_id);
+    assert_eq!(token_client.balance(&voter_b), 7000);
+
+    // Contract balance must be zero — no tokens left behind
+    assert_eq!(token_client.balance(&contract_id), 0);
+}
