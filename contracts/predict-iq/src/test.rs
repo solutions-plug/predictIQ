@@ -414,7 +414,8 @@ fn test_admin_can_reduce_push_threshold_for_gas_intensive_tokens() {
     let creator = Address::generate(&e);
     let native_token = Address::generate(&e);
 
-    // Baseline: estimated_winners = 20 (tally=2000, avg bet proxy=100), default threshold=50.
+    // Issue #24: winner count now comes from the precise winner_counts counter,
+    // not the tally/100 heuristic. Seed the counter directly via storage.
     let market_default = create_test_market(
         &client,
         &e,
@@ -422,15 +423,17 @@ fn test_admin_can_reduce_push_threshold_for_gas_intensive_tokens() {
         types::MarketTier::Basic,
         &native_token,
     );
-    e.storage().persistent().set(
-        &crate::modules::voting::DataKey::VoteTally(market_default, 0),
-        &2000i128,
-    );
+    // Simulate 20 unique bettors on outcome 0 — below default threshold of 50.
+    let market_data_key = crate::modules::markets::DataKey::Market(market_default);
+    let mut m: types::Market = e.storage().persistent().get(&market_data_key).unwrap();
+    m.winner_counts.set(0, 20u32);
+    e.storage().persistent().set(&market_data_key, &m);
+
     client.resolve_market(&market_default, &0);
     let resolved_default = client.get_market(&market_default).unwrap();
     assert_eq!(resolved_default.payout_mode, types::PayoutMode::Push);
 
-    // Admin lowers threshold to make the same winner estimate switch to Pull.
+    // Admin lowers threshold so 20 winners now exceeds it → Pull.
     client.set_max_push_payout_winners(&10);
     assert_eq!(client.get_max_push_payout_winners(), 10);
 
@@ -441,10 +444,11 @@ fn test_admin_can_reduce_push_threshold_for_gas_intensive_tokens() {
         types::MarketTier::Basic,
         &native_token,
     );
-    e.storage().persistent().set(
-        &crate::modules::voting::DataKey::VoteTally(market_lowered, 0),
-        &2000i128,
-    );
+    let market_data_key2 = crate::modules::markets::DataKey::Market(market_lowered);
+    let mut m2: types::Market = e.storage().persistent().get(&market_data_key2).unwrap();
+    m2.winner_counts.set(0, 20u32);
+    e.storage().persistent().set(&market_data_key2, &m2);
+
     client.resolve_market(&market_lowered, &0);
     let resolved_lowered = client.get_market(&market_lowered).unwrap();
     assert_eq!(resolved_lowered.payout_mode, types::PayoutMode::Pull);

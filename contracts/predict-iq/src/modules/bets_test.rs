@@ -484,3 +484,170 @@ fn test_bet_key_is_unique_per_outcome() {
     let refund1 = client.withdraw_refund(&user, &market_id, &1, &token);
     assert_eq!(refund1, 300);
 }
+
+// =============================================================================
+// Issue #24: Precise winner counter tests
+// =============================================================================
+
+#[test]
+fn test_winner_count_increments_on_first_bet() {
+    let (env, client, _admin, user, token) = setup_test_with_token();
+    env.ledger().set_timestamp(500);
+
+    let market_id = create_simple_market(&client, &env, &user, &token);
+
+    client.place_bet(&user, &market_id, &0, &1, &token, &None);
+
+    let market = client.get_market(&market_id).unwrap();
+    assert_eq!(
+        market.winner_counts.get(0).unwrap_or(0),
+        1,
+        "First bet on outcome 0 should set winner_counts[0] = 1"
+    );
+}
+
+#[test]
+fn test_winner_count_not_incremented_on_repeat_bet() {
+    let (env, client, _admin, user, token) = setup_test_with_token();
+    env.ledger().set_timestamp(500);
+
+    let market_id = create_simple_market(&client, &env, &user, &token);
+
+    // Same bettor bets twice on the same outcome
+    client.place_bet(&user, &market_id, &0, &1, &token, &None);
+    client.place_bet(&user, &market_id, &0, &1, &token, &None);
+
+    let market = client.get_market(&market_id).unwrap();
+    assert_eq!(
+        market.winner_counts.get(0).unwrap_or(0),
+        1,
+        "Repeat bet by same bettor must not increment winner_counts"
+    );
+}
+
+#[test]
+fn test_winner_count_independent_per_outcome() {
+    let (env, client, _admin, user, token) = setup_test_with_token();
+    env.ledger().set_timestamp(500);
+
+    let market_id = create_simple_market(&client, &env, &user, &token);
+
+    client.place_bet(&user, &market_id, &0, &1, &token, &None);
+    client.place_bet(&user, &market_id, &1, &1, &token, &None);
+
+    let market = client.get_market(&market_id).unwrap();
+    assert_eq!(market.winner_counts.get(0).unwrap_or(0), 1);
+    assert_eq!(market.winner_counts.get(1).unwrap_or(0), 1);
+}
+
+#[test]
+fn test_winner_count_multiple_unique_bettors() {
+    let (env, client, _admin, user1, token) = setup_test_with_token();
+
+    let user2 = Address::generate(&env);
+    let user3 = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token).mint(&user2, &100_000);
+    token::StellarAssetClient::new(&env, &token).mint(&user3, &100_000);
+
+    env.ledger().set_timestamp(500);
+    let market_id = create_simple_market(&client, &env, &user1, &token);
+
+    client.place_bet(&user1, &market_id, &0, &1, &token, &None);
+    client.place_bet(&user2, &market_id, &0, &1, &token, &None);
+    client.place_bet(&user3, &market_id, &0, &1, &token, &None);
+
+    let market = client.get_market(&market_id).unwrap();
+    assert_eq!(
+        market.winner_counts.get(0).unwrap_or(0),
+        3,
+        "Three unique bettors on outcome 0 should yield winner_counts[0] = 3"
+    );
+}
+
+#[test]
+fn test_resolve_market_uses_precise_count_for_push_mode() {
+    let (env, client, _admin, user, token) = setup_test_with_token();
+    env.ledger().set_timestamp(500);
+
+    let market_id = create_simple_market(&client, &env, &user, &token);
+
+    // Place a single bet — winner_counts[0] = 1, well below default threshold of 50
+    client.place_bet(&user, &market_id, &0, &1, &token, &None);
+    client.resolve_market(&market_id, &0);
+
+    let market = client.get_market(&market_id).unwrap();
+    assert_eq!(
+        market.payout_mode,
+        crate::types::PayoutMode::Push,
+        "1 winner is below threshold — should select Push mode"
+    );
+}
+
+#[test]
+fn test_resolve_market_switches_to_pull_when_winners_exceed_threshold() {
+    let (env, client, _admin, user1, token) = setup_test_with_token();
+    env.ledger().set_timestamp(500);
+
+    let market_id = create_simple_market(&client, &env, &user1, &token);
+
+    // Lower threshold to 2 so we can test overflow with a small number of bettors
+    client.set_max_push_payout_winners(&2);
+
+    // 3 unique bettors on outcome 0 — exceeds threshold of 2
+    let sac = token::StellarAssetClient::new(&env, &token);
+    for _ in 0..3 {
+        let u = Address::generate(&env);
+        sac.mint(&u, &100_000);
+        client.place_bet(&u, &market_id, &0, &1, &token, &None);
+    }
+
+    client.resolve_market(&market_id, &0);
+
+    let market = client.get_market(&market_id).unwrap();
+    assert_eq!(
+        market.payout_mode,
+        crate::types::PayoutMode::Pull,
+        "3 winners exceeds threshold of 2 — should select Pull mode"
+    );
+}
+
+/// Regression test: with the old tally/100 heuristic, 10,000 micro-bets of 1 unit
+/// each would produce tally=10,000 → estimated_winners = 100, which exceeds the
+/// default threshold of 50 and correctly selects Pull. But if the average bet were
+/// 200 units (tally=2,000,000), the heuristic gives 20,000 estimated winners —
+/// wildly wrong. The precise counter always gives the exact unique bettor count.
+#[test]
+fn test_micro_bets_precise_count_prevents_gas_overflow() {
+    let (env, client, _admin, user1, token) = setup_test_with_token();
+    env.ledger().set_timestamp(500);
+
+    let market_id = create_simple_market(&client, &env, &user1, &token);
+
+    // Set threshold to 50 (default)
+    client.set_max_push_payout_winners(&50);
+
+    let sac = token::StellarAssetClient::new(&env, &token);
+
+    // 60 unique bettors each placing 1-unit bets (micro-bets)
+    for _ in 0..60 {
+        let u = Address::generate(&env);
+        sac.mint(&u, &100_000);
+        client.place_bet(&u, &market_id, &0, &1, &token, &None);
+    }
+
+    let market = client.get_market(&market_id).unwrap();
+    assert_eq!(
+        market.winner_counts.get(0).unwrap_or(0),
+        60,
+        "Precise counter must reflect all 60 unique bettors"
+    );
+
+    client.resolve_market(&market_id, &0);
+
+    let resolved = client.get_market(&market_id).unwrap();
+    assert_eq!(
+        resolved.payout_mode,
+        crate::types::PayoutMode::Pull,
+        "60 winners > threshold 50 — must select Pull to avoid gas overflow"
+    );
+}

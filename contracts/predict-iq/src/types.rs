@@ -34,6 +34,12 @@ pub struct Market {
     pub pending_resolution_timestamp: Option<u64>, // Timestamp when resolution was initiated
     pub dispute_snapshot_ledger: Option<u32>,  // Ledger sequence for snapshot voting
     pub dispute_timestamp: Option<u64>,        // Timestamp when dispute was filed
+<<<<<<< fix/issue-24-precise-winner-tracking
+    /// Issue #24: Precise per-outcome winner counter incremented on every new
+    /// unique bettor. Replaces the unsafe tally/100 heuristic in disputes.rs.
+    pub winner_counts: Map<u32, u32>,          // outcome -> unique bettor count
+=======
+>>>>>>> main
 }
 
 #[contracttype]
@@ -83,6 +89,16 @@ pub struct LockedTokens {
 }
 
 /// Issue #16: Oracle configuration for Pyth price feed integration.
+<<<<<<< fix/issue-24-precise-winner-tracking
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OracleConfig {
+    pub oracle_address: Address,    // Deployed Pyth contract address on this network
+    pub feed_id: String,            // 64-char hex-encoded 32-byte Pyth price feed ID
+    pub min_responses: u32,         // Minimum oracle responses required (default: 1)
+    pub max_staleness_seconds: u64, // Max age of price data in seconds (default: 300)
+    pub max_confidence_bps: u64,    // Max confidence interval in basis points (default: 200 = 2%)
+=======
 /// Issue #25: oracle_address and feed_id are used for the live cross-contract call.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -92,6 +108,7 @@ pub struct OracleConfig {
     pub min_responses: u32,          // Minimum oracle responses required (default: 1)
     pub max_staleness_seconds: u64,  // Max age of price data in seconds (default: 300)
     pub max_confidence_bps: u64,     // Max confidence interval in basis points (default: 200 = 2%)
+>>>>>>> main
     pub oracle_address: Address,
     pub feed_id: String,
     pub min_responses: Option<u32>, // Optimized: None defaults to 1
@@ -121,6 +138,7 @@ pub enum ConfigKey {
     GovernanceToken,
     MaxPushPayoutWinners,
     PendingGuardianRemoval,
+    MinimumBetAmount,
 }
 
 #[contracttype]

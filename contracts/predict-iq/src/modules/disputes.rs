@@ -50,12 +50,14 @@ pub fn resolve_market(e: &Env, market_id: u64, winning_outcome: u32) -> Result<(
         return Err(ErrorCode::InvalidOutcome);
     }
 
-    // Estimate winner count (in production, maintain a counter)
-    let estimated_winners = estimate_winner_count(e, market_id, winning_outcome);
+    // Issue #24: read the precise per-outcome winner counter maintained by place_bet.
+    // This replaces the unsafe tally/100 heuristic that underestimated winners for
+    // micro-bet markets, risking gas-limit overflows in Push resolution.
+    let actual_winners = markets::count_bets_for_outcome(e, market_id, winning_outcome);
     let max_push_winners = get_max_push_payout_winners(e);
 
-    // Automatically select payout mode based on winner count
-    if estimated_winners > max_push_winners {
+    // Automatically select payout mode based on exact winner count
+    if actual_winners > max_push_winners {
         market.payout_mode = PayoutMode::Pull;
     } else {
         market.payout_mode = PayoutMode::Push;
@@ -105,20 +107,6 @@ pub fn get_max_push_payout_winners(e: &Env) -> u32 {
         .persistent()
         .get(&ConfigKey::MaxPushPayoutWinners)
         .unwrap_or(crate::types::MAX_PUSH_PAYOUT_WINNERS)
-}
-
-// Helper function to estimate winner count without iterating all bets
-fn estimate_winner_count(e: &Env, market_id: u64, outcome: u32) -> u32 {
-    // In production, maintain a counter per outcome during bet placement
-    // For now, use the tally weight as a proxy
-    let tally = crate::modules::voting::get_tally(e, market_id, outcome);
-
-    // Rough estimate: assume average bet is 100 units
-    if tally > 0 {
-        (tally / 100).max(1) as u32
-    } else {
-        0
-    }
 }
 
 // Batch resolution metrics for monitoring

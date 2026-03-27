@@ -128,9 +128,12 @@ pub fn create_market(
         parent_outcome_idx,
         resolved_at: None,
         token_address: native_token,
+        outcome_stakes: soroban_sdk::Map::new(e),
         pending_resolution_timestamp: None,
         dispute_snapshot_ledger: None,
         dispute_timestamp: None,
+        // Issue #24: initialize precise winner counter; incremented in place_bet.
+        winner_counts: soroban_sdk::Map::new(e),
     };
 
     e.storage()
