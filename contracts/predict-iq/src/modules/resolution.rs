@@ -1,12 +1,37 @@
 use crate::errors::ErrorCode;
 use crate::modules::{markets, oracles, voting};
-use crate::types::MarketStatus;
+use crate::types::{ConfigKey, MarketStatus};
 use soroban_sdk::{Env, Symbol};
 
-/// Issue #8: Increased from 24h to 48h for global participation.
-const DISPUTE_WINDOW_SECONDS: u64 = 172_800; // 48 hours
-const VOTING_PERIOD_SECONDS: u64 = 259_200;  // 72 hours
-const MAJORITY_THRESHOLD_BPS: i128 = 6000;   // 60%
+/// Issue #8: Default dispute window increased from 24h → 72h for global participation.
+/// Governance can override this via set_dispute_window / ConfigKey::DisputeWindow.
+pub const DEFAULT_DISPUTE_WINDOW_SECONDS: u64 = 259_200; // 72 hours
+const VOTING_PERIOD_SECONDS: u64 = 259_200;              // 72 hours
+const MAJORITY_THRESHOLD_BPS: i128 = 6000;               // 60%
+
+/// Returns the active dispute window: governance-configured value if set, else the 72h default.
+pub fn get_dispute_window(e: &Env) -> u64 {
+    e.storage()
+        .persistent()
+        .get(&ConfigKey::DisputeWindow)
+        .unwrap_or(DEFAULT_DISPUTE_WINDOW_SECONDS)
+}
+
+/// Admin-only: override the dispute window duration (minimum 24h enforced).
+pub fn set_dispute_window(e: &Env, seconds: u64) -> Result<(), ErrorCode> {
+    crate::modules::admin::require_admin(e)?;
+    // Enforce a minimum of 24 hours to prevent accidental lockout.
+    let clamped = seconds.max(86_400);
+    e.storage()
+        .persistent()
+        .set(&ConfigKey::DisputeWindow, &clamped);
+    e.storage().persistent().extend_ttl(
+        &ConfigKey::DisputeWindow,
+        crate::types::GOV_TTL_LOW_THRESHOLD,
+        crate::types::GOV_TTL_HIGH_THRESHOLD,
+    );
+    Ok(())
+}
 
 pub fn attempt_oracle_resolution(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
     let mut market = markets::get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
@@ -43,11 +68,11 @@ pub fn finalize_resolution(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
 
     match market.status {
         MarketStatus::PendingResolution => {
-            // Check if 48h dispute window has passed
+            // Check if dispute window has passed (default 72h, configurable)
             let pending_ts = market
                 .pending_resolution_timestamp
                 .ok_or(ErrorCode::ResolutionNotReady)?;
-            if e.ledger().timestamp() < pending_ts + DISPUTE_WINDOW_SECONDS {
+            if e.ledger().timestamp() < pending_ts + get_dispute_window(e) {
                 return Err(ErrorCode::DisputeWindowStillOpen);
             }
 

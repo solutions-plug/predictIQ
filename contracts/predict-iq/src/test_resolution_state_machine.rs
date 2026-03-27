@@ -68,7 +68,7 @@ fn test_stage1_oracle_resolution_success() {
 }
 
 #[test]
-fn test_stage2_finalize_after_24h_no_dispute() {
+fn test_stage2_finalize_after_72h_no_dispute() {
     let (e, admin, _, client) = setup_test_env();
     
     let resolution_deadline = 2000;
@@ -83,9 +83,9 @@ fn test_stage2_finalize_after_24h_no_dispute() {
     
     client.attempt_oracle_resolution(&market_id);
     
-    // Advance time by 24 hours
+    // Advance time by 72 hours (new default dispute window)
     e.ledger().with_mut(|li| {
-        li.timestamp = resolution_deadline + 86400;
+        li.timestamp = resolution_deadline + 259_200;
     });
     
     // Finalize resolution
@@ -98,7 +98,7 @@ fn test_stage2_finalize_after_24h_no_dispute() {
 
 #[test]
 #[should_panic(expected = "#126")]
-fn test_stage2_cannot_finalize_before_24h() {
+fn test_stage2_cannot_finalize_before_72h() {
     let (e, admin, _, client) = setup_test_env();
     
     let resolution_deadline = 2000;
@@ -121,7 +121,7 @@ fn test_stage2_cannot_finalize_before_24h() {
 }
 
 #[test]
-fn test_stage3_dispute_filed_within_24h() {
+fn test_stage3_dispute_filed_within_72h() {
     let (e, admin, _, client) = setup_test_env();
     
     let resolution_deadline = 2000;
@@ -135,7 +135,7 @@ fn test_stage3_dispute_filed_within_24h() {
     
     client.attempt_oracle_resolution(&market_id);
     
-    // File dispute within 24h
+    // File dispute within 72h window
     let disputer = Address::generate(&e);
     e.ledger().with_mut(|li| {
         li.timestamp = resolution_deadline + 10000;
@@ -151,7 +151,7 @@ fn test_stage3_dispute_filed_within_24h() {
 
 #[test]
 #[should_panic(expected = "#110")]
-fn test_stage3_cannot_dispute_after_24h() {
+fn test_stage3_cannot_dispute_after_72h() {
     let (e, admin, _, client) = setup_test_env();
     
     let resolution_deadline = 2000;
@@ -165,10 +165,10 @@ fn test_stage3_cannot_dispute_after_24h() {
     
     client.attempt_oracle_resolution(&market_id);
     
-    // Try to dispute after 24h
+    // Try to dispute after 72h
     let disputer = Address::generate(&e);
     e.ledger().with_mut(|li| {
-        li.timestamp = resolution_deadline + 86400 + 1;
+        li.timestamp = resolution_deadline + 259_200 + 1;
     });
     
     client.file_dispute(&disputer, &market_id);
@@ -331,7 +331,7 @@ fn test_payouts_blocked_until_resolved() {
     
     // Finalize
     e.ledger().with_mut(|li| {
-        li.timestamp = resolution_deadline + 86400;
+        li.timestamp = resolution_deadline + 259_200;
     });
     
     client.finalize_resolution(&market_id);
@@ -356,7 +356,7 @@ fn test_resolved_at_populated_after_oracle_finalization() {
 
     client.attempt_oracle_resolution(&market_id);
 
-    let finalize_time = resolution_deadline + 86400; // T+24h
+    let finalize_time = resolution_deadline + 259_200; // T+72h (dispute window)
     e.ledger().with_mut(|li| {
         li.timestamp = finalize_time;
     });
@@ -384,7 +384,7 @@ fn test_prune_market_succeeds_after_30_days() {
 
     client.attempt_oracle_resolution(&market_id);
 
-    let finalize_time = resolution_deadline + 86400;
+    let finalize_time = resolution_deadline + 259_200;
     e.ledger().with_mut(|li| {
         li.timestamp = finalize_time;
     });
@@ -420,7 +420,7 @@ fn test_prune_market_fails_before_30_days() {
 
     client.attempt_oracle_resolution(&market_id);
 
-    let finalize_time = resolution_deadline + 86400;
+    let finalize_time = resolution_deadline + 259_200;
     e.ledger().with_mut(|li| {
         li.timestamp = finalize_time;
     });
@@ -457,7 +457,7 @@ fn test_resolved_at_populated_after_dispute_resolution() {
 
     client.attempt_oracle_resolution(&market_id);
 
-    // File dispute within 24h
+    // File dispute within 72h window
     let disputer = Address::generate(&e);
     e.ledger().with_mut(|li| {
         li.timestamp = resolution_deadline + 10000;
@@ -470,7 +470,7 @@ fn test_resolved_at_populated_after_dispute_resolution() {
     client.cast_vote(&voter, &market_id, &1, &7000);
 
     // Advance past 24h dispute window + 72h voting period
-    let finalize_time = resolution_deadline + 86400 + 259200;
+    let finalize_time = resolution_deadline + 259_200 + 259_200;
     e.ledger().with_mut(|li| {
         li.timestamp = finalize_time;
     });
@@ -482,3 +482,4 @@ fn test_resolved_at_populated_after_dispute_resolution() {
     // resolved_at must be set on the dispute path too
     assert_eq!(market.resolved_at, Some(finalize_time));
 }
+

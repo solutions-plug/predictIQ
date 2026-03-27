@@ -116,8 +116,8 @@ fn test_payout_mode_unchanged_after_oracle_resolution() {
     // Move through oracle resolution → finalize
     set_pending_resolution(&e, &contract_id, market_id);
 
-    // Advance past 48h dispute window
-    e.ledger().with_mut(|li| li.timestamp += 172_800 + 1);
+    // Advance past 72h dispute window
+    e.ledger().with_mut(|li| li.timestamp += 259_200 + 1);
 
     client.finalize_resolution(&market_id);
 
@@ -236,3 +236,4 @@ fn test_resolve_market_does_not_mutate_payout_mode() {
         "resolve_market must not mutate payout_mode (issue #252)"
     );
 }
+

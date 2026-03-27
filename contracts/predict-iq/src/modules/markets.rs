@@ -279,11 +279,12 @@ pub fn release_creation_deposit(
         return Err(ErrorCode::MarketNotActive);
     }
 
-    // Dispute window is 24h after pending_resolution_timestamp
+    // Deposit is locked until the dispute window has fully closed
     let pending_ts = market
         .pending_resolution_timestamp
         .ok_or(ErrorCode::ResolutionNotReady)?;
-    let dispute_window_end = pending_ts + 86400;
+    let dispute_window = crate::modules::resolution::get_dispute_window(e);
+    let dispute_window_end = pending_ts + dispute_window;
 
     if e.ledger().timestamp() < dispute_window_end {
         return Err(ErrorCode::DisputeWindowStillOpen);

@@ -112,23 +112,6 @@ impl PredictIQ {
 
     pub fn cancel_market_admin(e: Env, market_id: u64) -> Result<(), ErrorCode> {
         crate::modules::cancellation::cancel_market_admin(&e, market_id)
-    pub fn claim_winnings(
-        e: Env,
-        bettor: Address,
-        market_id: u64,
-        token_address: Address,
-    ) -> Result<i128, ErrorCode> {
-        crate::modules::bets::claim_winnings(&e, bettor, market_id, token_address)
-    }
-
-    pub fn withdraw_refund(
-        e: Env,
-        bettor: Address,
-        market_id: u64,
-        outcome: u32,
-        token_address: Address,
-    ) -> Result<i128, ErrorCode> {
-        crate::modules::bets::withdraw_refund(&e, bettor, market_id, outcome, token_address)
     }
 
     pub fn get_market(e: Env, id: u64) -> Option<crate::types::Market> {
@@ -359,6 +342,16 @@ impl PredictIQ {
     /// Issue #13: Returns the currently active timelock duration in seconds.
     pub fn get_timelock_duration(e: Env) -> u64 {
         crate::modules::governance::get_timelock_duration(&e)
+    }
+
+    /// Issue #8: Set the dispute window duration (admin-only, minimum 24h).
+    pub fn set_dispute_window(e: Env, seconds: u64) -> Result<(), ErrorCode> {
+        crate::modules::resolution::set_dispute_window(&e, seconds)
+    }
+
+    /// Issue #8: Get the active dispute window duration in seconds (default 72h).
+    pub fn get_dispute_window(e: Env) -> u64 {
+        crate::modules::resolution::get_dispute_window(&e)
     }
 
     /// Issue #47: Permissionless prune after grace period.

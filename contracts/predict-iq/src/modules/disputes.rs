@@ -1,5 +1,5 @@
 use crate::errors::ErrorCode;
-use crate::modules::markets;
+use crate::modules::{markets, resolution};
 use crate::types::{ConfigKey, MarketStatus, PayoutMode};
 use soroban_sdk::{Address, Env};
 
@@ -22,15 +22,15 @@ pub fn file_dispute(e: &Env, disciplinarian: Address, market_id: u64) -> Result<
     let pending_ts = market
         .pending_resolution_timestamp
         .ok_or(ErrorCode::ResolutionNotReady)?;
-    if e.ledger().timestamp() >= pending_ts + 172_800 {
-        // 48h window (Issue #8)
+    if e.ledger().timestamp() >= pending_ts + resolution::get_dispute_window(e) {
+        // Issue #8: window is now configurable (default 72h)
         return Err(ErrorCode::DisputeWindowClosed);
     }
 
     market.status = MarketStatus::Disputed;
     market.dispute_timestamp = Some(e.ledger().timestamp());
-    // Extend resolution deadline for voting period
-    market.resolution_deadline += 86400 * 3; // 3 days extension
+    // Extend resolution deadline by the full dispute window duration
+    market.resolution_deadline += resolution::get_dispute_window(e);
     let new_deadline = market.resolution_deadline;
 
     markets::update_market(e, market);
