@@ -1909,3 +1909,23 @@ fn test_double_vote_still_rejected_with_optimized_struct() {
 }
 
 
+
+#[test]
+fn test_initialize_rejects_non_deployer() {
+    let e = Env::default();
+    // Do NOT mock all auths — we want auth to be enforced.
+    // Register the contract without initializing it.
+    let contract_id = e.register(PredictIQ, ());
+    let client = PredictIQClient::new(&e, &contract_id);
+
+    let attacker = Address::generate(&e);
+    let mut guardians = soroban_sdk::Vec::new(&e);
+    guardians.push_back(types::Guardian {
+        address: Address::generate(&e),
+        voting_power: 1,
+    });
+
+    // An attacker (non-deployer) attempting to initialize must fail.
+    let result = client.try_initialize(&attacker, &100, &guardians);
+    assert!(result.is_err());
+}
