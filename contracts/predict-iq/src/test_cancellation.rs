@@ -302,8 +302,7 @@ fn test_cancel_vote_threshold_no_overflow() {
 
     // Cast cancel votes with a weight that would overflow (cancel_votes * 10000 > i128::MAX)
     let huge_weight = i128::MAX / 5000; // * 10000 overflows without checked_mul
-    // u32::MAX is the sentinel outcome index for "cancel" votes
-    client.cast_vote(&user1, &market_id, &u32::MAX, &huge_weight);
+    client.cast_vote(&user1, &market_id, &crate::types::CANCEL_OUTCOME_INDEX, &huge_weight);
 
     // Should not panic; checked_mul returns None on overflow → InsufficientVotingWeight
     let result = client.try_cancel_market_vote(&market_id);

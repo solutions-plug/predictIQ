@@ -1,6 +1,6 @@
 use crate::errors::ErrorCode;
 use crate::modules::{admin, markets, sac};
-use crate::types::MarketStatus;
+use crate::types::{MarketStatus, CANCEL_OUTCOME_INDEX};
 use soroban_sdk::{Address, Env, Symbol};
 
 const FAILED_MARKET_THRESHOLD_BPS: i128 = 7500; // 75% vote required to cancel
@@ -33,7 +33,7 @@ pub fn cancel_market_vote(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
     }
 
     // Calculate if cancellation threshold is met
-    let cancel_votes = crate::modules::voting::get_tally(e, market_id, u32::MAX);
+    let cancel_votes = crate::modules::voting::get_tally(e, market_id, CANCEL_OUTCOME_INDEX);
     let mut total_votes = cancel_votes;
 
     for outcome in 0..market.options.len() {
