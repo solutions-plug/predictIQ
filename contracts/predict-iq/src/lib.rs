@@ -290,8 +290,9 @@ impl PredictIQ {
     pub fn claim_creation_deposit(
         e: Env,
         market_id: u64,
+        caller: Address,
     ) -> Result<(), ErrorCode> {
-        crate::modules::markets::claim_creation_deposit(&e, market_id)
+        crate::modules::markets::claim_creation_deposit(&e, market_id, caller)
     }
 
     // Governance and Upgrade Functions

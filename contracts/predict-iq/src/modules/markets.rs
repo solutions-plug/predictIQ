@@ -331,11 +331,15 @@ pub fn set_creation_deposit(e: &Env, amount: i128) -> Result<(), ErrorCode> {
 pub fn claim_creation_deposit(
     e: &Env,
     market_id: u64,
+    caller: soroban_sdk::Address,
 ) -> Result<(), ErrorCode> {
     let mut market = get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
 
-    // 1. Only the creator can claim their own deposit
-    market.creator.require_auth();
+    // Only the creator can claim their own deposit
+    if caller != market.creator {
+        return Err(ErrorCode::NotAuthorized);
+    }
+    caller.require_auth();
 
     // 2. Market must be fully resolved
     if market.status != MarketStatus::Resolved {
