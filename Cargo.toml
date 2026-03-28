@@ -14,6 +14,7 @@ lto = true
 codegen-units = 1
 
 [profile.test]
+opt-level = 0
 lto = false
 codegen-units = 16
 

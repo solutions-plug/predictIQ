@@ -15,7 +15,3 @@ soroban-sdk = { workspace = true, features = ["testutils"] }
 
 [features]
 testutils = ["soroban-sdk/testutils"]
-
-[[test]]
-name = "gas_benchmark"
-path = "benches/gas_benchmark.rs"

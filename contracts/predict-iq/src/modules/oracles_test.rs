@@ -92,6 +92,22 @@ fn test_reject_stale_price() {
 }
 
 #[test]
+fn test_accept_price_at_exact_staleness_boundary() {
+    let e = Env::default();
+
+    let config = test_config(&e);
+    let price = PythPrice {
+        price: 100000,
+        conf: 1000, // 1% of price - within 2% threshold
+        expo: -2,
+        publish_time: e.ledger().timestamp() as i64 - 300, // exactly 300 seconds old (max_staleness_seconds)
+    };
+
+    let result = validate_price(&e, &price, &config);
+    assert!(result.is_ok(), "Price at exact staleness boundary (age == max_staleness_seconds) should be accepted");
+}
+
+#[test]
 fn test_reject_low_confidence() {
     let e = Env::default();
 
