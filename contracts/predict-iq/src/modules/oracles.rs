@@ -194,6 +194,12 @@ pub fn get_oracle_result(e: &Env, market_id: u64, oracle_id: u32) -> Option<u32>
 }
 
 pub fn set_oracle_result(e: &Env, market_id: u64, oracle_id: u32, outcome: u32) -> Result<(), ErrorCode> {
+    let market = crate::modules::markets::get_market(e, market_id)
+        .ok_or(ErrorCode::MarketNotFound)?;
+    if outcome >= market.options.len() {
+        return Err(ErrorCode::InvalidOutcome);
+    }
+
     e.storage()
         .persistent()
         .set(&OracleData::Result(market_id, oracle_id), &outcome);

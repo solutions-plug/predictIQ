@@ -1007,3 +1007,15 @@ fn test_partial_refund_leaves_other_outcome_bet_intact() {
         "unredeemed bet key must remain intact after partial refund"
     );
 }
+
+#[test]
+fn test_resolve_market_invalid_outcome() {
+    let (env, client, _admin, user, token) = setup_test_with_token();
+
+    env.ledger().set_timestamp(500);
+    let market_id = create_simple_market(&client, &env, &user, &token);
+
+    // Market has outcomes 0 and 1; outcome index 99 is out of range.
+    let result = client.try_resolve_market(&market_id, &99);
+    assert_eq!(result, Err(Ok(ErrorCode::InvalidOutcome)));
+}

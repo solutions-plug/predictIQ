@@ -952,3 +952,34 @@ fn test_five_outcomes_winner_is_outcome_4_not_outcome_0() {
     assert_eq!(market.status, types::MarketStatus::Resolved);
     assert_eq!(market.winning_outcome, Some(4));
 }
+
+/// cast_vote with an out-of-range outcome index must return InvalidOutcome.
+#[test]
+fn test_cast_vote_invalid_outcome() {
+    let (e, _admin, _, client) = setup_test_env();
+
+    let token_admin = Address::generate(&e);
+    let token_id = e.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_address = token_id.address();
+    let token_client = token::StellarAssetClient::new(&e, &token_address);
+    client.set_governance_token(&token_address);
+
+    let resolution_deadline = 2000;
+    // Market has 2 outcomes (indices 0 and 1).
+    let market_id = create_multi_outcome_market(&client, &e, 2, resolution_deadline);
+
+    client.set_oracle_result(&market_id, &0);
+    e.ledger().with_mut(|li| li.timestamp = resolution_deadline);
+    client.attempt_oracle_resolution(&market_id);
+
+    let disputer = Address::generate(&e);
+    e.ledger().with_mut(|li| li.timestamp = resolution_deadline + 1000);
+    client.file_dispute(&disputer, &market_id);
+
+    let voter = Address::generate(&e);
+    token_client.mint(&voter, &1000);
+
+    // Outcome index 99 is out of range — must return InvalidOutcome.
+    let result = client.try_cast_vote(&voter, &market_id, &99, &1000);
+    assert_eq!(result, Err(Ok(ErrorCode::InvalidOutcome)));
+}
