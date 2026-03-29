@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use chrono::Utc;
 use redis::AsyncCommands;
 use serde_json::Value;
 use std::time::Duration;
@@ -115,6 +116,7 @@ impl EmailQueue {
                     Some(&msg_id),
                     "sent",
                     &recipient,
+                    Utc::now().timestamp(),
                     serde_json::json!({}),
                 )
                 .await?;

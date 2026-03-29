@@ -1,5 +1,5 @@
 use anyhow::Result;
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use axum::{extract::State, http::{HeaderMap, StatusCode}, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -66,6 +66,7 @@ impl WebhookHandler {
         let event_type = event.event.as_str();
         let email = event.email.as_str();
         let message_id = event.message_id.as_deref();
+        let timestamp = event.timestamp;
 
         tracing::info!(
             "Processing SendGrid event: {} for {} (message_id: {:?})",
@@ -74,6 +75,12 @@ impl WebhookHandler {
             message_id
         );
 
+        // Check for replay attack
+        if self.db.email_event_exists(message_id, event_type, email, timestamp).await? {
+            tracing::warn!("Replay attack detected for event: {} {} {} {}", message_id.unwrap_or(""), event_type, email, timestamp);
+            return Ok(()); // Skip processing
+        }
+
         // Record event in database
         self.db
             .email_create_event(
@@ -81,6 +88,7 @@ impl WebhookHandler {
                 message_id,
                 event_type,
                 email,
+                timestamp,
                 serde_json::to_value(&event)?,
             )
             .await?;
@@ -218,8 +226,11 @@ pub struct WebhookResponse {
 /// Axum handler for SendGrid webhooks
 pub async fn sendgrid_webhook_handler(
     State(handler): State<Arc<WebhookHandler>>,
+    _headers: HeaderMap,
     Json(events): Json<Vec<SendGridEvent>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    // Signature verification is done in middleware
+    // Replay check is done in process_event
     match handler.handle_sendgrid_webhook(events).await {
         Ok(response) => Ok((StatusCode::OK, Json(response))),
         Err(e) => {

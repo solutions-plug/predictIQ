@@ -763,7 +763,8 @@ pub async fn email_queue_stats(
 
 pub async fn sendgrid_webhook(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(events): Json<Vec<crate::email::webhook::SendGridEvent>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    sendgrid_webhook_handler(State(Arc::new(state.webhook_handler.clone())), Json(events)).await
+    sendgrid_webhook_handler(State(Arc::new(state.webhook_handler.clone())), headers, Json(events)).await
 }

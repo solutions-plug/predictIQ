@@ -416,22 +416,48 @@ impl Database {
         message_id: Option<&str>,
         event_type: &str,
         recipient: &str,
+        timestamp: i64,
         metadata: serde_json::Value,
     ) -> anyhow::Result<uuid::Uuid> {
+        let ts = chrono::DateTime::from_timestamp(timestamp, 0).unwrap_or_else(|| chrono::Utc::now());
         let row = sqlx::query(
-            "INSERT INTO email_events (email_job_id, message_id, event_type, recipient_email, metadata)
-             VALUES ($1, $2, $3, $4, $5)
+            "INSERT INTO email_events (email_job_id, message_id, event_type, recipient_email, timestamp, metadata)
+             VALUES ($1, $2, $3, $4, $5, $6)
              RETURNING id",
         )
         .bind(job_id)
         .bind(message_id)
         .bind(event_type)
         .bind(recipient)
+        .bind(ts)
         .bind(metadata)
         .fetch_one(&self.pool)
         .await?;
 
         Ok(row.try_get("id")?)
+    }
+
+    pub async fn email_event_exists(
+        &self,
+        message_id: Option<&str>,
+        event_type: &str,
+        recipient: &str,
+        timestamp: i64,
+    ) -> anyhow::Result<bool> {
+        let ts = chrono::DateTime::from_timestamp(timestamp, 0).unwrap_or_else(|| chrono::Utc::now());
+        let row = sqlx::query(
+            "SELECT COUNT(*) as count FROM email_events 
+             WHERE message_id = $1 AND event_type = $2 AND recipient_email = $3 AND timestamp = $4",
+        )
+        .bind(message_id)
+        .bind(event_type)
+        .bind(recipient)
+        .bind(ts)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let count: i64 = row.try_get("count")?;
+        Ok(count > 0)
     }
 
     // Email suppression management

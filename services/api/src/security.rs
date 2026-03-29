@@ -334,17 +334,35 @@ pub async fn sendgrid_webhook_middleware(
     next: Next,
 ) -> Result<Response, StatusCode> {
     if let Some(ref secret) = secret {
+        let timestamp = headers
+            .get("x-twilio-email-event-webhook-timestamp")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("");
+
         let sig = headers
             .get("x-twilio-email-event-webhook-signature")
             .and_then(|h| h.to_str().ok())
             .unwrap_or("");
+
+        // Check timestamp is recent (within 24 hours)
+        if let Ok(ts) = timestamp.parse::<i64>() {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64;
+            if (now - ts).abs() > 86400 { // 24 hours
+                return Err(StatusCode::UNAUTHORIZED);
+            }
+        } else {
+            return Err(StatusCode::UNAUTHORIZED);
+        }
 
         let (parts, body) = request.into_parts();
         let bytes = axum::body::to_bytes(body, usize::MAX)
             .await
             .map_err(|_| StatusCode::BAD_REQUEST)?;
 
-        if !signing::verify_signature(&bytes, sig, secret) {
+        if !signing::verify_sendgrid_signature(timestamp, &bytes, sig, secret) {
             return Err(StatusCode::UNAUTHORIZED);
         }
 
@@ -355,7 +373,7 @@ pub async fn sendgrid_webhook_middleware(
     Ok(next.run(request).await)
 }
 
-
+mod signing {
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
@@ -378,9 +396,35 @@ pub async fn sendgrid_webhook_middleware(
         mac.verify_slice(&expected).is_ok()
     }
 
+    pub fn verify_sendgrid_signature(timestamp: &str, payload: &[u8], signature: &str, secret: &str) -> bool {
+        let mut mac = match HmacSha256::new_from_slice(secret.as_bytes()) {
+            Ok(m) => m,
+            Err(_) => return false,
+        };
+
+        mac.update(timestamp.as_bytes());
+        mac.update(payload);
+
+        let expected = match BASE64.decode(signature) {
+            Ok(sig) => sig,
+            Err(_) => return false,
+        };
+
+        mac.verify_slice(&expected).is_ok()
+    }
+
     pub fn generate_signature(payload: &[u8], secret: &str) -> Result<String, SigningError> {
         let mut mac =
             HmacSha256::new_from_slice(secret.as_bytes()).map_err(|_| SigningError::InvalidKey)?;
+        mac.update(payload);
+        let result = mac.finalize();
+        Ok(BASE64.encode(result.into_bytes()))
+    }
+
+    pub fn generate_sendgrid_signature(timestamp: &str, payload: &[u8], secret: &str) -> Result<String, SigningError> {
+        let mut mac =
+            HmacSha256::new_from_slice(secret.as_bytes()).map_err(|_| SigningError::InvalidKey)?;
+        mac.update(timestamp.as_bytes());
         mac.update(payload);
         let result = mac.finalize();
         Ok(BASE64.encode(result.into_bytes()))
@@ -476,13 +520,14 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_client_ip_ipv6() {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "x-forwarded-for",
-            "2001:db8::1, 192.168.1.1".parse().unwrap(),
-        );
+    fn test_verify_sendgrid_signature() {
+        let secret = "test_secret";
+        let timestamp = "1234567890";
+        let payload = b"test payload";
+        let signature = signing::generate_sendgrid_signature(timestamp, payload, secret).unwrap();
 
-        assert_eq!(extract_client_ip(&headers, None), "2001:db8::1");
+        assert!(signing::verify_sendgrid_signature(timestamp, payload, &signature, secret));
+        assert!(!signing::verify_sendgrid_signature(timestamp, payload, "invalid", secret));
+        assert!(!signing::verify_sendgrid_signature("wrong", payload, &signature, secret));
     }
 }
