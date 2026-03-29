@@ -211,7 +211,7 @@ pub mod sanitize {
     pub fn string(input: &str, max_len: usize) -> String {
         input
             .chars()
-            .filter(|c| !c.is_control() || c.is_whitespace())
+            .filter(|c| !c.is_control() || matches!(c, '\t' | '\n' | '\r' | ' '))
             .take(max_len)
             .collect()
     }
@@ -355,7 +355,7 @@ pub async fn sendgrid_webhook_middleware(
     Ok(next.run(request).await)
 }
 
-
+pub mod signing {
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
