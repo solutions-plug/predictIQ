@@ -98,6 +98,8 @@ impl PredictIQ {
         crate::modules::cancellation::withdraw_refund(&e, bettor, market_id, 0)
     }
 
+    /// #401: Single canonical admin cancellation entrypoint.
+    /// Delegates to `modules::cancellation::cancel_market_admin`.
     pub fn cancel_market_admin(e: Env, market_id: u64) -> Result<(), ErrorCode> {
         crate::modules::cancellation::cancel_market_admin(&e, market_id)
     }

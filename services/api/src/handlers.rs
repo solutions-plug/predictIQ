@@ -18,7 +18,45 @@ use crate::{cache::keys, email::webhook::sendgrid_webhook_handler, AppState};
 
 #[derive(Debug, Serialize)]
 pub struct ApiError {
+    pub code: &'static str,
     pub message: String,
+}
+
+impl ApiError {
+    pub fn internal(err: anyhow::Error) -> Self {
+        Self {
+            code: "INTERNAL_ERROR",
+            message: err.to_string(),
+        }
+    }
+
+    pub fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            code: "BAD_REQUEST",
+            message: message.into(),
+        }
+    }
+
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self {
+            code: "NOT_FOUND",
+            message: message.into(),
+        }
+    }
+
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            code: "CONFLICT",
+            message: message.into(),
+        }
+    }
+
+    pub fn rate_limited() -> Self {
+        Self {
+            code: "RATE_LIMITED",
+            message: "Too many requests, please try again later.".to_string(),
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -28,9 +66,7 @@ impl IntoResponse for ApiError {
 }
 
 fn into_api_error(err: anyhow::Error) -> ApiError {
-    ApiError {
-        message: err.to_string(),
-    }
+    ApiError::internal(err)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -167,7 +203,6 @@ pub async fn newsletter_subscribe(
             }),
         ));
     }
-
     let source = payload
         .source
         .unwrap_or_else(|| "direct".to_string())

@@ -5,8 +5,8 @@ info:
   description: REST API for the PredictIQ prediction markets platform
 
 servers:
-  - url: http://localhost:3001
-    description: Local development
+  - url: http://localhost:8080
+    description: Local development (default bind 0.0.0.0:8080)
 
 tags:
   - name: health
@@ -86,6 +86,8 @@ paths:
       tags: [markets]
       operationId: resolveMarket
       summary: Resolve a market and invalidate caches (admin)
+      security:
+        - ApiKeyAuth: []
       parameters:
         - $ref: "#/components/parameters/marketId"
       responses:
@@ -95,6 +97,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/InvalidationResult"
+        "401":
+          $ref: "#/components/responses/ApiError"
+        "403":
+          $ref: "#/components/responses/ApiError"
         "500":
           $ref: "#/components/responses/ApiError"
 
@@ -310,6 +316,8 @@ paths:
       tags: [email]
       operationId: emailPreview
       summary: Preview a rendered email template (admin)
+      security:
+        - ApiKeyAuth: []
       parameters:
         - name: template_name
           in: path
@@ -336,6 +344,8 @@ paths:
       tags: [email]
       operationId: emailSendTest
       summary: Send a test email (admin)
+      security:
+        - ApiKeyAuth: []
       requestBody:
         required: true
         content:
@@ -357,6 +367,8 @@ paths:
       tags: [email]
       operationId: getEmailAnalytics
       summary: Email analytics (admin)
+      security:
+        - ApiKeyAuth: []
       parameters:
         - name: template_name
           in: query
@@ -386,6 +398,8 @@ paths:
       tags: [email]
       operationId: getEmailQueueStats
       summary: Email queue statistics (admin)
+      security:
+        - ApiKeyAuth: []
       responses:
         "200":
           description: Queue stats
@@ -449,10 +463,15 @@ components:
 
     ApiError:
       type: object
-      required: [message]
+      required: [code, message]
       properties:
+        code:
+          type: string
+          description: Machine-readable error code
+          example: INTERNAL_ERROR
         message:
           type: string
+          description: Human-readable error description
 
     FeaturedMarketView:
       type: object
@@ -554,3 +573,10 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/NewsletterResponse"
+
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Admin API key required for protected endpoints
