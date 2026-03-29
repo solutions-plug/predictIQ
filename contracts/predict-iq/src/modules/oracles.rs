@@ -208,8 +208,10 @@ pub fn set_oracle_result(e: &Env, market_id: u64, oracle_id: u32, outcome: u32) 
         &e.ledger().timestamp(),
     );
 
-    let oracle_addr = e.current_contract_address();
-    crate::modules::events::emit_oracle_result_set(e, market_id, oracle_addr, outcome);
+    // Issue #405: emit the real oracle source address (from OracleConfig) and oracle_id,
+    // not the current contract address.
+    let oracle_source = market.oracle_config.oracle_address.clone();
+    crate::modules::events::emit_oracle_result_set(e, market_id, oracle_id, oracle_source, outcome);
 
     Ok(())
 }

@@ -49,7 +49,7 @@ fn test_emit_oracle_result_set_event_payload() {
     let outcome = 0u32;
 
     // Emit event
-    emit_oracle_result_set(&e, market_id, oracle_address.clone(), outcome);
+    emit_oracle_result_set(&e, market_id, 0u32, oracle_address.clone(), outcome);
 
     // Event should be queryable by indexers via Soroban SDK
     // Verification: Event was emitted (Soroban runtime would validate this)
@@ -70,7 +70,7 @@ fn test_emit_oracle_result_set_multiple_outcomes() {
     ];
 
     for (outcome, desc) in test_cases {
-        emit_oracle_result_set(&e, market_id, oracle_address.clone(), outcome);
+        emit_oracle_result_set(&e, market_id, 0u32, oracle_address.clone(), outcome);
         // Event emitted with correct outcome value
     }
 }
@@ -90,7 +90,7 @@ fn test_emit_oracle_result_set_large_market_ids() {
     ];
 
     for (market_id, desc) in test_cases {
-        emit_oracle_result_set(&e, market_id, oracle_address.clone(), outcome);
+        emit_oracle_result_set(&e, market_id, 0u32, oracle_address.clone(), outcome);
         // Event emitted with correct market_id
     }
 }
@@ -120,8 +120,8 @@ fn test_oracle_events_multiple_oracles_same_market() {
     let oracle_3 = Address::generate(&e);
 
     // Emit events for multiple oracles in same market
-    emit_oracle_result_set(&e, market_id, oracle_1.clone(), 0u32);
-    emit_oracle_result_set(&e, market_id, oracle_2.clone(), 1u32);
+    emit_oracle_result_set(&e, market_id, 0u32, oracle_1.clone(), 0u32);
+    emit_oracle_result_set(&e, market_id, 0u32, oracle_2.clone(), 1u32);
     emit_oracle_resolved(&e, market_id, oracle_3.clone(), 1u32);
 
     // Each event should maintain distinct oracle_address in topic
@@ -283,7 +283,7 @@ fn test_oracle_event_field_completeness() {
         // Topic 1: market_id (u64)
         // Topic 2: oracle_addr (Address)
         // Data: outcome (u32)
-        emit_oracle_result_set(&e, market_id, oracle_addr.clone(), outcome);
+        emit_oracle_result_set(&e, market_id, 0u32, oracle_addr.clone(), outcome);
         
         // Emit OracleResolved - should have same topic structure
         emit_oracle_resolved(&e, market_id, oracle_addr.clone(), outcome);
@@ -432,7 +432,7 @@ fn test_oracle_event_naming_consistency() {
     let outcome = 1u32;
 
     // All oracle events should emit successfully and consistently
-    emit_oracle_result_set(&e, market_id, oracle_addr.clone(), outcome);
+    emit_oracle_result_set(&e, market_id, 0u32, oracle_addr.clone(), outcome);
     emit_oracle_resolved(&e, market_id, oracle_addr.clone(), outcome);
 }
 
@@ -480,7 +480,7 @@ fn test_event_market_id_consistency_across_types() {
     let deadline = 2000000000u64;
 
     // All events for same market should have same market_id in Topic 1
-    emit_oracle_result_set(&e, market_id, oracle_addr.clone(), outcome);
+    emit_oracle_result_set(&e, market_id, 0u32, oracle_addr.clone(), outcome);
     emit_dispute_filed(&e, market_id, resolver.clone(), deadline);
     emit_resolution_finalized(&e, market_id, resolver.clone(), outcome, payout);
     emit_market_finalized(&e, market_id, resolver.clone(), outcome);
@@ -499,8 +499,8 @@ fn test_events_different_markets_isolation() {
     let outcome = 1u32;
 
     // Events for different markets should have different market_ids
-    emit_oracle_result_set(&e, market_1, oracle_addr.clone(), outcome);
-    emit_oracle_result_set(&e, market_2, oracle_addr.clone(), 0u32);
+    emit_oracle_result_set(&e, market_1, 0u32, oracle_addr.clone(), outcome);
+    emit_oracle_result_set(&e, market_2, 0u32, oracle_addr.clone(), 0u32);
 
     // Indexer filtering by market_id should get separate events
 }
@@ -516,8 +516,8 @@ fn test_event_multiple_emissions_same_market() {
     let resolver = Address::generate(&e);
 
     // Multiple oracle events
-    emit_oracle_result_set(&e, market_id, oracle_1.clone(), 0u32);
-    emit_oracle_result_set(&e, market_id, oracle_2.clone(), 1u32);
+    emit_oracle_result_set(&e, market_id, 0u32, oracle_1.clone(), 0u32);
+    emit_oracle_result_set(&e, market_id, 0u32, oracle_2.clone(), 1u32);
     emit_oracle_resolved(&e, market_id, oracle_2.clone(), 1u32);
 
     // Dispute phase
@@ -538,7 +538,7 @@ fn test_full_market_lifecycle_event_sequence() {
     let resolver = Address::generate(&e);
 
     // Oracle resolution phase
-    emit_oracle_result_set(&e, market_id, oracle_addr.clone(), 0u32);
+    emit_oracle_result_set(&e, market_id, 0u32, oracle_addr.clone(), 0u32);
     
     // Could go to dispute...
     emit_dispute_filed(&e, market_id, Address::generate(&e), 2000000000u64);
@@ -559,8 +559,8 @@ fn test_event_payload_boundary_values() {
     let resolver = Address::generate(&e);
 
     // Min/max market_id
-    emit_oracle_result_set(&e, 1u64, oracle_addr.clone(), 0u32);
-    emit_oracle_result_set(&e, u64::MAX, oracle_addr.clone(), 1u32);
+    emit_oracle_result_set(&e, 1u64, 0u32, oracle_addr.clone(), 0u32);
+    emit_oracle_result_set(&e, u64::MAX, 0u32, oracle_addr.clone(), 1u32);
 
     // Min/max outcome (assuming u32 range)
     emit_dispute_resolved(&e, 100u64, resolver.clone(), 0u32);
@@ -582,8 +582,8 @@ fn test_event_topic_structure_for_indexing() {
     let actor_2 = Address::generate(&e);
 
     // Different actors trigger events - Topic 2 should change
-    emit_oracle_result_set(&e, market_id, actor_1.clone(), 0u32);
-    emit_oracle_result_set(&e, market_id, actor_2.clone(), 1u32);
+    emit_oracle_result_set(&e, market_id, 0u32, actor_1.clone(), 0u32);
+    emit_oracle_result_set(&e, market_id, 0u32, actor_2.clone(), 1u32);
 
     // Indexers can filter by:
     // - Topic 0 (event type): "oracle_ok"
@@ -603,7 +603,7 @@ fn test_oracle_event_data_payload_integrity() {
     
     for outcome in test_outcomes {
         // Each emission should preserve exact outcome value
-        emit_oracle_result_set(&e, market_id, oracle_addr.clone(), outcome);
+        emit_oracle_result_set(&e, market_id, 0u32, oracle_addr.clone(), outcome);
     }
 }
 

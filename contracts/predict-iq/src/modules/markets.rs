@@ -2,6 +2,7 @@ use crate::errors::ErrorCode;
 use crate::types::{
     ConfigKey, CreatorReputation, Market, MarketStatus, MarketTier, OracleConfig,
     PayoutMode, PRUNE_GRACE_PERIOD, TTL_HIGH_THRESHOLD, TTL_LOW_THRESHOLD,
+    status_tag,
 };
 use soroban_sdk::{contracttype, token, Address, Env, String, Vec};
 
@@ -24,6 +25,37 @@ fn creator_reputation_rank(r: &CreatorReputation) -> u32 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Issue #406: Status index helpers
+// Maintains a set of market IDs per status using individual storage keys
+// ConfigKey::StatusIndex(status_tag, market_id) -> bool.
+// Writing/removing one key per status transition is O(1) and avoids full scans.
+// ---------------------------------------------------------------------------
+
+/// Record market_id under its current status in the status index.
+pub fn index_market_status(e: &Env, market_id: u64, status: &MarketStatus) {
+    let key = ConfigKey::StatusIndex(status_tag(status), market_id);
+    e.storage().persistent().set(&key, &true);
+    e.storage()
+        .persistent()
+        .extend_ttl(&key, TTL_LOW_THRESHOLD, TTL_HIGH_THRESHOLD);
+}
+
+/// Remove market_id from the old status bucket when status changes.
+pub fn deindex_market_status(e: &Env, market_id: u64, old_status: &MarketStatus) {
+    let key = ConfigKey::StatusIndex(status_tag(old_status), market_id);
+    if e.storage().persistent().has(&key) {
+        e.storage().persistent().remove(&key);
+    }
+}
+
+/// Check whether market_id is indexed under the given status.
+pub fn has_status_index(e: &Env, market_id: u64, status: &MarketStatus) -> bool {
+    e.storage()
+        .persistent()
+        .has(&ConfigKey::StatusIndex(status_tag(status), market_id))
+}
+
 pub fn create_market(
     e: &Env,
     creator: Address,
@@ -41,8 +73,6 @@ pub fn create_market(
 
     crate::modules::circuit_breaker::require_closed(e)?;
 
-    // Issue #176: Validate minimum options - require at least 2 options (implicitly > 0)
-    // Gas optimization: Limit number of outcomes to prevent excessive iteration
     if options.len() < 2 {
         return Err(ErrorCode::InvalidOutcome);
     }
@@ -50,33 +80,21 @@ pub fn create_market(
         return Err(ErrorCode::TooManyOutcomes);
     }
 
-    // Issue #177: Validate deadlines are in the future
-    // Validate deadlines: deadline must be in the future, resolution_deadline must be after deadline
     if deadline <= e.ledger().timestamp() || resolution_deadline <= deadline {
         return Err(ErrorCode::InvalidDeadline);
     }
 
-    // Validate parent market if this is a conditional market
     if parent_id > 0 {
         validate_parent_market(e, parent_id, parent_outcome_idx)?;
 
-        // Also verify parent_outcome_idx is within parent's options range
         let parent_market = get_market(e, parent_id).ok_or(ErrorCode::MarketNotFound)?;
 
-        // Validate parent_outcome_idx is within parent's options range
         if parent_outcome_idx >= parent_market.options.len() {
             return Err(ErrorCode::InvalidOutcome);
         }
 
-        // Allow advance creation while the parent is still Active (e.g. tournament
-        // brackets).  If the parent has already resolved, gate on the outcome so we
-        // never create child markets for outcomes that can never be reached.
-        // Any other parent status (PendingResolution, Disputed, Cancelled) is rejected.
         match parent_market.status {
-            MarketStatus::Active => {
-                // Parent not yet resolved — child created in advance.
-                // Betting on this child is gated at place_bet time.
-            }
+            MarketStatus::Active => {}
             MarketStatus::Resolved => {
                 let parent_winning_outcome = parent_market
                     .winning_outcome
@@ -86,7 +104,6 @@ pub fn create_market(
                 }
             }
             _ => {
-                // PendingResolution, Disputed, Cancelled — cannot act as a parent.
                 return Err(ErrorCode::ParentMarketNotResolved);
             }
         }
@@ -98,11 +115,7 @@ pub fn create_market(
         reputation,
         CreatorReputation::Pro | CreatorReputation::Institutional
     );
-    let adjusted_deposit = if deposit_required {
-        creation_deposit
-    } else {
-        0
-    };
+    let adjusted_deposit = if deposit_required { creation_deposit } else { 0 };
 
     if creation_deposit > 0 {
         let token_client = token::Client::new(e, &native_token);
@@ -119,7 +132,6 @@ pub fn create_market(
 
     let num_outcomes = options.len() as u32;
 
-    // Pre-initialize outcome_stakes and bet counts with 0 for all outcomes to optimize gas
     for i in 0..num_outcomes {
         set_outcome_stake(e, count, i, 0);
         set_outcome_bet_count(e, count, i, 0u32);
@@ -136,7 +148,6 @@ pub fn create_market(
         winning_outcome: None,
         oracle_config,
         total_staked: 0,
-        // Issue #23: payout_mode is immutable after creation
         payout_mode: PayoutMode::Pull,
         tier,
         creation_deposit,
@@ -148,7 +159,6 @@ pub fn create_market(
         pending_resolution_timestamp: None,
         dispute_snapshot_ledger: None,
         dispute_timestamp: None,
-        // Issue #24: initialize precise winner counter; incremented in place_bet.
         winner_counts: soroban_sdk::Map::new(e),
         total_claimed: 0,
     };
@@ -157,7 +167,6 @@ pub fn create_market(
         .persistent()
         .set(&DataKey::Market(count), &market);
 
-    // Set initial TTL for the market data
     e.storage().persistent().extend_ttl(
         &DataKey::Market(count),
         TTL_LOW_THRESHOLD,
@@ -165,6 +174,9 @@ pub fn create_market(
     );
 
     e.storage().instance().set(&DataKey::MarketCount, &count);
+
+    // Issue #406: Index the new market under Active status.
+    index_market_status(e, count, &MarketStatus::Active);
 
     crate::modules::events::emit_market_created(
         e,
@@ -199,7 +211,6 @@ pub fn allocate_market_id(e: &Env) -> Result<u64, ErrorCode> {
 }
 
 /// Validates that a parent market exists, is resolved, and resolved to the required outcome.
-/// Called by both create_market and place_bet to enforce consistent conditional market rules.
 pub fn validate_parent_market(
     e: &Env,
     parent_id: u64,
@@ -226,7 +237,15 @@ pub fn get_market(e: &Env, id: u64) -> Option<Market> {
     e.storage().persistent().get(&DataKey::Market(id))
 }
 
+/// Update a market in storage, maintaining the status index when status changes.
 pub fn update_market(e: &Env, market: Market) {
+    // Issue #406: Keep status index in sync on every market write.
+    if let Some(old) = get_market(e, market.id) {
+        if old.status != market.status {
+            deindex_market_status(e, market.id, &old.status);
+            index_market_status(e, market.id, &market.status);
+        }
+    }
     e.storage()
         .persistent()
         .set(&DataKey::Market(market.id), &market);
@@ -239,27 +258,26 @@ pub fn get_outcome_stake(e: &Env, market_id: u64, outcome: u32) -> i128 {
         .unwrap_or(0)
 }
 
-pub fn set_outcome_stake(e: &Env, market_id: u64, outcome: u32, value: i128) {
+pub fn set_outcome_stake(e: &Env, market_id: u64, outcome: u32, amount: i128) {
+    let key = DataKey::OutcomeStake(market_id, outcome);
+    e.storage().persistent().set(&key, &amount);
     e.storage()
         .persistent()
-        .set(&DataKey::OutcomeStake(market_id, outcome), &value);
+        .extend_ttl(&key, TTL_LOW_THRESHOLD, TTL_HIGH_THRESHOLD);
 }
 
-pub fn set_outcome_bet_count(e: &Env, market_id: u64, outcome: u32, value: u32) {
+pub fn set_outcome_bet_count(e: &Env, market_id: u64, outcome: u32, count: u32) {
+    let key = DataKey::OutcomeBetCount(market_id, outcome);
+    e.storage().persistent().set(&key, &count);
     e.storage()
         .persistent()
-        .set(&DataKey::OutcomeBetCount(market_id, outcome), &value);
+        .extend_ttl(&key, TTL_LOW_THRESHOLD, TTL_HIGH_THRESHOLD);
 }
 
 pub fn increment_outcome_bet_count(e: &Env, market_id: u64, outcome: u32) {
-    let current: u32 = e
-        .storage()
-        .persistent()
-        .get(&DataKey::OutcomeBetCount(market_id, outcome))
-        .unwrap_or(0);
-    e.storage()
-        .persistent()
-        .set(&DataKey::OutcomeBetCount(market_id, outcome), &(current + 1));
+    let key = DataKey::OutcomeBetCount(market_id, outcome);
+    let n: u32 = e.storage().persistent().get(&key).unwrap_or(0);
+    set_outcome_bet_count(e, market_id, outcome, n + 1);
 }
 
 /// Issue #14: Proper winner count using the maintained counter.
@@ -320,14 +338,6 @@ pub fn set_creation_deposit(e: &Env, amount: i128) -> Result<(), ErrorCode> {
 }
 
 /// Issue #7: Creator must explicitly claim their deposit after finality.
-///
-/// Rules enforced:
-///   1. Caller must be the market creator (auth required).
-///   2. Market must be Resolved.
-///   3. The full dispute window must have elapsed since `pending_resolution_timestamp`
-///      with no successful challenge — i.e. the market must NOT have gone through
-///      the Disputed state (dispute_timestamp is None).
-///   4. Deposit is zeroed after transfer to prevent double-claim.
 pub fn claim_creation_deposit(
     e: &Env,
     market_id: u64,
@@ -335,18 +345,15 @@ pub fn claim_creation_deposit(
 ) -> Result<(), ErrorCode> {
     let mut market = get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
 
-    // Only the creator can claim their own deposit
     if caller != market.creator {
         return Err(ErrorCode::NotAuthorized);
     }
     caller.require_auth();
 
-    // 2. Market must be fully resolved
     if market.status != MarketStatus::Resolved {
         return Err(ErrorCode::MarketNotActive);
     }
 
-    // Deposit is locked until the dispute window has fully closed
     let pending_ts = market
         .pending_resolution_timestamp
         .ok_or(ErrorCode::ResolutionNotReady)?;
@@ -357,7 +364,6 @@ pub fn claim_creation_deposit(
         return Err(ErrorCode::DisputeWindowStillOpen);
     }
 
-    // 6. Transfer and zero out to prevent double-claim
     let amount = market.creation_deposit;
     let creator = market.creator.clone();
     let token_address = market.token_address.clone();
@@ -388,35 +394,6 @@ pub fn bump_market_ttl(e: &Env, market_id: u64) {
     );
 }
 
-pub fn get_outcome_stake(e: &Env, market_id: u64, outcome: u32) -> i128 {
-    e.storage()
-        .persistent()
-        .get(&DataKey::OutcomeStake(market_id, outcome))
-        .unwrap_or(0)
-}
-
-pub fn set_outcome_stake(e: &Env, market_id: u64, outcome: u32, amount: i128) {
-    let key = DataKey::OutcomeStake(market_id, outcome);
-    e.storage().persistent().set(&key, &amount);
-    e.storage()
-        .persistent()
-        .extend_ttl(&key, TTL_LOW_THRESHOLD, TTL_HIGH_THRESHOLD);
-}
-
-pub fn set_outcome_bet_count(e: &Env, market_id: u64, outcome: u32, count: u32) {
-    let key = DataKey::OutcomeBetCount(market_id, outcome);
-    e.storage().persistent().set(&key, &count);
-    e.storage()
-        .persistent()
-        .extend_ttl(&key, TTL_LOW_THRESHOLD, TTL_HIGH_THRESHOLD);
-}
-
-pub fn increment_outcome_bet_count(e: &Env, market_id: u64, outcome: u32) {
-    let key = DataKey::OutcomeBetCount(market_id, outcome);
-    let n: u32 = e.storage().persistent().get(&key).unwrap_or(0);
-    set_outcome_bet_count(e, market_id, outcome, n + 1);
-}
-
 /// Issue #17: Guard prune with total_claimed check.
 /// Issue #47: Permissionless — anyone can call after grace period.
 pub fn prune_market(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
@@ -426,7 +403,6 @@ pub fn prune_market(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
         return Err(ErrorCode::MarketNotResolved);
     }
 
-    // Check if 30 days have passed since resolution
     let resolved_at = market.resolved_at.ok_or(ErrorCode::MarketNotResolved)?;
     let current_time = e.ledger().timestamp();
 
@@ -434,17 +410,17 @@ pub fn prune_market(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
         return Err(ErrorCode::GracePeriodActive);
     }
 
-    // Issue #17: Ensure all winnings have been claimed before pruning
     if market.total_claimed < market.total_staked {
         return Err(ErrorCode::InsufficientBalance);
     }
 
-    // Deep prune: dispute/voting keys (per-voter + tally) must not outlive the market.
     crate::modules::voting::prune_market_voting_state(e, market_id, market.options.len() as u32);
+
+    // Issue #406: Remove status index entry before removing the market record.
+    deindex_market_status(e, market_id, &market.status);
 
     e.storage().persistent().remove(&DataKey::Market(market_id));
 
-    // Remove outcome stakes and bet counts
     for i in 0..market.options.len() as u32 {
         e.storage()
             .persistent()
@@ -454,7 +430,6 @@ pub fn prune_market(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
             .remove(&DataKey::OutcomeBetCount(market_id, i));
     }
 
-    // Record market ID in event archive for indexers
     crate::modules::event_archive::archive_market(e, market_id);
 
     Ok(())
