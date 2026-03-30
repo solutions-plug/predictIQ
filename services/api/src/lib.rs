@@ -108,11 +108,11 @@ pub async fn run() -> anyhow::Result<()> {
 
     let state = Arc::new(AppState {
         config,
-        cache,
+        cache: cache.clone(),
         db,
         blockchain,
         metrics,
-        newsletter_rate_limiter: IpRateLimiter::default(),
+        newsletter_rate_limiter: IpRateLimiter::new(cache.clone()),
         email_service: email_service.clone(),
         email_queue: email_queue.clone(),
         webhook_handler: webhook_handler.clone(),
