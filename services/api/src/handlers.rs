@@ -1,6 +1,6 @@
 use std::{
     sync::Arc,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use axum::{
@@ -188,20 +188,6 @@ pub async fn newsletter_subscribe(
     Json(payload): Json<NewsletterSubscribeRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let ip = client_ip(&headers);
-    let allowed = state
-        .newsletter_rate_limiter
-        .allow(&ip, 5, Duration::from_secs(15 * 60))
-        .await;
-
-    if !allowed {
-        return Ok((
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(NewsletterResponse {
-                success: false,
-                message: "Too many requests, please try again later.".to_string(),
-            }),
-        ));
-    }
 
     let email = match normalized_email(&payload.email) {
         Some(value) => value,

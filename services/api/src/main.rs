@@ -27,7 +27,6 @@ use config::Config;
 use db::Database;
 use email::{queue::EmailQueue, service::EmailService, webhook::WebhookHandler};
 use metrics::Metrics;
-use newsletter::IpRateLimiter;
 use security::{ApiKeyAuth, IpWhitelist, RateLimiter, TrustProxy};
 use tokio::net::TcpListener;
 use tower_http::{
@@ -44,7 +43,6 @@ pub struct AppState {
     pub(crate) db: Database,
     pub(crate) blockchain: BlockchainClient,
     pub(crate) metrics: Metrics,
-    pub(crate) newsletter_rate_limiter: IpRateLimiter,
     pub(crate) email_service: EmailService,
     pub(crate) email_queue: EmailQueue,
     pub(crate) webhook_handler: WebhookHandler,
