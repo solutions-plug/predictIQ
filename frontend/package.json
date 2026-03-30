@@ -4,8 +4,9 @@
   "description": "PredictIQ Landing Page with WCAG 2.1 AA Compliance",
   "private": true,
   "scripts": {
+    "generate-client": "openapi-typescript ../../services/api/openapi.yaml -o src/lib/api/schema.d.ts",
     "dev": "next dev",
-    "build": "next build",
+    "build": "npm run generate-client && next build",
     "start": "next start",
     "lint": "next lint",
     "test": "jest",
@@ -51,6 +52,7 @@
     "jest-environment-jsdom": "^29.7.0",
     "lighthouse": "^11.4.0",
     "pa11y": "^7.0.0",
+    "openapi-typescript": "^7.0.0",
     "typescript": "^5.3.3"
   },
   "engines": {

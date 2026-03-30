@@ -4,9 +4,6 @@ target = "wasm32-unknown-unknown"
 [target.wasm32-unknown-unknown]
 rustflags = [
     "-C", "link-arg=-zstack-size=65536",
-    "-C", "opt-level=z",
-    "-C", "lto=fat",
-    "-C", "codegen-units=1",
 ]
 
 [profile.release]

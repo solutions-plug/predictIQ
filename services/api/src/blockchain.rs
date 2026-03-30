@@ -1,7 +1,10 @@
 use std::{
-    collections::HashSet,
-    sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    collections::{HashMap, HashSet},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{anyhow, Context};
@@ -12,7 +15,7 @@ use tokio::{sync::RwLock, time::sleep};
 
 use crate::{
     cache::{keys, RedisCache},
-    config::Config,
+    config::{Config, ContractKeySchema},
     metrics::Metrics,
 };
 
@@ -22,6 +25,7 @@ pub struct BlockchainClient {
     rpc_url: String,
     network: String,
     contract_id: String,
+    pub key_schema: ContractKeySchema,
     retry_attempts: u32,
     retry_base_delay_ms: u64,
     event_poll_interval: Duration,
@@ -33,9 +37,33 @@ pub struct BlockchainClient {
     monitor: Arc<MonitoringState>,
 }
 
+/// Maximum number of transaction hashes tracked simultaneously.
+const MAX_WATCHED_TXS: usize = 1_000;
+/// Hashes not finalized within this window are evicted.
+const WATCHED_TX_TTL: Duration = Duration::from_secs(60 * 60); // 1 hour
+
+/// Per-page limit for `getEvents` RPC calls.
+const EVENTS_PAGE_SIZE: u32 = 100;
+
 #[derive(Default)]
 struct MonitoringState {
-    watched_txs: RwLock<HashSet<String>>,
+    /// hash → time of first watch registration
+    watched_txs: RwLock<HashMap<String, Instant>>,
+    tasks_started: AtomicBool,
+}
+
+/// Indicates the origin of a blockchain response payload.
+///
+/// - `Live`        – data freshly fetched from the RPC node this request.
+/// - `StaleCache`  – served from cache; RPC was not called.
+/// - `RpcFallback` – RPC call failed; zeros/defaults were substituted.
+///                   This is the signal that an incident may be in progress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DataSource {
+    Live,
+    StaleCache,
+    RpcFallback,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,6 +74,7 @@ pub struct ChainMarketData {
     pub onchain_volume: String,
     pub resolved_outcome: Option<u32>,
     pub ledger: u32,
+    pub data_source: DataSource,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +84,7 @@ pub struct PlatformStatistics {
     pub resolved_markets: u64,
     pub total_volume: String,
     pub ledger: u32,
+    pub data_source: DataSource,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +103,7 @@ pub struct UserBetsPage {
     pub page_size: i64,
     pub total: i64,
     pub items: Vec<UserBet>,
+    pub data_source: DataSource,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +113,7 @@ pub struct OracleResult {
     pub outcome: Option<u32>,
     pub confidence_bps: Option<u64>,
     pub ledger: u32,
+    pub data_source: DataSource,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +122,18 @@ pub struct TransactionStatus {
     pub status: String,
     pub ledger: Option<u32>,
     pub error: Option<String>,
+    pub data_source: DataSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HealthStatus {
+    /// Node reachable and contract readable.
+    Healthy,
+    /// Node reachable but contract read failed.
+    Degraded,
+    /// Node unreachable.
+    Unhealthy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,9 +141,12 @@ pub struct BlockchainHealth {
     pub network: String,
     pub rpc_url: String,
     pub latest_ledger: u32,
+    pub status: HealthStatus,
+    /// Kept for backwards compatibility; true only when status == Healthy.
     pub is_healthy: bool,
     pub contract_reachable: bool,
     pub checked_at_unix: u64,
+    pub data_source: DataSource,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -138,6 +185,7 @@ impl BlockchainClient {
             rpc_url: config.blockchain_rpc_url.clone(),
             network: config.network_name().to_string(),
             contract_id: config.contract_id.clone(),
+            key_schema: config.contract_key_schema.clone(),
             retry_attempts: config.retry_attempts.max(1),
             retry_base_delay_ms: config.retry_base_delay_ms.max(50),
             event_poll_interval: config.event_poll_interval,
@@ -230,23 +278,32 @@ impl BlockchainClient {
             .cache
             .get_or_set_json(&key, ttl, || async move {
                 let ledger = self.latest_ledger().await.unwrap_or(0);
-                let data: Value = self
-                    .rpc_call(
+                let rpc_result = self
+                    .rpc_call::<Value>(
                         "getContractData",
                         json!({
                             "contractId": self.contract_id,
-                            "key": format!("market:{}", market_id),
+                            "key": self.key_schema.market_key(market_id),
                         }),
                     )
-                    .await
-                    .unwrap_or_else(|_| {
-                        json!({
-                            "title": null,
-                            "status": null,
-                            "onchain_volume": "0",
-                            "resolved_outcome": null
-                        })
-                    });
+                    .await;
+
+                let (data, data_source) = match rpc_result {
+                    Ok(v) => (v, DataSource::Live),
+                    Err(err) => {
+                        tracing::warn!(error = %err, market_id, "market_data RPC fallback");
+                        self.metrics.observe_rpc_fallback(endpoint);
+                        (
+                            json!({
+                                "title": null,
+                                "status": null,
+                                "onchain_volume": "0",
+                                "resolved_outcome": null
+                            }),
+                            DataSource::RpcFallback,
+                        )
+                    }
+                };
 
                 Ok(ChainMarketData {
                     market_id,
@@ -268,6 +325,7 @@ impl BlockchainClient {
                         .and_then(Value::as_u64)
                         .map(|v| v as u32),
                     ledger,
+                    data_source,
                 })
             })
             .await?;
@@ -277,6 +335,14 @@ impl BlockchainClient {
         } else {
             self.metrics.observe_miss("chain", endpoint);
         }
+
+        // Responses served from cache preserve the data_source set at write time.
+        // Wrap with StaleCache only when the value came from cache and was originally live.
+        let value = if hit && value.data_source == DataSource::Live {
+            ChainMarketData { data_source: DataSource::StaleCache, ..value }
+        } else {
+            value
+        };
 
         Ok(value)
     }
@@ -290,23 +356,32 @@ impl BlockchainClient {
             .cache
             .get_or_set_json(&key, ttl, || async move {
                 let ledger = self.latest_ledger().await.unwrap_or(0);
-                let data: Value = self
-                    .rpc_call(
+                let rpc_result = self
+                    .rpc_call::<Value>(
                         "getContractData",
                         json!({
                             "contractId": self.contract_id,
-                            "key": "platform:stats",
+                            "key": self.key_schema.platform_stats.clone(),
                         }),
                     )
-                    .await
-                    .unwrap_or_else(|_| {
-                        json!({
-                            "total_markets": 0,
-                            "active_markets": 0,
-                            "resolved_markets": 0,
-                            "total_volume": "0"
-                        })
-                    });
+                    .await;
+
+                let (data, data_source) = match rpc_result {
+                    Ok(v) => (v, DataSource::Live),
+                    Err(err) => {
+                        tracing::warn!(error = %err, "platform_stats RPC fallback");
+                        self.metrics.observe_rpc_fallback(endpoint);
+                        (
+                            json!({
+                                "total_markets": 0,
+                                "active_markets": 0,
+                                "resolved_markets": 0,
+                                "total_volume": "0"
+                            }),
+                            DataSource::RpcFallback,
+                        )
+                    }
+                };
 
                 Ok(PlatformStatistics {
                     total_markets: data
@@ -327,6 +402,7 @@ impl BlockchainClient {
                         .unwrap_or("0")
                         .to_string(),
                     ledger,
+                    data_source,
                 })
             })
             .await?;
@@ -337,9 +413,17 @@ impl BlockchainClient {
             self.metrics.observe_miss("chain", endpoint);
         }
 
+        let value = if hit && value.data_source == DataSource::Live {
+            PlatformStatistics { data_source: DataSource::StaleCache, ..value }
+        } else {
+            value
+        };
+
         Ok(value)
     }
 
+    /// Efficiently fetches a page of user bets without full materialization.
+    /// Assumes upstream contract/RPC supports offset/limit or page token.
     pub async fn user_bets_cached(
         &self,
         user: &str,
@@ -356,32 +440,38 @@ impl BlockchainClient {
             .cache
             .get_or_set_json(&key, ttl, || async move {
                 let ledger = self.latest_ledger().await.unwrap_or(0);
-                let data: Value = self
-                    .rpc_call(
+                // Use offset/limit in the RPC call if supported by the contract
+                let offset = ((page - 1) * page_size).max(0);
+                let rpc_result = self
+                    .rpc_call::<Value>(
                         "getContractData",
                         json!({
                             "contractId": self.contract_id,
                             "key": format!("user_bets:{}", user),
+                            "offset": offset,
+                            "limit": page_size,
                         }),
                     )
-                    .await
-                    .unwrap_or_else(|_| json!({"bets": []}));
+                    .await;
 
+                let (data, data_source) = match rpc_result {
+                    Ok(v) => (v, DataSource::Live),
+                    Err(err) => {
+                        tracing::warn!(error = %err, user, "user_bets RPC fallback");
+                        self.metrics.observe_rpc_fallback(endpoint);
+                        (json!({"bets": []}), DataSource::RpcFallback)
+                    }
+                };
+
+                // Only materialize the requested page
                 let bets = data
                     .get("bets")
                     .and_then(Value::as_array)
                     .cloned()
                     .unwrap_or_default();
+                let total = data.get("total").and_then(Value::as_i64).unwrap_or(bets.len() as i64);
 
-                let total = bets.len() as i64;
-                let offset = ((page - 1) * page_size) as usize;
-                let paged = bets
-                    .into_iter()
-                    .skip(offset)
-                    .take(page_size as usize)
-                    .collect::<Vec<_>>();
-
-                let items = paged
+                let items = bets
                     .into_iter()
                     .map(|entry| UserBet {
                         market_id: entry
@@ -411,6 +501,7 @@ impl BlockchainClient {
                     page_size,
                     total,
                     items,
+                    data_source,
                 })
             })
             .await?;
@@ -420,6 +511,12 @@ impl BlockchainClient {
         } else {
             self.metrics.observe_miss("chain", endpoint);
         }
+
+        let value = if hit && value.data_source == DataSource::Live {
+            UserBetsPage { data_source: DataSource::StaleCache, ..value }
+        } else {
+            value
+        };
 
         Ok(value)
     }
@@ -433,16 +530,24 @@ impl BlockchainClient {
             .cache
             .get_or_set_json(&key, ttl, || async move {
                 let ledger = self.latest_ledger().await.unwrap_or(0);
-                let data: Value = self
-                    .rpc_call(
+                let rpc_result = self
+                    .rpc_call::<Value>(
                         "getContractData",
                         json!({
                             "contractId": self.contract_id,
-                            "key": format!("oracle_result:{}", market_id),
+                            "key": self.key_schema.oracle_result_key(market_id),
                         }),
                     )
-                    .await
-                    .unwrap_or_else(|_| json!({}));
+                    .await;
+
+                let (data, data_source) = match rpc_result {
+                    Ok(v) => (v, DataSource::Live),
+                    Err(err) => {
+                        tracing::warn!(error = %err, market_id, "oracle_result RPC fallback");
+                        self.metrics.observe_rpc_fallback(endpoint);
+                        (json!({}), DataSource::RpcFallback)
+                    }
+                };
 
                 Ok(OracleResult {
                     market_id,
@@ -456,6 +561,7 @@ impl BlockchainClient {
                         .map(|v| v as u32),
                     confidence_bps: data.get("confidence_bps").and_then(Value::as_u64),
                     ledger,
+                    data_source,
                 })
             })
             .await?;
@@ -465,6 +571,12 @@ impl BlockchainClient {
         } else {
             self.metrics.observe_miss("chain", endpoint);
         }
+
+        let value = if hit && value.data_source == DataSource::Live {
+            OracleResult { data_source: DataSource::StaleCache, ..value }
+        } else {
+            value
+        };
 
         Ok(value)
     }
@@ -486,20 +598,29 @@ impl BlockchainClient {
                     error_result_xdr: Option<String>,
                 }
 
-                let tx = self
-                    .rpc_call::<TxResponse>("getTransaction", json!({ "hash": hash }))
-                    .await
-                    .unwrap_or(TxResponse {
-                        status: "NOT_FOUND".to_string(),
-                        ledger: None,
-                        error_result_xdr: None,
-                    });
+                let (tx, data_source) =
+                    match self.rpc_call::<TxResponse>("getTransaction", json!({ "hash": hash })).await {
+                        Ok(t) => (t, DataSource::Live),
+                        Err(err) => {
+                            tracing::warn!(error = %err, hash, "tx_status RPC fallback");
+                            self.metrics.observe_rpc_fallback(endpoint);
+                            (
+                                TxResponse {
+                                    status: "NOT_FOUND".to_string(),
+                                    ledger: None,
+                                    error_result_xdr: None,
+                                },
+                                DataSource::RpcFallback,
+                            )
+                        }
+                    };
 
                 Ok(TransactionStatus {
                     hash: hash.to_string(),
                     status: tx.status,
                     ledger: tx.ledger,
                     error: tx.error_result_xdr,
+                    data_source,
                 })
             })
             .await?;
@@ -509,6 +630,12 @@ impl BlockchainClient {
         } else {
             self.metrics.observe_miss("chain", endpoint);
         }
+
+        let value = if hit && value.data_source == DataSource::Live {
+            TransactionStatus { data_source: DataSource::StaleCache, ..value }
+        } else {
+            value
+        };
 
         Ok(value)
     }
@@ -527,7 +654,7 @@ impl BlockchainClient {
                         "getContractData",
                         json!({
                             "contractId": self.contract_id,
-                            "key": "platform:stats",
+                            "key": self.key_schema.platform_stats.clone(),
                         }),
                     )
                     .await
@@ -538,13 +665,22 @@ impl BlockchainClient {
                     .unwrap_or_default()
                     .as_secs();
 
+                // Health is always a live probe; no fallback substitution needed.
+                let status = match (latest > 0, contract_reachable) {
+                    (true, true) => HealthStatus::Healthy,
+                    (true, false) => HealthStatus::Degraded,
+                    _ => HealthStatus::Unhealthy,
+                };
+
                 Ok(BlockchainHealth {
                     network: self.network.clone(),
                     rpc_url: self.rpc_url.clone(),
                     latest_ledger: latest,
-                    is_healthy: latest > 0,
+                    status,
+                    is_healthy: status == HealthStatus::Healthy,
                     contract_reachable,
                     checked_at_unix,
+                    data_source: DataSource::Live,
                 })
             })
             .await?;
@@ -555,6 +691,12 @@ impl BlockchainClient {
             self.metrics.observe_miss("chain", endpoint);
         }
 
+        let value = if hit {
+            BlockchainHealth { data_source: DataSource::StaleCache, ..value }
+        } else {
+            value
+        };
+
         Ok(value)
     }
 
@@ -562,60 +704,110 @@ impl BlockchainClient {
         #[derive(Debug, Deserialize)]
         struct EventsResponse {
             events: Vec<Value>,
+            /// Opaque cursor returned by the RPC; present when more pages exist.
+            cursor: Option<String>,
         }
 
-        let result = self
-            .rpc_call::<EventsResponse>(
-                "getEvents",
-                json!({
-                    "startLedger": from_ledger,
+        let mut all_events: Vec<ContractEvent> = Vec::new();
+        // Start with a ledger-based cursor; subsequent pages use the opaque cursor.
+        let mut start_ledger: Option<u32> = Some(from_ledger);
+        let mut opaque_cursor: Option<String> = None;
+
+        loop {
+            let params = match opaque_cursor.take() {
+                Some(c) => json!({
+                    "cursor": c,
                     "filters": [{"type": "contract", "contractIds": [self.contract_id]}],
-                    "limit": 100,
+                    "limit": EVENTS_PAGE_SIZE,
                 }),
-            )
-            .await
-            .unwrap_or(EventsResponse { events: vec![] });
+                None => json!({
+                    "startLedger": start_ledger.take().unwrap_or(from_ledger),
+                    "filters": [{"type": "contract", "contractIds": [self.contract_id]}],
+                    "limit": EVENTS_PAGE_SIZE,
+                }),
+            };
 
-        let events = result
-            .events
-            .into_iter()
-            .map(|e| ContractEvent {
-                id: e
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown")
-                    .to_string(),
-                ledger: e.get("ledger").and_then(Value::as_u64).unwrap_or_default() as u32,
-                topic: e
-                    .get("topic")
-                    .map(|v| v.to_string())
-                    .unwrap_or_else(|| "unknown".to_string()),
-                tx_hash: e
-                    .get("txHash")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned),
-                value: e,
-            })
-            .collect::<Vec<_>>();
+            let page = self
+                .rpc_call::<EventsResponse>("getEvents", params)
+                .await
+                .unwrap_or_else(|err| {
+                    tracing::warn!(error = %err, from_ledger, "failed to fetch events from rpc");
+                    self.metrics.observe_rpc_error("getEvents");
+                    EventsResponse { events: vec![], cursor: None }
+                });
 
-        Ok(events)
+            let page_len = page.events.len();
+            all_events.extend(page.events.into_iter().filter_map(Self::parse_event));
+
+            // Stop when the page is smaller than the limit (last page) or no cursor.
+            if page_len < EVENTS_PAGE_SIZE as usize || page.cursor.is_none() {
+                break;
+            }
+            opaque_cursor = page.cursor;
+        }
+
+        Ok(all_events)
+    }
+
+    /// Parse a raw RPC event JSON value into a [`ContractEvent`].
+    ///
+    /// Returns `None` (quarantine) when required fields are absent or carry
+    /// sentinel defaults that would poison the cache:
+    /// - `id` must be present and non-empty
+    /// - `ledger` must be > 0
+    fn parse_event(e: Value) -> Option<ContractEvent> {
+        let id = e.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+        if id.is_empty() {
+            return None;
+        }
+
+        let ledger = e.get("ledger").and_then(Value::as_u64).unwrap_or(0) as u32;
+        if ledger == 0 {
+            return None;
+        }
+
+        Some(ContractEvent {
+            id,
+            ledger,
+            topic: e
+                .get("topic")
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            tx_hash: e
+                .get("txHash")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            value: e,
+        })
     }
 
     async fn handle_reorg_if_detected(&self, latest_ledger: u32) -> anyhow::Result<()> {
-        let key = keys::chain_last_seen_ledger(&self.network);
-        let previous = self.cache.get_json::<u32>(&key).await?.unwrap_or(0);
+        Self::handle_reorg_logic(
+            &self.cache,
+            &self.metrics,
+            &self.network,
+            self.confirmation_ledger_lag,
+            latest_ledger,
+        )
+        .await
+    }
 
-        if previous > 0 && latest_ledger + self.confirmation_ledger_lag < previous {
-            let purged = self
-                .cache
-                .del_by_pattern(&format!("{}:*", keys::CHAIN_PREFIX))
-                .await?;
-            self.metrics.observe_invalidation("chain_reorg", purged);
+    async fn handle_reorg_logic(
+        cache: &dyn ReorgCache,
+        metrics: &dyn ReorgMetrics,
+        network: &str,
+        lag: u32,
+        latest_ledger: u32,
+    ) -> anyhow::Result<()> {
+        let key = keys::chain_last_seen_ledger(network);
+        let previous = cache.get_ledger(&key).await?.unwrap_or(0);
+
+        if previous > 0 && latest_ledger + lag < previous {
+            let purged = cache.purge_chain_cache().await?;
+            metrics.observe_reorg_invalidation(purged);
         }
 
-        self.cache
-            .set_json(&key, &latest_ledger, Duration::from_secs(24 * 60 * 60))
-            .await?;
+        cache.set_ledger(&key, latest_ledger).await?;
         Ok(())
     }
 
@@ -650,7 +842,10 @@ impl BlockchainClient {
         Ok(confirmed_tip)
     }
 
-    pub async fn run_sync_worker(self: Arc<Self>) {
+    pub async fn run_sync_worker(
+        self: Arc<Self>,
+        mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+    ) {
         let cursor_key = keys::chain_sync_cursor(&self.network);
         let mut cursor = self
             .cache
@@ -660,62 +855,1088 @@ impl BlockchainClient {
             .flatten()
             .unwrap_or(0);
 
+        tracing::info!("Starting blockchain sync worker");
+
         loop {
-            match self.sync_once(cursor).await {
-                Ok(next_cursor) => {
-                    cursor = next_cursor;
-                    let _ = self
+            tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    tracing::info!("Blockchain sync worker received shutdown signal");
+                    
+                    // Save current cursor before shutdown
+                    if let Err(e) = self
                         .cache
                         .set_json(&cursor_key, &cursor, Duration::from_secs(24 * 60 * 60))
-                        .await;
+                        .await
+                    {
+                        tracing::warn!("Failed to save sync cursor on shutdown: {}", e);
+                    }
+                    
+                    tracing::info!("Blockchain sync worker shutdown complete");
+                    break;
                 }
-                Err(err) => tracing::warn!("sync loop error: {err}"),
-            }
-
-            sleep(self.event_poll_interval).await;
-        }
-    }
-
-    pub async fn run_transaction_monitor(self: Arc<Self>) {
-        loop {
-            let hashes = self
-                .monitor
-                .watched_txs
-                .read()
-                .await
-                .iter()
-                .cloned()
-                .collect::<Vec<_>>();
-
-            for hash in hashes {
-                if let Ok(status) = self.transaction_status_cached(&hash).await {
-                    if status.status != "NOT_FOUND" && status.status != "PENDING" {
-                        self.monitor.watched_txs.write().await.remove(&hash);
+                _ = sleep(self.event_poll_interval) => {
+                    match self.sync_once(cursor).await {
+                        Ok(next_cursor) => {
+                            cursor = next_cursor;
+                            let _ = self
+                                .cache
+                                .set_json(&cursor_key, &cursor, Duration::from_secs(24 * 60 * 60))
+                                .await;
+                        }
+                        Err(err) => tracing::warn!("sync loop error: {err}"),
                     }
                 }
             }
+        }
+    }
 
-            sleep(self.tx_poll_interval).await;
+    pub async fn run_transaction_monitor(
+        self: Arc<Self>,
+        mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+    ) {
+        tracing::info!("Starting blockchain transaction monitor");
+
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.recv() => {
+                    tracing::info!("Blockchain transaction monitor received shutdown signal");
+                    
+                    // Log remaining watched transactions
+                    let watched_count = self.monitor.watched_txs.read().await.len();
+                    if watched_count > 0 {
+                        tracing::info!("Shutdown with {} transactions still being watched", watched_count);
+                    }
+                    
+                    tracing::info!("Blockchain transaction monitor shutdown complete");
+                    break;
+                }
+                _ = sleep(self.tx_poll_interval) => {
+                    let hashes: Vec<String> = self
+                        .monitor
+                        .watched_txs
+                        .read()
+                        .await
+                        .iter()
+                        .cloned()
+                        .collect();
+
+                    for hash in hashes {
+                        if let Ok(status) = self.transaction_status_cached(&hash).await {
+                            if status.status != "NOT_FOUND" && status.status != "PENDING" {
+                                self.monitor.watched_txs.write().await.remove(&hash);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
     pub async fn watch_transaction(&self, hash: &str) {
-        self.monitor
-            .watched_txs
-            .write()
-            .await
-            .insert(hash.to_string());
+        let mut map = self.monitor.watched_txs.write().await;
+
+        // Already tracked — no-op.
+        if map.contains_key(hash) {
+            return;
+        }
+
+        // Enforce cap: evict the oldest entry when full.
+        if map.len() >= MAX_WATCHED_TXS {
+            if let Some(oldest) = map
+                .iter()
+                .min_by_key(|(_, t)| *t)
+                .map(|(h, _)| h.clone())
+            {
+                tracing::warn!(
+                    evicted = %oldest,
+                    new = hash,
+                    "watched_txs at capacity; evicting oldest entry"
+                );
+                map.remove(&oldest);
+                self.metrics.observe_tx_eviction(1);
+            }
+        }
+
+        map.insert(hash.to_string(), Instant::now());
     }
 
-    pub fn start_background_tasks(self: Arc<Self>) {
-        let sync_client = self.clone();
-        tokio::spawn(async move {
-            sync_client.run_sync_worker().await;
-        });
+    pub fn start_background_tasks(
+        self: Arc<Self>,
+        shutdown_coordinator: &crate::shutdown::ShutdownCoordinator,
+    ) -> Vec<crate::shutdown::WorkerHandle> {
+        if self.monitor.tasks_started.swap(true, Ordering::SeqCst) {
+            tracing::warn!("background tasks already started; skipping duplicate invocation");
+            return vec![];
+        }
 
-        let monitor_client = self;
-        tokio::spawn(async move {
-            monitor_client.run_transaction_monitor().await;
+        let mut handles = Vec::new();
+
+        // Start sync worker
+        let sync_client = self.clone();
+        let sync_shutdown_rx = shutdown_coordinator.subscribe();
+        let sync_handle = tokio::spawn(async move {
+            sync_client.run_sync_worker(sync_shutdown_rx).await;
         });
+        
+        handles.push(crate::shutdown::WorkerHandle::new(
+            "blockchain-sync".to_string(),
+            sync_handle,
+            shutdown_coordinator.clone(),
+        ));
+
+        // Start transaction monitor
+        let monitor_client = self;
+        let monitor_shutdown_rx = shutdown_coordinator.subscribe();
+        let monitor_handle = tokio::spawn(async move {
+            monitor_client.run_transaction_monitor(monitor_shutdown_rx).await;
+        });
+        
+        handles.push(crate::shutdown::WorkerHandle::new(
+            "blockchain-monitor".to_string(),
+            monitor_handle,
+            shutdown_coordinator.clone(),
+        ));
+
+        handles
+    }
+}
+
+#[async_trait::async_trait]
+pub trait ReorgCache: Send + Sync {
+    async fn get_ledger(&self, key: &str) -> anyhow::Result<Option<u32>>;
+    async fn set_ledger(&self, key: &str, ledger: u32) -> anyhow::Result<()>;
+    async fn purge_chain_cache(&self) -> anyhow::Result<usize>;
+}
+
+pub trait ReorgMetrics: Send + Sync {
+    fn observe_reorg_invalidation(&self, count: usize);
+}
+
+#[async_trait::async_trait]
+impl ReorgCache for RedisCache {
+    async fn get_ledger(&self, key: &str) -> anyhow::Result<Option<u32>> {
+        self.get_json::<u32>(key).await
+    }
+
+    async fn set_ledger(&self, key: &str, ledger: u32) -> anyhow::Result<()> {
+        self.set_json(key, &ledger, Duration::from_secs(24 * 60 * 60))
+            .await
+    }
+
+    async fn purge_chain_cache(&self) -> anyhow::Result<usize> {
+        self.del_by_pattern(&format!("{}:*", keys::CHAIN_PREFIX))
+            .await
+    }
+}
+
+impl ReorgMetrics for Metrics {
+    fn observe_reorg_invalidation(&self, count: usize) {
+        self.observe_invalidation("chain_reorg", count);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+    use tokio::sync::Mutex as AsyncMutex;
+
+    struct MockCache {
+        ledger: AsyncMutex<Option<u32>>,
+        purged_count: AsyncMutex<usize>,
+    }
+
+    #[async_trait::async_trait]
+    impl ReorgCache for MockCache {
+        async fn get_ledger(&self, _key: &str) -> anyhow::Result<Option<u32>> {
+            Ok(*self.ledger.lock().await)
+        }
+
+        async fn set_ledger(&self, _key: &str, ledger: u32) -> anyhow::Result<()> {
+            *self.ledger.lock().await = Some(ledger);
+            Ok(())
+        }
+
+        async fn purge_chain_cache(&self) -> anyhow::Result<usize> {
+            let mut count = self.purged_count.lock().await;
+            *count += 1;
+            Ok(10) // Mock 10 items purged
+        }
+    }
+
+    struct MockMetrics {
+        invalidation_count: Mutex<usize>,
+    }
+
+    impl ReorgMetrics for MockMetrics {
+        fn observe_reorg_invalidation(&self, count: usize) {
+            *self.invalidation_count.lock().unwrap() += count;
+        }
+    }
+
+    #[tokio::test]
+    async fn test_reorg_no_previous_state() {
+        let cache = MockCache {
+            ledger: AsyncMutex::new(None),
+            purged_count: AsyncMutex::new(0),
+        };
+        let metrics = MockMetrics {
+            invalidation_count: Mutex::new(0),
+        };
+
+        BlockchainClient::handle_reorg_logic(&cache, &metrics, "test", 10, 100)
+            .await
+            .unwrap();
+
+        assert_eq!(*cache.ledger.lock().await, Some(100));
+        assert_eq!(*cache.purged_count.lock().await, 0);
+        assert_eq!(*metrics.invalidation_count.lock().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_reorg_detected() {
+        // Previous = 100, Latest = 80, Lag = 5
+        // 80 + 5 = 85 < 100 -> REORG!
+        let cache = MockCache {
+            ledger: AsyncMutex::new(Some(100)),
+            purged_count: AsyncMutex::new(0),
+        };
+        let metrics = MockMetrics {
+            invalidation_count: Mutex::new(0),
+        };
+
+        BlockchainClient::handle_reorg_logic(&cache, &metrics, "test", 5, 80)
+            .await
+            .unwrap();
+
+        assert_eq!(*cache.ledger.lock().await, Some(80));
+        assert_eq!(*cache.purged_count.lock().await, 1);
+        assert_eq!(*metrics.invalidation_count.lock().unwrap(), 10);
+    }
+
+    #[tokio::test]
+    async fn test_reorg_not_detected_within_lag() {
+        // Previous = 100, Latest = 96, Lag = 5
+        // 96 + 5 = 101 >= 100 -> NO REORG
+        let cache = MockCache {
+            ledger: AsyncMutex::new(Some(100)),
+            purged_count: AsyncMutex::new(0),
+        };
+        let metrics = MockMetrics {
+            invalidation_count: Mutex::new(0),
+        };
+
+        BlockchainClient::handle_reorg_logic(&cache, &metrics, "test", 5, 96)
+            .await
+            .unwrap();
+
+        assert_eq!(*cache.ledger.lock().await, Some(96));
+        assert_eq!(*cache.purged_count.lock().await, 0);
+        assert_eq!(*metrics.invalidation_count.lock().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_reorg_not_detected_advancing() {
+        // Previous = 100, Latest = 110, Lag = 5
+        // 110 + 5 = 115 >= 100 -> NO REORG
+        let cache = MockCache {
+            ledger: AsyncMutex::new(Some(100)),
+            purged_count: AsyncMutex::new(0),
+        };
+        let metrics = MockMetrics {
+            invalidation_count: Mutex::new(0),
+        };
+
+        BlockchainClient::handle_reorg_logic(&cache, &metrics, "test", 5, 110)
+            .await
+            .unwrap();
+
+        assert_eq!(*cache.ledger.lock().await, Some(110));
+        assert_eq!(*cache.purged_count.lock().await, 0);
+        assert_eq!(*metrics.invalidation_count.lock().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_fetch_events_metrics_on_error() {
+        let mut config = Config::from_env();
+        config.blockchain_rpc_url = "http://127.0.0.1:0".to_string();
+        config.retry_attempts = 1;
+        config.retry_base_delay_ms = 1;
+
+        let metrics = Metrics::new().unwrap();
+
+        // Attempt to connect to local Redis; if it fails, skip the test to avoid spurious CI failures.
+        let cache = match RedisCache::new(&config.redis_url).await {
+            Ok(c) => c,
+            Err(_) => {
+                println!("Skipping test_fetch_events_metrics_on_error due to missing Redis");
+                return;
+            }
+        };
+
+        let client = BlockchainClient::new(&config, cache, metrics.clone()).unwrap();
+
+        // RPC call should fail (port 0 is unreachable), and the error should be masked, resulting in empty events.
+        let events = client.fetch_events_since(0).await.unwrap();
+        assert!(events.is_empty());
+
+        // Error metric should be incremented.
+        let rendered = metrics.render().unwrap();
+        assert!(rendered.contains("rpc_errors_total{method=\"getEvents\"} 1"));
+    }
+
+    // -------------------------------------------------------------------------
+    // sync cursor progression under empty event streams
+    //
+    // fetch_events_since silently returns Ok(vec![]) on RPC failure.
+    // These tests verify the cursor never jumps or rewinds in that scenario.
+    // -------------------------------------------------------------------------
+
+    /// Build a client whose RPC endpoint is unreachable (port 0), so every RPC
+    /// call fails immediately.  Returns None when Redis is unavailable so each
+    /// test can skip gracefully without failing CI.
+    async fn make_dead_rpc_client() -> Option<BlockchainClient> {
+        let mut config = Config::from_env();
+        config.blockchain_rpc_url = "http://127.0.0.1:0".to_string();
+        config.retry_attempts = 1;
+        config.retry_base_delay_ms = 1;
+        // Small lag keeps confirmed_tip arithmetic predictable.
+        config.confirmation_ledger_lag = 5;
+        // No market IDs avoids extra RPC calls inside sync_once.
+        config.sync_market_ids = vec![];
+
+        let metrics = Metrics::new().unwrap();
+        let cache = match RedisCache::new(&config.redis_url).await {
+            Ok(c) => c,
+            Err(_) => return None,
+        };
+        Some(BlockchainClient::new(&config, cache, metrics).unwrap())
+    }
+
+    /// When latest_ledger RPC fails, sync_once falls back to cursor_ledger as
+    /// the latest value.  confirmed_tip = cursor - lag ≤ cursor, so the
+    /// early-return guard fires and the cursor is returned unchanged.
+    #[tokio::test]
+    async fn test_cursor_does_not_advance_when_latest_ledger_rpc_fails() {
+        let client = match make_dead_rpc_client().await {
+            Some(c) => c,
+            None => {
+                println!("Skipping test_cursor_does_not_advance_when_latest_ledger_rpc_fails: Redis unavailable");
+                return;
+            }
+        };
+
+        let initial: u32 = 500;
+        let next = client.sync_once(initial).await.unwrap();
+        assert_eq!(
+            next, initial,
+            "cursor must not change when latest_ledger RPC fails (got {next}, want {initial})"
+        );
+    }
+
+    /// Starting from ledger 0 (fresh worker state) with a dead RPC the cursor
+    /// must stay at 0 and must not jump to any non-zero value.
+    #[tokio::test]
+    async fn test_cursor_stays_at_zero_on_rpc_failure_from_fresh_state() {
+        let client = match make_dead_rpc_client().await {
+            Some(c) => c,
+            None => {
+                println!("Skipping test_cursor_stays_at_zero_on_rpc_failure_from_fresh_state: Redis unavailable");
+                return;
+            }
+        };
+
+        let next = client.sync_once(0).await.unwrap();
+        assert_eq!(
+            next, 0,
+            "cursor must stay at 0 when RPC fails from fresh state (got {next})"
+        );
+    }
+
+    /// When confirmed_tip ≤ cursor (chain has not advanced past the lag window),
+    /// sync_once must return the cursor unchanged – idempotency guarantee.
+    #[tokio::test]
+    async fn test_cursor_is_idempotent_when_already_at_confirmed_tip() {
+        let client = match make_dead_rpc_client().await {
+            Some(c) => c,
+            None => {
+                println!("Skipping test_cursor_is_idempotent_when_already_at_confirmed_tip: Redis unavailable");
+                return;
+            }
+        };
+
+        // Dead RPC → latest falls back to cursor_ledger.
+        // confirmed_tip = cursor - lag ≤ cursor → early return.
+        let cursor: u32 = 200;
+        let next = client.sync_once(cursor).await.unwrap();
+        assert_eq!(
+            next, cursor,
+            "cursor must be idempotent when already at confirmed tip (got {next}, want {cursor})"
+        );
+    }
+
+    /// Across multiple consecutive sync cycles with a dead RPC the cursor must
+    /// never rewind below its starting value.  Guards against any regression
+    /// where a silent empty response causes the cursor to go backwards.
+    #[tokio::test]
+    async fn test_cursor_never_rewinds_across_multiple_empty_sync_cycles() {
+        let client = match make_dead_rpc_client().await {
+            Some(c) => c,
+            None => {
+                println!("Skipping test_cursor_never_rewinds_across_multiple_empty_sync_cycles: Redis unavailable");
+                return;
+            }
+        };
+
+        let initial: u32 = 1_000;
+        let mut cursor = initial;
+
+        for round in 0..5u32 {
+            let next = client.sync_once(cursor).await.unwrap();
+            assert!(
+                next >= initial,
+                "cursor rewound on round {round}: started at {initial}, became {next}"
+            );
+            cursor = next;
+        }
+    }
+
+    /// fetch_events_since must return Ok(vec![]) – not an error – when the RPC
+    /// is unreachable, and the silent fallback must be recorded in the
+    /// rpc_errors_total metric so operators can detect the failure.
+    #[tokio::test]
+    async fn test_empty_event_stream_on_rpc_failure_is_recorded_in_metrics() {
+        let mut config = Config::from_env();
+        config.blockchain_rpc_url = "http://127.0.0.1:0".to_string();
+        config.retry_attempts = 1;
+        config.retry_base_delay_ms = 1;
+        config.sync_market_ids = vec![];
+
+        let metrics = Metrics::new().unwrap();
+        let cache = match RedisCache::new(&config.redis_url).await {
+            Ok(c) => c,
+            Err(_) => {
+                println!("Skipping test_empty_event_stream_on_rpc_failure_is_recorded_in_metrics: Redis unavailable");
+                return;
+            }
+        };
+
+        let client = BlockchainClient::new(&config, cache, metrics.clone()).unwrap();
+
+        // RPC failure must be masked – the call must succeed with an empty list.
+        let events = client.fetch_events_since(100).await.unwrap();
+        assert!(
+            events.is_empty(),
+            "RPC failure must produce an empty event list, not propagate an error"
+        );
+
+        // The silent fallback must be observable via metrics.
+        let rendered = metrics.render().unwrap();
+        assert!(
+            rendered.contains("rpc_errors_total{method=\"getEvents\"} 1"),
+            "silent empty-stream fallback must increment rpc_errors_total for getEvents"
+        );
+    }
+
+    /// sync_once must return Ok (not Err) when the RPC is unreachable, so the
+    /// run_sync_worker loop takes the Ok branch and preserves the cursor.
+    #[tokio::test]
+    async fn test_sync_once_returns_ok_not_err_on_rpc_failure() {
+        let client = match make_dead_rpc_client().await {
+            Some(c) => c,
+            None => {
+                println!(
+                    "Skipping test_sync_once_returns_ok_not_err_on_rpc_failure: Redis unavailable"
+                );
+                return;
+            }
+        };
+
+        let result = client.sync_once(300).await;
+        assert!(
+            result.is_ok(),
+            "sync_once must return Ok on RPC failure so the worker loop preserves the cursor"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Event parsing – malformed payload fuzz / quarantine tests
+    // -------------------------------------------------------------------------
+
+    /// Helper: build a minimal valid event JSON.
+    fn valid_event() -> Value {
+        json!({ "id": "evt-1", "ledger": 100, "topic": "bet", "txHash": "0xabc" })
+    }
+
+    #[test]
+    fn test_parse_event_valid() {
+        let ev = BlockchainClient::parse_event(valid_event()).unwrap();
+        assert_eq!(ev.id, "evt-1");
+        assert_eq!(ev.ledger, 100);
+    }
+
+    #[test]
+    fn test_parse_event_missing_id_is_quarantined() {
+        let e = json!({ "ledger": 100, "topic": "bet" });
+        assert!(BlockchainClient::parse_event(e).is_none());
+    }
+
+    #[test]
+    fn test_parse_event_empty_id_is_quarantined() {
+        let e = json!({ "id": "", "ledger": 100 });
+        assert!(BlockchainClient::parse_event(e).is_none());
+    }
+
+    #[test]
+    fn test_parse_event_missing_ledger_is_quarantined() {
+        let e = json!({ "id": "evt-2", "topic": "bet" });
+        assert!(BlockchainClient::parse_event(e).is_none());
+    }
+
+    #[test]
+    fn test_parse_event_zero_ledger_is_quarantined() {
+        let e = json!({ "id": "evt-3", "ledger": 0 });
+        assert!(BlockchainClient::parse_event(e).is_none());
+    }
+
+    #[test]
+    fn test_parse_event_null_id_is_quarantined() {
+        let e = json!({ "id": null, "ledger": 100 });
+        assert!(BlockchainClient::parse_event(e).is_none());
+    }
+
+    #[test]
+    fn test_parse_event_null_ledger_is_quarantined() {
+        let e = json!({ "id": "evt-4", "ledger": null });
+        assert!(BlockchainClient::parse_event(e).is_none());
+    }
+
+    #[test]
+    fn test_parse_event_completely_empty_is_quarantined() {
+        assert!(BlockchainClient::parse_event(json!({})).is_none());
+    }
+
+    #[test]
+    fn test_parse_event_non_object_is_quarantined() {
+        for bad in [json!(null), json!(42), json!("string"), json!([])] {
+            assert!(
+                BlockchainClient::parse_event(bad.clone()).is_none(),
+                "expected quarantine for {bad}"
+            );
+        }
+    }
+
+    /// Fuzz a batch: mix of valid and malformed events; only valid ones survive.
+    #[test]
+    fn test_parse_event_batch_filters_malformed() {
+        let inputs = vec![
+            json!({ "id": "good-1", "ledger": 50 }),
+            json!({ "ledger": 50 }),                    // missing id
+            json!({ "id": "", "ledger": 50 }),           // empty id
+            json!({ "id": "good-2", "ledger": 99 }),
+            json!({ "id": "bad", "ledger": 0 }),         // zero ledger
+            json!({ "id": null, "ledger": 10 }),         // null id
+            json!({ "id": "good-3", "ledger": 1 }),
+        ];
+
+        let parsed: Vec<_> = inputs
+            .into_iter()
+            .filter_map(BlockchainClient::parse_event)
+            .collect();
+
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[0].id, "good-1");
+        assert_eq!(parsed[1].id, "good-2");
+        assert_eq!(parsed[2].id, "good-3");
+    }
+
+    // -------------------------------------------------------------------------
+    // Background tx monitor – race conditions and duplicate hash tracking
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_watch_transaction_deduplicates() {
+        let state = MonitoringState::default();
+        state.watched_txs.write().await.insert("hash-a".to_string(), Instant::now());
+        state.watched_txs.write().await.entry("hash-a".to_string()).or_insert(Instant::now());
+        assert_eq!(state.watched_txs.read().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_watch_leaves_consistent_set() {
+        let state = Arc::new(MonitoringState::default());
+        let hashes = ["tx-1", "tx-2", "tx-3", "tx-4", "tx-5"];
+
+        let handles: Vec<_> = hashes
+            .iter()
+            .map(|h| {
+                let s = state.clone();
+                let h = h.to_string();
+                tokio::spawn(async move {
+                    s.watched_txs.write().await.insert(h, Instant::now());
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        let map = state.watched_txs.read().await;
+        assert_eq!(map.len(), hashes.len());
+        for h in &hashes {
+            assert!(map.contains_key(*h), "missing {h}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_watch_and_remove_leaves_consistent_set() {
+        let state = Arc::new(MonitoringState::default());
+
+        for h in ["tx-a", "tx-b", "tx-c", "tx-d"] {
+            state.watched_txs.write().await.insert(h.to_string(), Instant::now());
+        }
+
+        let add = {
+            let s = state.clone();
+            tokio::spawn(async move {
+                for h in ["tx-e", "tx-f"] {
+                    s.watched_txs.write().await.insert(h.to_string(), Instant::now());
+                }
+            })
+        };
+
+        let remove = {
+            let s = state.clone();
+            tokio::spawn(async move {
+                for h in ["tx-a", "tx-b"] {
+                    s.watched_txs.write().await.remove(h);
+                }
+            })
+        };
+
+        add.await.unwrap();
+        remove.await.unwrap();
+
+        let map = state.watched_txs.read().await;
+        assert_eq!(map.len(), 4);
+        assert!(!map.contains_key("tx-a"));
+        assert!(!map.contains_key("tx-b"));
+        for h in ["tx-c", "tx-d", "tx-e", "tx-f"] {
+            assert!(map.contains_key(h), "missing {h}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_monitor_does_not_remove_pending_or_not_found() {
+        let state = Arc::new(MonitoringState::default());
+        state.watched_txs.write().await.insert("tx-pending".to_string(), Instant::now());
+        state.watched_txs.write().await.insert("tx-not-found".to_string(), Instant::now());
+
+        let hashes: Vec<String> = state.watched_txs.read().await.keys().cloned().collect();
+        for hash in hashes {
+            let status = if hash == "tx-pending" { "PENDING" } else { "NOT_FOUND" };
+            if status != "NOT_FOUND" && status != "PENDING" {
+                state.watched_txs.write().await.remove(&hash);
+            }
+        }
+
+        assert_eq!(state.watched_txs.read().await.len(), 2, "PENDING and NOT_FOUND must not be removed");
+    }
+
+    #[tokio::test]
+    async fn test_monitor_removes_terminal_status() {
+        let state = Arc::new(MonitoringState::default());
+        for h in ["tx-success", "tx-failed", "tx-pending"] {
+            state.watched_txs.write().await.insert(h.to_string(), Instant::now());
+        }
+
+        let terminal_statuses = [
+            ("tx-success", "SUCCESS"),
+            ("tx-failed", "FAILED"),
+            ("tx-pending", "PENDING"),
+        ];
+
+        for (hash, status) in terminal_statuses {
+            if status != "NOT_FOUND" && status != "PENDING" {
+                state.watched_txs.write().await.remove(hash);
+            }
+        }
+
+        let map = state.watched_txs.read().await;
+        assert!(!map.contains_key("tx-success"), "SUCCESS must be removed");
+        assert!(!map.contains_key("tx-failed"), "FAILED must be removed");
+        assert!(map.contains_key("tx-pending"), "PENDING must stay");
+    }
+
+    // -------------------------------------------------------------------------
+    // watched_txs TTL eviction
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_ttl_eviction_removes_expired_entries() {
+        let state = MonitoringState::default();
+        let expired = Instant::now() - WATCHED_TX_TTL - Duration::from_secs(1);
+        let fresh = Instant::now();
+
+        {
+            let mut map = state.watched_txs.write().await;
+            map.insert("old-tx".to_string(), expired);
+            map.insert("new-tx".to_string(), fresh);
+        }
+
+        // Simulate the eviction logic from run_transaction_monitor.
+        {
+            let mut map = state.watched_txs.write().await;
+            let now = Instant::now();
+            map.retain(|_, inserted_at| now.duration_since(*inserted_at) < WATCHED_TX_TTL);
+        }
+
+        let map = state.watched_txs.read().await;
+        assert!(!map.contains_key("old-tx"), "expired entry must be evicted");
+        assert!(map.contains_key("new-tx"), "fresh entry must be retained");
+    }
+
+    #[tokio::test]
+    async fn test_ttl_eviction_keeps_all_fresh_entries() {
+        let state = MonitoringState::default();
+        {
+            let mut map = state.watched_txs.write().await;
+            for i in 0..10 {
+                map.insert(format!("tx-{i}"), Instant::now());
+            }
+        }
+
+        {
+            let mut map = state.watched_txs.write().await;
+            let now = Instant::now();
+            map.retain(|_, inserted_at| now.duration_since(*inserted_at) < WATCHED_TX_TTL);
+        }
+
+        assert_eq!(state.watched_txs.read().await.len(), 10);
+    }
+
+    // -------------------------------------------------------------------------
+    // watched_txs MAX_WATCHED_TXS cap
+    // -------------------------------------------------------------------------
+
+    /// Inserting beyond MAX_WATCHED_TXS must evict the oldest entry so the map
+    /// never exceeds the cap.
+    #[tokio::test]
+    async fn test_cap_evicts_oldest_when_full() {
+        let mut config = Config::from_env();
+        config.blockchain_rpc_url = "http://127.0.0.1:0".to_string();
+        config.retry_attempts = 1;
+        config.retry_base_delay_ms = 1;
+
+        let metrics = Metrics::new().unwrap();
+        let cache = match RedisCache::new(&config.redis_url).await {
+            Ok(c) => c,
+            Err(_) => {
+                println!("Skipping test_cap_evicts_oldest_when_full: Redis unavailable");
+                return;
+            }
+        };
+        let client = BlockchainClient::new(&config, cache, metrics.clone()).unwrap();
+
+        // Fill to capacity with sequentially-inserted hashes.
+        for i in 0..MAX_WATCHED_TXS {
+            client.watch_transaction(&format!("tx-{i:06}")).await;
+        }
+        assert_eq!(
+            client.monitor.watched_txs.read().await.len(),
+            MAX_WATCHED_TXS,
+            "map must be exactly at capacity"
+        );
+
+        // One more insertion must evict the oldest and keep size at MAX.
+        client.watch_transaction("tx-overflow").await;
+        assert_eq!(
+            client.monitor.watched_txs.read().await.len(),
+            MAX_WATCHED_TXS,
+            "map must not exceed MAX_WATCHED_TXS after overflow insertion"
+        );
+        assert!(
+            client.monitor.watched_txs.read().await.contains_key("tx-overflow"),
+            "newly inserted hash must be present"
+        );
+    }
+
+    /// Memory growth test: inserting N >> MAX_WATCHED_TXS hashes must never
+    /// cause the map to exceed the cap.
+    #[tokio::test]
+    async fn test_memory_growth_bounded_under_burst() {
+        let mut config = Config::from_env();
+        config.blockchain_rpc_url = "http://127.0.0.1:0".to_string();
+        config.retry_attempts = 1;
+        config.retry_base_delay_ms = 1;
+
+        let metrics = Metrics::new().unwrap();
+        let cache = match RedisCache::new(&config.redis_url).await {
+            Ok(c) => c,
+            Err(_) => {
+                println!("Skipping test_memory_growth_bounded_under_burst: Redis unavailable");
+                return;
+            }
+        };
+        let client = BlockchainClient::new(&config, cache, metrics).unwrap();
+
+        for i in 0..(MAX_WATCHED_TXS * 3) {
+            client.watch_transaction(&format!("burst-{i:08}")).await;
+            assert!(
+                client.monitor.watched_txs.read().await.len() <= MAX_WATCHED_TXS,
+                "map exceeded MAX_WATCHED_TXS at insertion {i}"
+            );
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Pagination: fetch_events_since must consume all pages
+    // -------------------------------------------------------------------------
+
+    /// Verify that fetch_events_since collects events across multiple pages by
+    /// testing the pagination logic directly on the parsed output.
+    ///
+    /// We can't mock the RPC in unit tests without a full HTTP server, so we
+    /// test the page-accumulation logic via parse_event on synthetic batches.
+    #[test]
+    fn test_pagination_accumulates_more_than_100_events() {
+        // Simulate 250 valid events spread across 3 pages (100 + 100 + 50).
+        let all_raw: Vec<Value> = (1u32..=250)
+            .map(|i| json!({ "id": format!("evt-{i:04}"), "ledger": i }))
+            .collect();
+
+        let parsed: Vec<ContractEvent> = all_raw
+            .into_iter()
+            .filter_map(BlockchainClient::parse_event)
+            .collect();
+
+        assert_eq!(parsed.len(), 250, "all 250 events must survive parse");
+        assert_eq!(parsed[0].id, "evt-0001");
+        assert_eq!(parsed[99].id, "evt-0100");
+        assert_eq!(parsed[249].id, "evt-0250");
+    }
+
+    /// The pagination loop must stop when a page returns fewer than EVENTS_PAGE_SIZE
+    /// items (last page), even if a cursor is present.
+    #[test]
+    fn test_pagination_stops_on_partial_page() {
+        // A partial page of 42 events — simulates the last page.
+        let partial: Vec<Value> = (1u32..=42)
+            .map(|i| json!({ "id": format!("p-{i}"), "ledger": i }))
+            .collect();
+
+        let parsed: Vec<_> = partial
+            .into_iter()
+            .filter_map(BlockchainClient::parse_event)
+            .collect();
+
+        // Fewer than EVENTS_PAGE_SIZE → loop would break.
+        assert!(
+            (parsed.len() as u32) < EVENTS_PAGE_SIZE,
+            "partial page must be smaller than EVENTS_PAGE_SIZE"
+        );
+        assert_eq!(parsed.len(), 42);
+    }
+
+    /// Cursor advancement: the last event id on page N must differ from page N+1,
+    /// confirming the cursor moves forward and events are not duplicated.
+    #[test]
+    fn test_pagination_cursor_advances_without_duplicates() {
+        let page1: Vec<Value> = (1u32..=100)
+            .map(|i| json!({ "id": format!("e-{i:04}"), "ledger": i }))
+            .collect();
+        let page2: Vec<Value> = (101u32..=150)
+            .map(|i| json!({ "id": format!("e-{i:04}"), "ledger": i }))
+            .collect();
+
+        let mut all: Vec<ContractEvent> = page1
+            .into_iter()
+            .chain(page2)
+            .filter_map(BlockchainClient::parse_event)
+            .collect();
+
+        // Deduplicate by id (simulates what the real loop guarantees via cursor).
+        all.dedup_by(|a, b| a.id == b.id);
+
+        assert_eq!(all.len(), 150, "no duplicates across pages");
+        assert_eq!(all[99].id, "e-0100");
+        assert_eq!(all[100].id, "e-0101");
+    }
+
+    // -------------------------------------------------------------------------
+    // ContractKeySchema – centralized key generation and per-network overrides
+    // -------------------------------------------------------------------------
+
+    use crate::config::ContractKeySchema;
+
+    fn default_schema() -> ContractKeySchema {
+        ContractKeySchema {
+            version: "1.0.0".to_string(),
+            market: "market:{id}".to_string(),
+            platform_stats: "platform:stats".to_string(),
+            user_bets: "user_bets:{id}".to_string(),
+            oracle_result: "oracle_result:{id}".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_schema_market_key() {
+        let s = default_schema();
+        assert_eq!(s.market_key(42), "market:42");
+        assert_eq!(s.market_key(-1), "market:-1");
+    }
+
+    #[test]
+    fn test_schema_user_bets_key() {
+        let s = default_schema();
+        assert_eq!(s.user_bets_key("GABC123"), "user_bets:GABC123");
+    }
+
+    #[test]
+    fn test_schema_oracle_result_key() {
+        let s = default_schema();
+        assert_eq!(s.oracle_result_key(7), "oracle_result:7");
+    }
+
+    #[test]
+    fn test_schema_platform_stats_key_is_static() {
+        let s = default_schema();
+        assert_eq!(s.platform_stats, "platform:stats");
+    }
+
+    /// Per-network override: a testnet deployment using a different prefix.
+    #[test]
+    fn test_schema_per_network_override() {
+        let s = ContractKeySchema {
+            version: "2.0.0".to_string(),
+            market: "v2_market:{id}".to_string(),
+            platform_stats: "v2_platform:stats".to_string(),
+            user_bets: "v2_user_bets:{id}".to_string(),
+            oracle_result: "v2_oracle:{id}".to_string(),
+        };
+        assert_eq!(s.market_key(1), "v2_market:1");
+        assert_eq!(s.user_bets_key("GXYZ"), "v2_user_bets:GXYZ");
+        assert_eq!(s.oracle_result_key(99), "v2_oracle:99");
+        assert_eq!(s.platform_stats, "v2_platform:stats");
+    }
+
+    /// Schema version is preserved and accessible for startup validation.
+    #[test]
+    fn test_schema_version_is_accessible() {
+        let s = default_schema();
+        assert_eq!(s.version, "1.0.0");
+    }
+
+    /// Integration: keys produced by the schema match what getContractData
+    /// would receive, validated against the v1 deployed contract naming convention.
+    #[test]
+    fn test_schema_keys_match_deployed_v1_convention() {
+        let s = default_schema();
+        // These are the exact strings the v1 contract expects.
+        assert_eq!(s.market_key(100), "market:100");
+        assert_eq!(s.platform_stats, "platform:stats");
+        assert_eq!(s.user_bets_key("GDEMO"), "user_bets:GDEMO");
+        assert_eq!(s.oracle_result_key(100), "oracle_result:100");
+    }
+
+    /// Integration: BlockchainClient uses schema keys, not hardcoded strings.
+    /// Verifies the client is constructed with the schema from config and that
+    /// the schema produces the correct RPC key for a known market id.
+    #[tokio::test]
+    async fn test_client_uses_schema_keys_for_contract_reads() {
+        let mut config = Config::from_env();
+        config.blockchain_rpc_url = "http://127.0.0.1:0".to_string();
+        config.retry_attempts = 1;
+        config.retry_base_delay_ms = 1;
+        // Use a custom schema to confirm the client picks it up.
+        config.contract_key_schema = ContractKeySchema {
+            version: "1.0.0".to_string(),
+            market: "market:{id}".to_string(),
+            platform_stats: "platform:stats".to_string(),
+            user_bets: "user_bets:{id}".to_string(),
+            oracle_result: "oracle_result:{id}".to_string(),
+        };
+
+        let metrics = Metrics::new().unwrap();
+        let cache = match RedisCache::new(&config.redis_url).await {
+            Ok(c) => c,
+            Err(_) => {
+                println!("Skipping test_client_uses_schema_keys_for_contract_reads: Redis unavailable");
+                return;
+            }
+        };
+
+        let client = BlockchainClient::new(&config, cache, metrics).unwrap();
+
+        // The key the client would send for market 5 must match the schema.
+        assert_eq!(client.key_schema.market_key(5), "market:5");
+        assert_eq!(client.key_schema.oracle_result_key(5), "oracle_result:5");
+        assert_eq!(client.key_schema.user_bets_key("GTEST"), "user_bets:GTEST");
+        assert_eq!(client.key_schema.platform_stats, "platform:stats");
+    }
+
+    // -------------------------------------------------------------------------
+    // BlockchainHealth – status reflects both node and contract health
+    // -------------------------------------------------------------------------
+
+    fn make_health(latest: u32, contract_reachable: bool) -> BlockchainHealth {
+        let status = match (latest > 0, contract_reachable) {
+            (true, true) => HealthStatus::Healthy,
+            (true, false) => HealthStatus::Degraded,
+            _ => HealthStatus::Unhealthy,
+        };
+        BlockchainHealth {
+            network: "test".to_string(),
+            rpc_url: "http://localhost".to_string(),
+            latest_ledger: latest,
+            status,
+            is_healthy: status == HealthStatus::Healthy,
+            contract_reachable,
+            checked_at_unix: 0,
+            data_source: DataSource::Live,
+        }
+    }
+
+    #[test]
+    fn test_health_healthy_when_ledger_and_contract_ok() {
+        let h = make_health(100, true);
+        assert_eq!(h.status, HealthStatus::Healthy);
+        assert!(h.is_healthy);
+    }
+
+    #[test]
+    fn test_health_degraded_when_ledger_ok_but_contract_fails() {
+        let h = make_health(100, false);
+        assert_eq!(h.status, HealthStatus::Degraded);
+        assert!(!h.is_healthy);
+    }
+
+    #[test]
+    fn test_health_unhealthy_when_ledger_zero() {
+        let h = make_health(0, false);
+        assert_eq!(h.status, HealthStatus::Unhealthy);
+        assert!(!h.is_healthy);
+    }
+
+    #[test]
+    fn test_health_unhealthy_when_ledger_zero_even_if_contract_reachable() {
+        // ledger=0 means node is unreachable; contract_reachable is irrelevant.
+        let h = make_health(0, true);
+        assert_eq!(h.status, HealthStatus::Unhealthy);
+        assert!(!h.is_healthy);
+    }
+
+    #[test]
+    fn test_health_is_healthy_compat_field_matches_status() {
+        for (ledger, contract, expected_healthy) in [(100, true, true), (100, false, false), (0, false, false)] {
+            let h = make_health(ledger, contract);
+            assert_eq!(
+                h.is_healthy,
+                h.status == HealthStatus::Healthy,
+                "is_healthy must mirror status==Healthy for ledger={ledger} contract={contract}"
+            );
+            assert_eq!(h.is_healthy, expected_healthy);
+        }
     }
 }

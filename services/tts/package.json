@@ -1,0 +1,20 @@
+{
+  "name": "predictiq-tts-service",
+  "version": "1.0.0",
+  "description": "AI text-to-speech service for social video narrations",
+  "private": true,
+  "main": "dist/TTSService.js",
+  "types": "dist/TTSService.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "ts-node src/TTSService.ts"
+  },
+  "dependencies": {
+    "@google-cloud/text-to-speech": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.3.0"
+  }
+}

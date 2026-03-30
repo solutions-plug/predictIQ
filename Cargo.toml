@@ -1,9 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["contracts/*", "services/*"]
+members = ["contracts/*"]
 
 [workspace.dependencies]
 soroban-sdk = "22.0.0"
+rand = "0.8"
+serde_json = "1"
 
 [profile.release]
 opt-level = "z"
@@ -12,6 +14,14 @@ debug = false
 panic = "abort"
 lto = true
 codegen-units = 1
+
+[profile.test]
+opt-level = 0
+lto = false
+codegen-units = 16
+
+[profile.dev]
+lto = false
 
 [profile.release-with-logs]
 inherits = "release"

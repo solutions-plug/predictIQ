@@ -82,6 +82,12 @@ impl RedisCache {
         Ok(total_deleted)
     }
 
+    pub async fn ping(&self) -> anyhow::Result<()> {
+        let mut conn = self.manager.clone();
+        let _: String = redis::cmd("PING").query_async(&mut conn).await?;
+        Ok(())
+    }
+
     pub async fn get_or_set_json<T, F, Fut>(
         &self,
         key: &str,

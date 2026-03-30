@@ -121,7 +121,14 @@ fn test_referral_system_integration() {
     token_client.mint(&bettor, &10_000);
 
     // Place bet with referrer
-    client.place_bet(&bettor, &market_id, &0, &1_000, &token, &Some(referrer.clone()));
+    client.place_bet(
+        &bettor,
+        &market_id,
+        &0,
+        &1_000,
+        &token,
+        &Some(referrer.clone()),
+    );
 
     // Referrer should have pending rewards
     let rewards_before = token_client.balance(&referrer);
@@ -148,10 +155,7 @@ fn test_conditional_market_chain() {
     // Create child market conditional on parent outcome 0
     let options = Vec::from_array(
         &env,
-        [
-            String::from_str(&env, "Yes"),
-            String::from_str(&env, "No"),
-        ],
+        [String::from_str(&env, "Yes"), String::from_str(&env, "No")],
     );
 
     let oracle_config = predict_iq::types::OracleConfig {
@@ -250,7 +254,7 @@ fn test_governance_upgrade_workflow() {
     // Initiate upgrade
     env.ledger().with_mut(|li| li.timestamp = 1000);
 
-    let wasm_hash = String::from_str(&env, "new_wasm_hash_123");
+    let wasm_hash = soroban_sdk::BytesN::from_array(&env, &[0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f,0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,0x18,0x19,0x1a,0x1b,0x1c,0x1d,0x1e,0x1f,0x20]);
     client.initiate_upgrade(&wasm_hash);
 
     // Guardians vote
@@ -258,7 +262,7 @@ fn test_governance_upgrade_workflow() {
     client.vote_for_upgrade(&guardian2, &true);
 
     // Check votes
-    let (for_votes, against_votes) = client.get_upgrade_votes();
+    let upgrade_votes = client.get_upgrade_votes(); let for_votes = upgrade_votes.votes_for; let against_votes = upgrade_votes.votes_against;
     assert_eq!(for_votes, 2);
     assert_eq!(against_votes, 0);
 
@@ -370,3 +374,4 @@ fn test_reputation_based_deposit_waiver() {
     let market = client.get_market(&market_id).unwrap();
     assert_eq!(market.creation_deposit, 0);
 }
+

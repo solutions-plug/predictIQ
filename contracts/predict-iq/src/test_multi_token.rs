@@ -55,11 +55,13 @@ fn test_usdc_market_6_decimals() {
     client.place_bet(&bettor1, &market_id, &0, &1_000_000_000, &usdc_address, &None);
     client.place_bet(&bettor2, &market_id, &1, &500_000_000, &usdc_address, &None);
 
-    // Verify total_staked
+    // Verify total_staked — net amounts after 1% fee
+    // 1_000_000_000 - 10_000_000 = 990_000_000
+    // 500_000_000 - 5_000_000 = 495_000_000
     let market = client.get_market(&market_id).unwrap();
-    assert_eq!(market.total_staked, 1_500_000_000);
-    assert_eq!(market.outcome_stakes.get(0).unwrap(), 1_000_000_000);
-    assert_eq!(market.outcome_stakes.get(1).unwrap(), 500_000_000);
+    assert_eq!(market.total_staked, 1_485_000_000);
+    assert_eq!(client.get_outcome_stake(&market_id, &0), 990_000_000);
+    assert_eq!(client.get_outcome_stake(&market_id, &1), 495_000_000);
 }
 
 /// Test market creation and betting with XLM (7 decimals)
@@ -114,11 +116,13 @@ fn test_xlm_market_7_decimals() {
     client.place_bet(&bettor1, &market_id, &0, &20_000_000_000, &xlm_address, &None);
     client.place_bet(&bettor2, &market_id, &1, &10_000_000_000, &xlm_address, &None);
 
-    // Verify total_staked
+    // Verify total_staked — net amounts after 1% fee
+    // 20_000_000_000 - 200_000_000 = 19_800_000_000
+    // 10_000_000_000 - 100_000_000 = 9_900_000_000
     let market = client.get_market(&market_id).unwrap();
-    assert_eq!(market.total_staked, 30_000_000_000);
-    assert_eq!(market.outcome_stakes.get(0).unwrap(), 20_000_000_000);
-    assert_eq!(market.outcome_stakes.get(1).unwrap(), 10_000_000_000);
+    assert_eq!(market.total_staked, 29_700_000_000);
+    assert_eq!(client.get_outcome_stake(&market_id, &0), 19_800_000_000);
+    assert_eq!(client.get_outcome_stake(&market_id, &1), 9_900_000_000);
 }
 
 /// Test resolution and payout precision with USDC (6 decimals)
@@ -185,10 +189,13 @@ fn test_usdc_payout_precision() {
     let payout1 = client.claim_winnings(&winner1, &market_id);
     let payout2 = client.claim_winnings(&winner2, &market_id);
 
-    // Verify precision: total pool = 2_000_000_000, fee = 20_000_000 (1%)
-    // net_pool = 1_980_000_000
-    // winner1: (1_000_000_000 * 1_980_000_000) / 1_500_000_000 = 1_320_000_000
-    // winner2: (500_000_000 * 1_980_000_000) / 1_500_000_000 = 660_000_000
+    // Verify precision with net amounts after 1% fee:
+    // winner1 net: 1_000_000_000 - 10_000_000 = 990_000_000
+    // winner2 net: 500_000_000 - 5_000_000 = 495_000_000
+    // loser net:   500_000_000 - 5_000_000 = 495_000_000
+    // total_staked = 1_980_000_000, winning_stake = 1_485_000_000
+    // payout1 = (990_000_000 * 1_980_000_000) / 1_485_000_000 = 1_320_000_000
+    // payout2 = (495_000_000 * 1_980_000_000) / 1_485_000_000 = 660_000_000
     assert_eq!(payout1, 1_320_000_000);
     assert_eq!(payout2, 660_000_000);
 }
@@ -257,12 +264,15 @@ fn test_xlm_payout_precision() {
     let payout1 = client.claim_winnings(&winner1, &market_id);
     let payout2 = client.claim_winnings(&winner2, &market_id);
 
-    // Verify precision to 0.0000001 XLM
-    // total = 100_000_000_0, fee = 1_000_000_0 (1%), net = 99_000_000_0
-    // winner1: (33_333_333_3 * 99_000_000_0) / 50_000_000_0 = 65_999_999_9
-    // winner2: (16_666_666_7 * 99_000_000_0) / 50_000_000_0 = 33_000_000_0
-    assert_eq!(payout1, 65_999_999_9);
-    assert_eq!(payout2, 33_000_000_0);
+    // Verify precision with net amounts after 1% fee:
+    // winner1 net: 333333333 - 3333333 = 330000000
+    // winner2 net: 166666667 - 1666666 = 165000001
+    // loser net:   500000000 - 5000000 = 495000000
+    // total_staked = 990000001, winning_stake = 495000001
+    // payout1 = (330000000 * 990000001) / 495000001 = 659999999
+    // payout2 = (165000001 * 990000001) / 495000001 = 330000001
+    assert_eq!(payout1, 659_999_999);
+    assert_eq!(payout2, 330_000_001);
 }
 
 /// Test that wrong token address is rejected

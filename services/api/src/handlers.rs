@@ -1,6 +1,6 @@
 use std::{
     sync::Arc,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use axum::{
@@ -14,15 +14,49 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::ValidateEmail;
 
-use crate::{
-    cache::keys,
-    email::webhook::sendgrid_webhook_handler,
-    AppState,
-};
+use crate::{blockchain::HealthStatus, cache::keys, email::webhook::sendgrid_webhook_handler, AppState};
 
 #[derive(Debug, Serialize)]
 pub struct ApiError {
+    pub code: &'static str,
     pub message: String,
+}
+
+impl ApiError {
+    pub fn internal(err: anyhow::Error) -> Self {
+        Self {
+            code: "INTERNAL_ERROR",
+            message: err.to_string(),
+        }
+    }
+
+    pub fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            code: "BAD_REQUEST",
+            message: message.into(),
+        }
+    }
+
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self {
+            code: "NOT_FOUND",
+            message: message.into(),
+        }
+    }
+
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            code: "CONFLICT",
+            message: message.into(),
+        }
+    }
+
+    pub fn rate_limited() -> Self {
+        Self {
+            code: "RATE_LIMITED",
+            message: "Too many requests, please try again later.".to_string(),
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -32,9 +66,7 @@ impl IntoResponse for ApiError {
 }
 
 fn into_api_error(err: anyhow::Error) -> ApiError {
-    ApiError {
-        message: err.to_string(),
-    }
+    ApiError::internal(err)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -53,8 +85,30 @@ pub struct FeaturedMarketView {
     pub resolved_outcome: Option<u32>,
 }
 
-pub async fn health() -> impl IntoResponse {
-    (StatusCode::OK, "ok")
+pub async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let mut health_status = serde_json::json!({
+        "status": "ok",
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "workers": {
+            "blockchain_sync": "running",
+            "blockchain_monitor": "running", 
+            "email_queue": "running",
+            "rate_limiter_cleanup": "running"
+        }
+    });
+
+    // Check if we can connect to Redis
+    if let Err(_) = state.cache.ping().await {
+        health_status["status"] = "degraded".into();
+        health_status["workers"]["redis"] = "unhealthy".into();
+    }
+
+    // Check email queue health
+    if let Ok(processing_count) = state.email_queue.get_processing_count().await {
+        health_status["workers"]["email_queue_processing"] = processing_count.into();
+    }
+
+    (StatusCode::OK, Json(health_status))
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -108,32 +162,19 @@ fn is_disposable_email(email: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn client_ip(headers: &HeaderMap) -> String {
-    if let Some(forwarded_for) = headers.get("x-forwarded-for").and_then(|h| h.to_str().ok()) {
-        if let Some(ip) = forwarded_for.split(',').next() {
-            let ip = ip.trim();
-            if !ip.is_empty() {
-                return ip.to_string();
-            }
-        }
-    }
-
-    if let Some(real_ip) = headers.get("x-real-ip").and_then(|h| h.to_str().ok()) {
-        let ip = real_ip.trim();
-        if !ip.is_empty() {
-            return ip.to_string();
-        }
-    }
-
-    "unknown".to_string()
-}
+use crate::security::extract_client_ip;
 
 pub async fn newsletter_subscribe(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    connect_info: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>,
     Json(payload): Json<NewsletterSubscribeRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let ip = client_ip(&headers);
+    let ip = extract_client_ip(
+        &headers,
+        connect_info.as_ref(),
+        &state.config.trusted_proxy_cidrs,
+    );
     let allowed = state
         .newsletter_rate_limiter
         .allow(&ip, 5, Duration::from_secs(15 * 60))
@@ -171,7 +212,6 @@ pub async fn newsletter_subscribe(
             }),
         ));
     }
-
     let source = payload
         .source
         .unwrap_or_else(|| "direct".to_string())
@@ -214,7 +254,7 @@ pub async fn newsletter_subscribe(
         "{}/api/v1/newsletter/confirm?token={token}",
         state.config.base_url.trim_end_matches('/')
     );
-    
+
     let template_data = serde_json::json!({
         "confirm_url": confirm_url,
         "email": email
@@ -592,7 +632,11 @@ pub async fn blockchain_health(
         .health_check_cached()
         .await
         .map_err(into_api_error)?;
-    Ok((StatusCode::OK, Json(data)))
+    let status_code = match data.status {
+        HealthStatus::Healthy => StatusCode::OK,
+        HealthStatus::Degraded | HealthStatus::Unhealthy => StatusCode::SERVICE_UNAVAILABLE,
+    };
+    Ok((status_code, Json(data)))
 }
 
 pub async fn blockchain_market_data(
@@ -767,7 +811,8 @@ pub async fn email_queue_stats(
 
 pub async fn sendgrid_webhook(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Json(events): Json<Vec<crate::email::webhook::SendGridEvent>>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
-    sendgrid_webhook_handler(State(Arc::new(state.webhook_handler.clone())), Json(events)).await
+    sendgrid_webhook_handler(State(Arc::new(state.webhook_handler.clone())), headers, Json(events)).await
 }

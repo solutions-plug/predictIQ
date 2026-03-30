@@ -1,4 +1,10 @@
-use std::{env, net::{IpAddr, SocketAddr}, str::FromStr, time::Duration};
+use std::{
+    env,
+    net::{IpAddr, SocketAddr},
+    str::FromStr,
+    time::Duration,
+};
+use ipnet::IpNet;
 
 #[derive(Clone, Debug)]
 pub enum BlockchainNetwork {
@@ -20,11 +26,26 @@ impl FromStr for BlockchainNetwork {
     }
 }
 
+/// PostgreSQL connection pool settings for the API (`sqlx::PgPool`).
+///
+/// Environment variables are documented in `services/api/DATABASE.md`.
+#[derive(Clone, Debug)]
+pub struct DbPoolConfig {
+    pub min_connections: u32,
+    pub max_connections: u32,
+    pub acquire_timeout: Duration,
+    /// When `None`, sqlx uses its default for idle reaping.
+    pub idle_timeout: Option<Duration>,
+    /// When `None`, sqlx uses its default connection lifetime.
+    pub max_lifetime: Option<Duration>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub bind_addr: SocketAddr,
     pub redis_url: String,
     pub database_url: String,
+    pub db_pool: DbPoolConfig,
     pub blockchain_rpc_url: String,
     pub blockchain_network: BlockchainNetwork,
     pub contract_id: String,
@@ -41,7 +62,10 @@ pub struct Config {
     pub base_url: String,
     pub api_keys: Vec<String>,
     pub admin_whitelist_ips: Vec<IpAddr>,
+    pub trust_proxy: bool,
     pub request_signing_secret: Option<String>,
+    pub sendgrid_webhook_secret: Option<String>,
+    pub trusted_proxy_cidrs: Vec<IpNet>,
     /// When `true` the `/metrics` endpoint is publicly accessible (no auth).
     /// Defaults to `false`. Set `METRICS_PUBLIC=true` only in trusted environments.
     pub metrics_public: bool,
@@ -83,12 +107,55 @@ impl Config {
             })
             .unwrap_or_default();
 
+        let mut db_pool_min = env::var("DB_POOL_MIN_CONNECTIONS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(5u32);
+        let mut db_pool_max = env::var("DB_POOL_MAX_CONNECTIONS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(25u32);
+        if db_pool_min > db_pool_max {
+            std::mem::swap(&mut db_pool_min, &mut db_pool_max);
+        }
+        // sqlx requires at least one connection in the pool.
+        let db_pool_max = db_pool_max.max(1);
+
+        let db_pool_acquire_secs: u64 = env::var("DB_POOL_ACQUIRE_TIMEOUT_SECS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(5);
+        let db_pool_acquire_timeout = Duration::from_secs(db_pool_acquire_secs.max(1));
+
+        let db_pool_idle_timeout = env::var("DB_POOL_IDLE_TIMEOUT_SECS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .filter(|&s| s > 0)
+            .map(Duration::from_secs);
+
+        let db_pool_max_lifetime = env::var("DB_POOL_MAX_LIFETIME_SECS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .filter(|&s| s > 0)
+            .map(Duration::from_secs);
+
+        let trusted_proxy_cidrs = env::var("TRUSTED_PROXY_CIDRS")
+            .map(|v| v.split(',').filter_map(|s| s.trim().parse().ok()).collect())
+            .unwrap_or_else(|_| vec![]);
+
         Self {
             bind_addr,
             redis_url: env::var("REDIS_URL")
                 .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string()),
             database_url: env::var("DATABASE_URL")
                 .unwrap_or_else(|_| "postgres://postgres:postgres@127.0.0.1/predictiq".to_string()),
+            db_pool: DbPoolConfig {
+                min_connections: db_pool_min,
+                max_connections: db_pool_max,
+                acquire_timeout: db_pool_acquire_timeout,
+                idle_timeout: db_pool_idle_timeout,
+                max_lifetime: db_pool_max_lifetime,
+            },
             blockchain_rpc_url,
             blockchain_network,
             contract_id: env::var("PREDICTIQ_CONTRACT_ID")
@@ -128,8 +195,7 @@ impl Config {
                 .unwrap_or(20),
             sendgrid_api_key: env::var("SENDGRID_API_KEY").ok(),
             from_email: env::var("FROM_EMAIL").ok(),
-            base_url: env::var("BASE_URL")
-                .unwrap_or_else(|_| "http://localhost:8080".to_string()),
+            base_url: env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:8080".to_string()),
             api_keys: env::var("API_KEYS")
                 .ok()
                 .map(|keys| keys.split(',').map(|k| k.trim().to_string()).collect())
@@ -142,7 +208,13 @@ impl Config {
                         .collect()
                 })
                 .unwrap_or_default(),
+            trust_proxy: env::var("TRUST_PROXY")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(true),
             request_signing_secret: env::var("REQUEST_SIGNING_SECRET").ok(),
+            sendgrid_webhook_secret: env::var("SENDGRID_WEBHOOK_SECRET").ok(),
+            trusted_proxy_cidrs,
             metrics_public: env::var("METRICS_PUBLIC")
                 .ok()
                 .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
@@ -164,5 +236,64 @@ impl Config {
             BlockchainNetwork::Mainnet => "mainnet",
             BlockchainNetwork::Custom => "custom",
         }
+    }
+}
+
+/// Versioned contract key schema.
+///
+/// Each field is a key template where `{id}` is replaced at call time.
+/// Defaults match the v1 deployed schema; override via env vars for per-network
+/// divergence (e.g. a testnet that uses a different naming convention).
+///
+/// Schema version is bumped whenever a key template changes, so callers can
+/// detect mismatches at startup.
+#[derive(Clone, Debug)]
+pub struct ContractKeySchema {
+    /// Semver string, e.g. "1.0.0".
+    pub version: String,
+    /// Key for a single market, `{id}` → market_id.
+    pub market: String,
+    /// Key for platform-wide statistics.
+    pub platform_stats: String,
+    /// Key for a user's bets, `{id}` → user address.
+    pub user_bets: String,
+    /// Key for an oracle result, `{id}` → market_id.
+    pub oracle_result: String,
+}
+
+impl ContractKeySchema {
+    /// Load from environment, falling back to v1 defaults.
+    ///
+    /// Override env vars:
+    /// - `CONTRACT_KEY_VERSION`
+    /// - `CONTRACT_KEY_MARKET`          (default: `"market:{id}"`)
+    /// - `CONTRACT_KEY_PLATFORM_STATS`  (default: `"platform:stats"`)
+    /// - `CONTRACT_KEY_USER_BETS`       (default: `"user_bets:{id}"`)
+    /// - `CONTRACT_KEY_ORACLE_RESULT`   (default: `"oracle_result:{id}"`)
+    pub fn from_env() -> Self {
+        Self {
+            version: env::var("CONTRACT_KEY_VERSION")
+                .unwrap_or_else(|_| "1.0.0".to_string()),
+            market: env::var("CONTRACT_KEY_MARKET")
+                .unwrap_or_else(|_| "market:{id}".to_string()),
+            platform_stats: env::var("CONTRACT_KEY_PLATFORM_STATS")
+                .unwrap_or_else(|_| "platform:stats".to_string()),
+            user_bets: env::var("CONTRACT_KEY_USER_BETS")
+                .unwrap_or_else(|_| "user_bets:{id}".to_string()),
+            oracle_result: env::var("CONTRACT_KEY_ORACLE_RESULT")
+                .unwrap_or_else(|_| "oracle_result:{id}".to_string()),
+        }
+    }
+
+    pub fn market_key(&self, market_id: i64) -> String {
+        self.market.replace("{id}", &market_id.to_string())
+    }
+
+    pub fn user_bets_key(&self, user: &str) -> String {
+        self.user_bets.replace("{id}", user)
+    }
+
+    pub fn oracle_result_key(&self, market_id: i64) -> String {
+        self.oracle_result.replace("{id}", &market_id.to_string())
     }
 }

@@ -10,6 +10,8 @@ pub struct Metrics {
     cache_misses: IntCounterVec,
     invalidations: IntCounterVec,
     request_latency: HistogramVec,
+    rpc_errors: IntCounterVec,
+    rpc_fallbacks: IntCounterVec,
 }
 
 impl Metrics {
@@ -43,10 +45,27 @@ impl Metrics {
         )
         .context("request_latency metric")?;
 
+        let rpc_errors = IntCounterVec::new(
+            prometheus::Opts::new("rpc_errors_total", "RPC errors by method"),
+            &["method"],
+        )
+        .context("rpc_errors metric")?;
+
+        let rpc_fallbacks = IntCounterVec::new(
+            prometheus::Opts::new(
+                "rpc_fallbacks_total",
+                "RPC calls that fell back to zero/default payload, by endpoint",
+            ),
+            &["endpoint"],
+        )
+        .context("rpc_fallbacks metric")?;
+
         registry.register(Box::new(cache_hits.clone()))?;
         registry.register(Box::new(cache_misses.clone()))?;
         registry.register(Box::new(invalidations.clone()))?;
         registry.register(Box::new(request_latency.clone()))?;
+        registry.register(Box::new(rpc_errors.clone()))?;
+        registry.register(Box::new(rpc_fallbacks.clone()))?;
 
         Ok(Self {
             registry,
@@ -54,6 +73,8 @@ impl Metrics {
             cache_misses,
             invalidations,
             request_latency,
+            rpc_errors,
+            rpc_fallbacks,
         })
     }
 
@@ -79,6 +100,22 @@ impl Metrics {
         self.request_latency
             .with_label_values(&[endpoint])
             .observe(duration.as_secs_f64());
+    }
+
+    pub fn observe_rpc_error(&self, method: &str) {
+        self.rpc_errors.with_label_values(&[method]).inc();
+    }
+
+    pub fn observe_rpc_fallback(&self, endpoint: &str) {
+        self.rpc_fallbacks.with_label_values(&[endpoint]).inc();
+    }
+
+    pub fn observe_tx_eviction(&self, count: u64) {
+        if count > 0 {
+            self.invalidations
+                .with_label_values(&["tx_watch_eviction"])
+                .inc_by(count);
+        }
     }
 
     pub fn render(&self) -> anyhow::Result<String> {

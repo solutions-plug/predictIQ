@@ -175,3 +175,77 @@ fn test_nonexistent_referrer_no_crash() {
     let claimed = client.claim_referral_rewards(&random_referrer, &token_address);
     assert_eq!(claimed, 1i128);
 }
+
+#[test]
+fn test_multi_token_referral_rewards_separation() {
+    let (env, client, user_a, user_b, token_address, _contract_id) = setup_test();
+    
+    // Create a second token
+    let token_admin2 = Address::generate(&env);
+    let token_id2 = env.register_stellar_asset_contract_v2(token_admin2.clone());
+    let token_address2 = token_id2.address();
+    
+    let oracle = Address::generate(&env);
+    let mut options = Vec::new(&env);
+    options.push_back(String::from_str(&env, "Yes"));
+    options.push_back(String::from_str(&env, "No"));
+    
+    // Create market with first token
+    let market_id1 = client.create_market(
+        &user_a,
+        &String::from_str(&env, "Test Market 1"),
+        &options,
+        &(env.ledger().timestamp() + 1000),
+        &(env.ledger().timestamp() + 2000),
+        &types::OracleConfig {
+            oracle_address: oracle.clone(),
+            feed_id: String::from_str(&env, "test1"),
+            min_responses: 1,
+            max_staleness_seconds: 300,
+            max_confidence_bps: 200,
+        },
+        &token_address,
+    );
+    
+    // Create market with second token
+    let market_id2 = client.create_market(
+        &user_a,
+        &String::from_str(&env, "Test Market 2"),
+        &options,
+        &(env.ledger().timestamp() + 1000),
+        &(env.ledger().timestamp() + 2000),
+        &types::OracleConfig {
+            oracle_address: oracle,
+            feed_id: String::from_str(&env, "test2"),
+            min_responses: 1,
+            max_staleness_seconds: 300,
+            max_confidence_bps: 200,
+        },
+        &token_address2,
+    );
+    
+    // User B bets 1000 tokens on market 1 with User A as referrer
+    client.place_bet(&user_b, &market_id1, &0, &1000, &token_address, &Some(user_a.clone()));
+    
+    // User B bets 1000 tokens on market 2 with User A as referrer
+    client.place_bet(&user_b, &market_id2, &0, &1000, &token_address2, &Some(user_a.clone()));
+    
+    // Referral reward for each bet: 10% of 1% of 1000 = 1 token per bet
+    // So user_a should have 1 reward in token_address and 1 in token_address2
+    
+    // Claim rewards for first token
+    let claimed1 = client.claim_referral_rewards(&user_a, &token_address);
+    assert_eq!(claimed1, 1i128);
+    
+    // Claim rewards for second token
+    let claimed2 = client.claim_referral_rewards(&user_a, &token_address2);
+    assert_eq!(claimed2, 1i128);
+    
+    // Trying to claim again for first token should fail
+    let result = client.try_claim_referral_rewards(&user_a, &token_address);
+    assert_eq!(result, Err(Ok(crate::errors::ErrorCode::InsufficientBalance)));
+    
+    // Trying to claim for wrong token should fail
+    let result2 = client.try_claim_referral_rewards(&user_a, &token_address); // already claimed
+    assert_eq!(result2, Err(Ok(crate::errors::ErrorCode::InsufficientBalance)));
+}

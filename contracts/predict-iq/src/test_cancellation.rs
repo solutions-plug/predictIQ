@@ -199,3 +199,115 @@ fn test_refund_only_once() {
     client.withdraw_refund(&user1, &market_id);
     client.withdraw_refund(&user1, &market_id);
 }
+
+/// Issue #51: Creator reclaims creation deposit after admin cancellation.
+/// Bettors can still withdraw their principal stakes simultaneously.
+#[test]
+fn test_creator_deposit_refunded_on_cancellation() {
+    let (env, client, admin, user1, user2, token_address) = setup_test();
+
+    let token_client = token::Client::new(&env, &token_address);
+
+    // Mint enough for user1 to cover deposit (100) + bet (500)
+    token_client.mint(&user1, &600);
+
+    let oracle = Address::generate(&env);
+    let options = Vec::from_array(
+        &env,
+        [String::from_str(&env, "Yes"), String::from_str(&env, "No")],
+    );
+
+    // Set a non-zero creation deposit
+    client.set_creation_deposit(&100i128);
+
+    let market_id = client.create_market(
+        &user1,
+        &String::from_str(&env, "Test Market"),
+        &options,
+        &(env.ledger().timestamp() + 1000),
+        &(env.ledger().timestamp() + 2000),
+        &crate::types::OracleConfig {
+            oracle_address: oracle,
+            feed_id: String::from_str(&env, "test"),
+            min_responses: 1,
+            max_staleness_seconds: 3600,
+            max_confidence_bps: 200,
+        },
+        &crate::types::MarketTier::Basic,
+        &token_address,
+        &0,
+        &0,
+    );
+
+    // user1 (creator) also places a bet; user2 places a bet
+    client.place_bet(&user1, &market_id, &0, &500, &token_address, &None);
+    client.place_bet(&user2, &market_id, &1, &2000, &token_address, &None);
+
+    client.cancel_market_admin(&market_id);
+
+    let creator_balance_before = token_client.balance(&user1);
+    let user2_balance_before = token_client.balance(&user2);
+
+    // Creator withdraws — gets deposit (100) + bet refund (500)
+    let creator_refund = client.withdraw_refund(&user1, &market_id);
+    assert_eq!(creator_refund, 500); // bet portion returned by withdraw_refund
+    // deposit was transferred separately; total balance increase = 600
+    assert_eq!(token_client.balance(&user1), creator_balance_before + 600);
+
+    // Bettor withdraws their stake unaffected
+    let user2_refund = client.withdraw_refund(&user2, &market_id);
+    assert_eq!(user2_refund, 2000);
+    assert_eq!(token_client.balance(&user2), user2_balance_before + 2000);
+
+    // Deposit cannot be claimed twice
+    let second_attempt = client.try_withdraw_refund(&user1, &market_id);
+    assert_eq!(second_attempt, Ok(Ok(0))); // no bet left, deposit already zeroed
+}
+
+/// Issue #52: Overflow-safe threshold check with astronomical voting weights.
+/// cancel_votes = i128::MAX / 5000 would overflow (cancel_votes * 10000) before the fix.
+#[test]
+fn test_cancel_vote_threshold_no_overflow() {
+    let (env, client, _admin, user1, _user2, token_address) = setup_test();
+
+    let oracle = Address::generate(&env);
+    let options = Vec::from_array(
+        &env,
+        [String::from_str(&env, "Yes"), String::from_str(&env, "No")],
+    );
+
+    let market_id = client.create_market(
+        &user1,
+        &String::from_str(&env, "Test Market"),
+        &options,
+        &(env.ledger().timestamp() + 1000),
+        &(env.ledger().timestamp() + 2000),
+        &crate::types::OracleConfig {
+            oracle_address: oracle,
+            feed_id: String::from_str(&env, "test"),
+            min_responses: 1,
+            max_staleness_seconds: 3600,
+            max_confidence_bps: 200,
+        },
+        &crate::types::MarketTier::Basic,
+        &token_address,
+        &0,
+        &0,
+    );
+
+    // Move to Disputed so cancel_market_vote is reachable
+    client.place_bet(&user1, &market_id, &0, &1000, &token_address, &None);
+    client.resolve_market(&market_id, &0);
+    client.file_dispute(&user1, &market_id);
+
+    // Cast cancel votes with a weight that would overflow (cancel_votes * 10000 > i128::MAX)
+    let huge_weight = i128::MAX / 5000; // * 10000 overflows without checked_mul
+    client.cast_vote(&user1, &market_id, &crate::types::CANCEL_OUTCOME_INDEX, &huge_weight);
+
+    // Should not panic; checked_mul returns None on overflow → InsufficientVotingWeight
+    let result = client.try_cancel_market_vote(&market_id);
+    // Either succeeds (if threshold met) or returns InsufficientVotingWeight — never panics
+    assert!(
+        result.is_ok() || result == Err(Ok(crate::errors::ErrorCode::InsufficientVotingWeight))
+    );
+}

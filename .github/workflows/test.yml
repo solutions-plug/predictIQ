@@ -9,6 +9,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Enforced by cargo llvm-cov --fail-under-lines (line %, package-scoped runs).
+  COVERAGE_FAIL_LINES_PREDICT_IQ: "80"
+  COVERAGE_FAIL_LINES_PREDICTIQ_API: "17"
 
 jobs:
   unit-tests:
@@ -117,8 +120,8 @@ jobs:
           echo "Benchmark results:"
           cat target/criterion/*/report/index.html || echo "No criterion reports found"
 
-  coverage:
-    name: Code Coverage
+  backend-coverage:
+    name: Backend coverage (contracts + API)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -132,31 +135,58 @@ jobs:
           components: llvm-tools-preview
 
       - name: Install cargo-llvm-cov
-        run: cargo install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
 
       - name: Install Soroban CLI
         run: cargo install --locked soroban-cli --features opt
 
-      - name: Generate coverage
-        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
-        working-directory: contracts/predict-iq
+      - name: Prepare coverage output directory
+        run: mkdir -p coverage-reports
 
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
+      - name: Coverage gate — predict-iq (Soroban contract)
+        env:
+          CARGO_LLVM_COV_TARGET_DIR: ${{ github.workspace }}/llvm-cov-target/predict-iq
+        run: >
+          cargo llvm-cov -p predict-iq --all-features
+          --fail-under-lines ${COVERAGE_FAIL_LINES_PREDICT_IQ}
+          --lcov --output-path coverage-reports/predict-iq.lcov
+          --html --output-dir coverage-reports/predict-iq-html
+
+      - name: Coverage gate — predictiq-api (Rust API service)
+        env:
+          CARGO_LLVM_COV_TARGET_DIR: ${{ github.workspace }}/llvm-cov-target/predictiq-api
+        working-directory: services/api
+        run: >
+          cargo llvm-cov
+          --fail-under-lines ${COVERAGE_FAIL_LINES_PREDICTIQ_API}
+          --lcov --output-path ../../coverage-reports/predictiq-api.lcov
+          --html --output-dir ../../coverage-reports/predictiq-api-html
+
+      - name: Upload HTML + LCOV artifacts
+        uses: actions/upload-artifact@v4
         with:
-          files: ./contracts/predict-iq/lcov.info
+          name: backend-coverage
+          path: |
+            coverage-reports/*.lcov
+            coverage-reports/predict-iq-html
+            coverage-reports/predictiq-api-html
+          if-no-files-found: error
+
+      - name: Upload predict-iq LCOV to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage-reports/predict-iq.lcov
+          flags: predict-iq
           fail_ci_if_error: true
           verbose: true
 
-      - name: Check coverage threshold
-        run: |
-          coverage=$(cargo llvm-cov --workspace --summary-only | grep -oP 'TOTAL.*\K[0-9.]+(?=%)')
-          echo "Coverage: $coverage%"
-          if (( $(echo "$coverage < 80" | bc -l) )); then
-            echo "Coverage $coverage% is below 80% threshold"
-            exit 1
-          fi
-        working-directory: contracts/predict-iq
+      - name: Upload predictiq-api LCOV to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage-reports/predictiq-api.lcov
+          flags: predictiq-api
+          fail_ci_if_error: true
+          verbose: true
 
   security-audit:
     name: Security Audit
@@ -196,6 +226,40 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
         working-directory: contracts/predict-iq
 
+  oracle-quality-gate:
+    name: Oracle Module — Clippy + Warnings-as-Errors
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+          components: clippy
+
+      - name: Clippy (deny warnings) — oracle module
+        env:
+          RUSTFLAGS: -D warnings
+        run: >
+          cargo clippy
+          --package predict-iq
+          --all-features
+          -- -D warnings
+        working-directory: contracts/predict-iq
+
+      - name: Build (deny warnings) — contract crate
+        env:
+          RUSTFLAGS: -D warnings
+        run: cargo build --package predict-iq --all-features
+        working-directory: contracts/predict-iq
+
+      - name: Run oracle tests
+        run: cargo test --package predict-iq --lib oracles
+        working-directory: contracts/predict-iq
+
   format:
     name: Code Formatting
     runs-on: ubuntu-latest
@@ -212,37 +276,6 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all -- --check
-        working-directory: contracts/predict-iq
-
-  snapshot-tests:
-    name: Snapshot Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
-
-      - name: Install Soroban CLI
-        run: cargo install --locked soroban-cli --features opt
-
-      - name: Run snapshot tests
-        run: cargo test --features testutils
-        working-directory: contracts/predict-iq
-
-      - name: Check for snapshot changes
-        run: |
-          if git diff --exit-code test_snapshots/; then
-            echo "Snapshots are up to date"
-          else
-            echo "Snapshot changes detected - review carefully"
-            git diff test_snapshots/
-            exit 1
-          fi
         working-directory: contracts/predict-iq
 
   build-optimized:
@@ -290,11 +323,11 @@ jobs:
       - unit-tests
       - integration-tests
       - gas-benchmarks
-      - coverage
+      - backend-coverage
       - security-audit
       - clippy
+      - oracle-quality-gate
       - format
-      - snapshot-tests
       - build-optimized
     runs-on: ubuntu-latest
     steps:

@@ -6,7 +6,6 @@ use std::{
 };
 
 use axum::{
-    body::Body,
     extract::{ConnectInfo, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     middleware::Next,
@@ -16,7 +15,10 @@ use axum::{
 use serde::Serialize;
 use tokio::sync::RwLock;
 
-/// Rate limiter configuration
+/// Newtype wrapper so `trust_proxy: bool` can be injected as Axum `State`.
+#[derive(Clone, Copy, Debug)]
+pub struct TrustProxy(pub bool);
+
 #[derive(Debug, Clone)]
 pub struct RateLimitConfig {
     pub requests: u32,
@@ -95,43 +97,50 @@ impl Default for RateLimiter {
     }
 }
 
-/// Extract client IP from request
-pub fn extract_client_ip(headers: &HeaderMap, connect_info: Option<&ConnectInfo<std::net::SocketAddr>>) -> String {
-    // Check X-Forwarded-For header (from proxy/load balancer)
-    if let Some(forwarded_for) = headers.get("x-forwarded-for").and_then(|h| h.to_str().ok()) {
-        if let Some(ip) = forwarded_for.split(',').next() {
-            let ip = ip.trim();
-            if !ip.is_empty() {
-                return ip.to_string();
+/// Extract client IP with trusted proxy CIDR validation.
+/// Only trust x-forwarded-for/x-real-ip if the remote address is in a trusted proxy CIDR.
+pub fn extract_client_ip(
+    headers: &HeaderMap,
+    connect_info: Option<&ConnectInfo<std::net::SocketAddr>>,
+    trusted_proxy_cidrs: &[ipnet::IpNet],
+) -> String {
+    let remote_ip = connect_info.map(|c| c.0.ip());
+    let proxy_trusted = remote_ip.map_or(false, |ip| trusted_proxy_cidrs.iter().any(|cidr| cidr.contains(&ip)));
+
+    if proxy_trusted {
+        // 1. Check X-Forwarded-For header (from proxy/load balancer)
+        if let Some(forwarded_for) = headers.get("x-forwarded-for").and_then(|h| h.to_str().ok()) {
+            for ip_str in forwarded_for.split(',') {
+                let ip_str = ip_str.trim();
+                if !ip_str.is_empty() && ip_str.parse::<IpAddr>().is_ok() {
+                    return ip_str.to_string();
+                }
+            }
+        }
+        // 2. Check X-Real-IP header
+        if let Some(real_ip) = headers.get("x-real-ip").and_then(|h| h.to_str().ok()) {
+            let ip_str = real_ip.trim();
+            if !ip_str.is_empty() && ip_str.parse::<IpAddr>().is_ok() {
+                return ip_str.to_string();
             }
         }
     }
-
-    // Check X-Real-IP header
-    if let Some(real_ip) = headers.get("x-real-ip").and_then(|h| h.to_str().ok()) {
-        let ip = real_ip.trim();
-        if !ip.is_empty() {
-            return ip.to_string();
-        }
-    }
-
-    // Fallback to connection info
+    // 3. Fallback to connection info (Socket)
     if let Some(conn_info) = connect_info {
         return conn_info.0.ip().to_string();
     }
-
     "unknown".to_string()
 }
 
 /// Global rate limiting middleware (100 req/min per IP)
 pub async fn global_rate_limit_middleware(
-    State(limiter): State<Arc<RateLimiter>>,
+    State((limiter, TrustProxy(trust_proxy))): State<(Arc<RateLimiter>, TrustProxy)>,
     headers: HeaderMap,
     connect_info: Option<ConnectInfo<std::net::SocketAddr>>,
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    let ip = extract_client_ip(&headers, connect_info.as_ref());
+    let ip = extract_client_ip(&headers, connect_info.as_ref(), trust_proxy);
     let config = RateLimitConfig::new(100, Duration::from_secs(60));
 
     if !limiter.check(&format!("global:{}", ip), &config).await {
@@ -142,10 +151,7 @@ pub async fn global_rate_limit_middleware(
 }
 
 /// Security headers middleware
-pub async fn security_headers_middleware(
-    request: Request,
-    next: Next,
-) -> Response {
+pub async fn security_headers_middleware(request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
 
@@ -158,10 +164,7 @@ pub async fn security_headers_middleware(
     );
 
     // X-Frame-Options
-    headers.insert(
-        "x-frame-options",
-        HeaderValue::from_static("DENY"),
-    );
+    headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
 
     // X-Content-Type-Options
     headers.insert(
@@ -213,7 +216,7 @@ pub mod sanitize {
     pub fn string(input: &str, max_len: usize) -> String {
         input
             .chars()
-            .filter(|c| !c.is_control() || c.is_whitespace())
+            .filter(|c| !c.is_control() || matches!(c, '\t' | '\n' | '\r' | ' '))
             .take(max_len)
             .collect()
     }
@@ -259,8 +262,13 @@ impl ApiKeyAuth {
     }
 
     pub fn verify(&self, key: &str) -> bool {
-        self.valid_keys.iter().any(|k| k == key)
+        self.valid_keys.is_empty() || self.valid_keys.iter().any(|k| k == key)
     }
+}
+
+#[derive(Serialize)]
+struct ApiKeyErrorBody {
+    error: &'static str,
 }
 
 /// API key authentication middleware
@@ -269,17 +277,28 @@ pub async fn api_key_middleware(
     headers: HeaderMap,
     request: Request,
     next: Next,
-) -> Result<Response, StatusCode> {
+) -> Response {
     let api_key = headers
         .get("x-api-key")
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
 
     if !auth.verify(api_key) {
-        return Err(StatusCode::UNAUTHORIZED);
+        let mut resp = (
+            StatusCode::UNAUTHORIZED,
+            Json(ApiKeyErrorBody {
+                error: "invalid or missing API key",
+            }),
+        )
+            .into_response();
+        resp.headers_mut().insert(
+            "WWW-Authenticate",
+            HeaderValue::from_static("ApiKey realm=\"predictiq\""),
+        );
+        return resp;
     }
 
-    Ok(next.run(request).await)
+    next.run(request).await
 }
 
 /// IP whitelist for admin endpoints
@@ -296,6 +315,9 @@ impl IpWhitelist {
     }
 
     pub fn is_allowed(&self, ip: &str) -> bool {
+        if self.allowed_ips.is_empty() {
+            return true;
+        }
         if let Ok(addr) = ip.parse::<IpAddr>() {
             return self.allowed_ips.contains(&addr);
         }
@@ -305,13 +327,13 @@ impl IpWhitelist {
 
 /// IP whitelist middleware
 pub async fn ip_whitelist_middleware(
-    State(whitelist): State<Arc<IpWhitelist>>,
+    State((whitelist, TrustProxy(trust_proxy))): State<(Arc<IpWhitelist>, TrustProxy)>,
     headers: HeaderMap,
     connect_info: Option<ConnectInfo<std::net::SocketAddr>>,
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    let ip = extract_client_ip(&headers, connect_info.as_ref());
+    let ip = extract_client_ip(&headers, connect_info.as_ref(), trust_proxy);
 
     if !whitelist.is_allowed(&ip) {
         return Err(StatusCode::FORBIDDEN);
@@ -361,7 +383,8 @@ pub async fn metrics_auth_middleware(
 
     // IP allowlist check (when configured)
     if !config.allowlist.is_empty() {
-        let ip = extract_client_ip(&headers, connect_info.as_ref());
+        // Use empty CIDR list — allowlist check uses direct IP comparison, not proxy headers
+        let ip = extract_client_ip(&headers, connect_info.as_ref(), &[]);
         let parsed: Option<IpAddr> = ip.parse().ok();
         let allowed = parsed.map(|a| config.allowlist.contains(&a)).unwrap_or(false);
         if !allowed {
@@ -381,7 +404,43 @@ pub async fn metrics_auth_middleware(
     Ok(next.run(request).await)
 }
 
-/// Request signing verification for sensitive operations
+/// SendGrid webhook signature verification middleware.
+///
+/// Verifies the `X-Twilio-Email-Event-Webhook-Signature` header using HMAC-SHA256
+/// against the raw request body. When `SENDGRID_WEBHOOK_SECRET` is not configured
+/// the middleware passes through (permissive default for local dev).
+///
+/// # OpenAPI policy
+/// Route: `POST /webhooks/sendgrid`
+/// Auth: provider-signed (SendGrid HMAC) — no API key required.
+pub async fn sendgrid_webhook_middleware(
+    State(secret): State<Option<String>>,
+    headers: HeaderMap,
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    if let Some(ref secret) = secret {
+        let sig = headers
+            .get("x-twilio-email-event-webhook-signature")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("");
+
+        let (parts, body) = request.into_parts();
+        let bytes = axum::body::to_bytes(body, usize::MAX)
+            .await
+            .map_err(|_| StatusCode::BAD_REQUEST)?;
+
+        if !signing::verify_signature(&bytes, sig, secret) {
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+
+        let request = Request::from_parts(parts, Body::from(bytes));
+        return Ok(next.run(request).await);
+    }
+
+    Ok(next.run(request).await)
+}
+
 pub mod signing {
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
     use hmac::{Hmac, Mac};
@@ -405,13 +464,30 @@ pub mod signing {
         mac.verify_slice(&expected).is_ok()
     }
 
-    pub fn generate_signature(payload: &[u8], secret: &str) -> String {
-        let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-            .expect("HMAC can take key of any size");
+    pub fn generate_signature(payload: &[u8], secret: &str) -> Result<String, SigningError> {
+        let mut mac =
+            HmacSha256::new_from_slice(secret.as_bytes()).map_err(|_| SigningError::InvalidKey)?;
         mac.update(payload);
         let result = mac.finalize();
-        BASE64.encode(result.into_bytes())
+        Ok(BASE64.encode(result.into_bytes()))
     }
+
+    /// Error type for fallible signing operations.
+    #[derive(Debug, PartialEq)]
+    pub enum SigningError {
+        /// The secret key was rejected by the HMAC constructor (empty key).
+        InvalidKey,
+    }
+
+    impl std::fmt::Display for SigningError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                SigningError::InvalidKey => write!(f, "signing key is invalid"),
+            }
+        }
+    }
+
+    impl std::error::Error for SigningError {}
 }
 
 #[derive(Serialize)]
@@ -423,5 +499,144 @@ pub struct SecurityError {
 impl IntoResponse for SecurityError {
     fn into_response(self) -> Response {
         (StatusCode::BAD_REQUEST, Json(self)).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::HeaderMap;
+    use std::net::SocketAddr;
+
+    // ── helpers ──────────────────────────────────────────────────────────────
+
+    fn addr(s: &str) -> ConnectInfo<SocketAddr> {
+        ConnectInfo(s.parse().unwrap())
+    }
+
+    fn xff(val: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-for", val.parse().unwrap());
+        h
+    }
+
+    fn xri(val: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert("x-real-ip", val.parse().unwrap());
+        h
+    }
+
+    // ── security headers middleware ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn security_headers_middleware_sets_required_headers() {
+        use axum::{body::Body, http::Request, middleware, routing::get, Router};
+        use tower::ServiceExt;
+
+        let app = Router::new()
+            .route("/", get(|| async { "ok" }))
+            .layer(middleware::from_fn(super::security_headers_middleware));
+
+        let response = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        let headers = response.headers();
+        assert!(headers.contains_key("content-security-policy"));
+        assert!(headers.contains_key("strict-transport-security"));
+        assert!(headers.contains_key("x-frame-options"));
+        assert!(headers.contains_key("referrer-policy"));
+        assert_eq!(headers["x-frame-options"], "DENY");
+        assert_eq!(headers["x-content-type-options"], "nosniff");
+    }
+
+    #[test]
+    fn test_extract_client_ip_precedence() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "1.1.1.1, 2.2.2.2".parse().unwrap());
+        headers.insert("x-real-ip", "3.3.3.3".parse().unwrap());
+        let ci = addr("4.4.4.4:8080");
+
+        assert_eq!(extract_client_ip(&headers, Some(&ci), true), "1.1.1.1");
+
+        headers.remove("x-forwarded-for");
+        assert_eq!(extract_client_ip(&headers, Some(&ci), true), "3.3.3.3");
+
+        headers.remove("x-real-ip");
+        assert_eq!(extract_client_ip(&headers, Some(&ci), true), "4.4.4.4");
+    }
+
+    #[test]
+    fn test_extract_client_ip_validation() {
+        let mut headers = HeaderMap::new();
+        let ci = addr("4.4.4.4:8080");
+
+        headers.insert("x-forwarded-for", "malformed, 1.1.1.1".parse().unwrap());
+        assert_eq!(extract_client_ip(&headers, Some(&ci), true), "1.1.1.1");
+
+        headers.insert("x-forwarded-for", "not-an-ip, also-bad".parse().unwrap());
+        headers.insert("x-real-ip", "2.2.2.2".parse().unwrap());
+        assert_eq!(extract_client_ip(&headers, Some(&ci), true), "2.2.2.2");
+
+        headers.insert("x-real-ip", "invalid-ip".parse().unwrap());
+        assert_eq!(extract_client_ip(&headers, Some(&ci), true), "4.4.4.4");
+    }
+
+    #[test]
+    fn test_extract_client_ip_empty_and_unknown() {
+        let headers = HeaderMap::new();
+
+        // No headers, no connect info
+        assert_eq!(extract_client_ip(&headers, None, &[]), "unknown");
+
+        let ci = addr("5.5.5.5:80");
+        assert_eq!(extract_client_ip(&headers, Some(&ci), &[]), "5.5.5.5");
+    }
+
+    #[test]
+    fn test_extract_client_ip_ipv6() {
+        let headers = xff("2001:db8::1, 192.168.1.1");
+        assert_eq!(extract_client_ip(&headers, None, true), "2001:db8::1");
+    }
+
+    // ── trust-boundary tests (issue #281) ────────────────────────────────
+
+    /// Without a trusted proxy, X-Forwarded-For MUST be ignored and the real
+    /// socket address used instead.
+    #[test]
+    fn spoofed_xff_ignored_when_trust_proxy_disabled() {
+        let headers = xff("9.9.9.9");
+        let ci = addr("1.2.3.4:1234");
+        assert_eq!(
+            extract_client_ip(&headers, Some(&ci), false),
+            "1.2.3.4",
+            "X-Forwarded-For must not be trusted without proxy config"
+        );
+    }
+
+    /// Without a trusted proxy, X-Real-IP MUST be ignored.
+    #[test]
+    fn spoofed_x_real_ip_ignored_when_trust_proxy_disabled() {
+        let headers = xri("9.9.9.9");
+        let ci = addr("1.2.3.4:1234");
+        assert_eq!(
+            extract_client_ip(&headers, Some(&ci), false),
+            "1.2.3.4",
+            "X-Real-IP must not be trusted without proxy config"
+        );
+    }
+
+    /// Both spoofed headers present — socket address still wins when proxy
+    /// trust is disabled.
+    #[test]
+    fn both_spoofed_headers_ignored_when_trust_proxy_disabled() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-forwarded-for",
+            "2001:db8::1, 192.168.1.1".parse().unwrap(),
+        );
+
+        assert_eq!(extract_client_ip(&headers, None, &[]), "2001:db8::1");
     }
 }

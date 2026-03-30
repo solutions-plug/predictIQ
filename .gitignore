@@ -11,3 +11,16 @@ frontend/test-results/
 frontend/.playwright/
 frontend/playwright/.cache/
 
+# Test snapshots
+**/__snapshots__/
+**/*.snap
+
+# Rust build artifacts
+contracts/**/target/
+services/**/target/
+contracts/**/*.wasm
+contracts/**/*.d
+
+# Cargo lock (regenerated per environment)
+Cargo.lock
+

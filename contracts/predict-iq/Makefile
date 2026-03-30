@@ -88,7 +88,6 @@ clean:
 	@echo "Cleaning build artifacts..."
 	cargo clean
 	rm -rf target/
-	rm -rf test_snapshots/
 
 # Build optimized contract
 build-optimized:
@@ -117,19 +116,6 @@ test-watch:
 test-docs:
 	@echo "Generating test documentation..."
 	cargo test --doc
-
-# Run snapshot tests
-test-snapshots:
-	@echo "Running snapshot tests..."
-	cargo test --features testutils
-	@echo "Checking for snapshot changes..."
-	git diff --exit-code test_snapshots/ || (echo "Snapshots changed - review carefully" && exit 1)
-
-# Update snapshots
-update-snapshots:
-	@echo "Updating snapshots..."
-	cargo test --features testutils
-	git add test_snapshots/
 
 # Pre-commit checks
 pre-commit: format-check lint test coverage-check

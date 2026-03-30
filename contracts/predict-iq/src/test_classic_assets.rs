@@ -254,3 +254,49 @@ fn test_frozen_asset_handling() {
     let payout = client.claim_winnings(&bettor, &market_id);
     assert!(payout > 0);
 }
+
+/// Issue #11: Verify that a transfer from an account with zero balance returns
+/// TransferFailed (ErrorCode) instead of causing a host panic.
+#[test]
+fn test_transfer_failure_returns_error_not_panic() {
+    let e = Env::default();
+    e.mock_all_auths();
+
+    let admin = Address::generate(&e);
+    let contract_id = e.register(PredictIQ, ());
+    let client = PredictIQClient::new(&e, &contract_id);
+    client.initialize(&admin, &100);
+
+    let token_admin = Address::generate(&e);
+    let asset_id = e.register_stellar_asset_contract_v2(token_admin.clone());
+    let asset_address = asset_id.address();
+
+    let description = String::from_str(&e, "Test");
+    let mut options = Vec::new(&e);
+    options.push_back(String::from_str(&e, "Yes"));
+    options.push_back(String::from_str(&e, "No"));
+    let oracle_config = types::OracleConfig {
+        oracle_address: Address::generate(&e),
+        feed_id: String::from_str(&e, "test"),
+        min_responses: 1,
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
+    };
+    client.create_market(
+        &Address::generate(&e),
+        &description,
+        &options,
+        &1000,
+        &2000,
+        &oracle_config,
+        &asset_address,
+    );
+
+    // Bettor has no balance — transfer should fail with an error, not a host panic.
+    let broke_bettor = Address::generate(&e);
+    let result = client.try_place_bet(&broke_bettor, &0, &0, &500_000, &asset_address, &None);
+    assert!(
+        result.is_err(),
+        "expected TransferFailed error, got Ok"
+    );
+}

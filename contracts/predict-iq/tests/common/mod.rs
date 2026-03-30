@@ -8,7 +8,7 @@ pub fn setup() -> (Env, PredictIQClient<'static>, Address) {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, PredictIQ);
+    let contract_id = env.register(PredictIQ, ());
     let client = PredictIQClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -37,16 +37,15 @@ pub fn create_market(
 ) -> u64 {
     let options = Vec::from_array(
         env,
-        [
-            String::from_str(env, "Yes"),
-            String::from_str(env, "No"),
-        ],
+        [String::from_str(env, "Yes"), String::from_str(env, "No")],
     );
 
     let oracle_config = predict_iq::types::OracleConfig {
         oracle_address: Address::generate(env),
         feed_id: String::from_str(env, "test_feed"),
         min_responses: Some(1),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
     };
 
     client.create_market(
@@ -84,6 +83,8 @@ pub fn create_custom_market(
         oracle_address: Address::generate(env),
         feed_id: String::from_str(env, "test_feed"),
         min_responses: Some(1),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
     };
 
     client.create_market(
@@ -195,11 +196,7 @@ pub fn place_bet_helper(
 }
 
 /// Resolve market and verify status
-pub fn resolve_and_verify(
-    client: &PredictIQClient,
-    market_id: u64,
-    winning_outcome: u32,
-) {
+pub fn resolve_and_verify(client: &PredictIQClient, market_id: u64, winning_outcome: u32) {
     client.resolve_market(&market_id, &winning_outcome);
     assert_market_status(client, market_id, predict_iq::types::MarketStatus::Resolved);
 }

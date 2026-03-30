@@ -1,0 +1,622 @@
+openapi: 3.0.3
+info:
+  title: PredictIQ API
+  version: 1.0.0
+  description: REST API for the PredictIQ prediction markets platform
+
+servers:
+  - url: http://localhost:8080
+    description: Local development (default bind 0.0.0.0:8080)
+
+tags:
+  - name: health
+  - name: markets
+  - name: blockchain
+  - name: newsletter
+  - name: email
+  - name: webhooks
+
+paths:
+  /health:
+    get:
+      tags: [health]
+      operationId: getHealth
+      summary: Health check
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ok
+
+  /api/statistics:
+    get:
+      tags: [markets]
+      operationId: getStatistics
+      summary: Platform statistics
+      responses:
+        "200":
+          description: Statistics payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnyObject"
+        "500":
+          $ref: "#/components/responses/ApiError"
+
+  /api/markets/featured:
+    get:
+      tags: [markets]
+      operationId: getFeaturedMarkets
+      summary: List featured markets
+      responses:
+        "200":
+          description: Array of featured markets
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/FeaturedMarketView"
+        "500":
+          $ref: "#/components/responses/ApiError"
+
+  /api/content:
+    get:
+      tags: [markets]
+      operationId: getContent
+      summary: Paginated content feed
+      parameters:
+        - $ref: "#/components/parameters/page"
+        - $ref: "#/components/parameters/pageSize"
+      responses:
+        "200":
+          description: Content payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnyObject"
+        "500":
+          $ref: "#/components/responses/ApiError"
+
+  /api/markets/{market_id}/resolve:
+    post:
+      tags: [markets]
+      operationId: resolveMarket
+      summary: Resolve a market and invalidate caches (admin)
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/marketId"
+      responses:
+        "200":
+          description: Cache invalidation result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvalidationResult"
+        "401":
+          $ref: "#/components/responses/ApiError"
+        "403":
+          $ref: "#/components/responses/ApiError"
+        "500":
+          $ref: "#/components/responses/ApiError"
+
+  /api/blockchain/health:
+    get:
+      tags: [blockchain]
+      operationId: getBlockchainHealth
+      summary: Blockchain node and contract health
+      description: |
+        Returns the health of the blockchain node and contract.
+
+        **`status` values:**
+        - `healthy` – node reachable and contract readable. HTTP 200.
+        - `degraded` – node reachable but contract read failed. HTTP 503.
+        - `unhealthy` – node unreachable. HTTP 503.
+
+        `is_healthy` is `true` only when `status == "healthy"` (backwards-compatible field).
+      responses:
+        "200":
+          description: Node and contract are healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BlockchainHealth"
+        "503":
+          description: Degraded (node up, contract unreachable) or unhealthy (node down)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BlockchainHealth"
+        "500":
+          $ref: "#/components/responses/ApiError"
+
+  /api/blockchain/markets/{market_id}:
+    get:
+      tags: [blockchain]
+      operationId: getBlockchainMarket
+      summary: On-chain market data
+      parameters:
+        - $ref: "#/components/parameters/marketId"
+      responses:
+        "200":
+          description: Market chain data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnyObject"
+        "500":
+          $ref: "#/components/responses/ApiError"
+
+  /api/blockchain/stats:
+    get:
+      tags: [blockchain]
+      operationId: getBlockchainStats
+      summary: Platform on-chain statistics
+      responses:
+        "200":
+          description: Platform stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnyObject"
+        "500":
+          $ref: "#/components/responses/ApiError"
+
+  /api/blockchain/users/{user}/bets:
+    get:
+      tags: [blockchain]
+      operationId: getUserBets
+      summary: Bets placed by a user
+      parameters:
+        - name: user
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Stellar address of the user
+        - $ref: "#/components/parameters/page"
+        - $ref: "#/components/parameters/pageSize"
+      responses:
+        "200":
+          description: User bets
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnyObject"
+        "500":
+          $ref: "#/components/responses/ApiError"
+
+  /api/blockchain/oracle/{market_id}:
+    get:
+      tags: [blockchain]
+      operationId: getOracleResult
+      summary: Oracle result for a market
+      parameters:
+        - $ref: "#/components/parameters/marketId"
+      responses:
+        "200":
+          description: Oracle result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnyObject"
+        "500":
+          $ref: "#/components/responses/ApiError"
+
+  /api/blockchain/tx/{tx_hash}:
+    get:
+      tags: [blockchain]
+      operationId: getTransactionStatus
+      summary: Transaction status by hash
+      parameters:
+        - name: tx_hash
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Transaction status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnyObject"
+        "500":
+          $ref: "#/components/responses/ApiError"
+
+  /api/v1/newsletter/subscribe:
+    post:
+      tags: [newsletter]
+      operationId: newsletterSubscribe
+      summary: Subscribe to newsletter
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewsletterSubscribeRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/NewsletterResponse"
+        "400":
+          $ref: "#/components/responses/NewsletterResponse"
+        "409":
+          $ref: "#/components/responses/NewsletterResponse"
+        "429":
+          $ref: "#/components/responses/NewsletterResponse"
+
+  /api/v1/newsletter/confirm:
+    get:
+      tags: [newsletter]
+      operationId: newsletterConfirm
+      summary: Confirm newsletter subscription via token
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          $ref: "#/components/responses/NewsletterResponse"
+        "400":
+          $ref: "#/components/responses/NewsletterResponse"
+        "404":
+          $ref: "#/components/responses/NewsletterResponse"
+
+  /api/v1/newsletter/unsubscribe:
+    delete:
+      tags: [newsletter]
+      operationId: newsletterUnsubscribe
+      summary: Unsubscribe from newsletter
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmailRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/NewsletterResponse"
+        "400":
+          $ref: "#/components/responses/NewsletterResponse"
+
+  /api/v1/newsletter/gdpr/export:
+    get:
+      tags: [newsletter]
+      operationId: newsletterGdprExport
+      summary: GDPR data export for a subscriber
+      parameters:
+        - name: email
+          in: query
+          required: true
+          schema:
+            type: string
+            format: email
+      responses:
+        "200":
+          description: Subscriber data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NewsletterExportResponse"
+        "400":
+          $ref: "#/components/responses/NewsletterResponse"
+        "404":
+          $ref: "#/components/responses/NewsletterResponse"
+
+  /api/v1/newsletter/gdpr/delete:
+    delete:
+      tags: [newsletter]
+      operationId: newsletterGdprDelete
+      summary: GDPR data deletion for a subscriber
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmailRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/NewsletterResponse"
+        "400":
+          $ref: "#/components/responses/NewsletterResponse"
+
+  /api/v1/email/preview/{template_name}:
+    get:
+      tags: [email]
+      operationId: emailPreview
+      summary: Preview a rendered email template (admin)
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: template_name
+          in: path
+          required: true
+          schema:
+            type: string
+            enum:
+              - newsletter_confirmation
+              - waitlist_confirmation
+              - contact_form_auto_response
+              - welcome_email
+      responses:
+        "200":
+          description: Rendered email preview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnyObject"
+        "500":
+          $ref: "#/components/responses/ApiError"
+
+  /api/v1/email/test:
+    post:
+      tags: [email]
+      operationId: emailSendTest
+      summary: Send a test email (admin)
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmailTestRequest"
+      responses:
+        "200":
+          description: Test email result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmailTestResponse"
+        "500":
+          $ref: "#/components/responses/ApiError"
+
+  /api/v1/email/analytics:
+    get:
+      tags: [email]
+      operationId: getEmailAnalytics
+      summary: Email analytics (admin)
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - name: template_name
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: days
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 365
+            default: 30
+      responses:
+        "200":
+          description: Analytics data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnyObject"
+        "500":
+          $ref: "#/components/responses/ApiError"
+
+  /api/v1/email/queue/stats:
+    get:
+      tags: [email]
+      operationId: getEmailQueueStats
+      summary: Email queue statistics (admin)
+      security:
+        - ApiKeyAuth: []
+      responses:
+        "200":
+          description: Queue stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnyObject"
+        "500":
+          $ref: "#/components/responses/ApiError"
+
+  /webhooks/sendgrid:
+    post:
+      tags: [webhooks]
+      operationId: sendgridWebhook
+      summary: SendGrid event webhook receiver
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                $ref: "#/components/schemas/AnyObject"
+      responses:
+        "200":
+          description: Webhook processed
+
+components:
+  parameters:
+    marketId:
+      name: market_id
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int64
+    page:
+      name: page
+      in: query
+      required: false
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+        default: 1
+    pageSize:
+      name: page_size
+      in: query
+      required: false
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+        maximum: 100
+        default: 20
+
+  schemas:
+    AnyObject:
+      type: object
+      additionalProperties: true
+
+    BlockchainHealth:
+      type: object
+      required: [network, rpc_url, latest_ledger, status, is_healthy, contract_reachable, checked_at_unix, data_source]
+      properties:
+        network:
+          type: string
+        rpc_url:
+          type: string
+        latest_ledger:
+          type: integer
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+          description: healthy = node + contract OK; degraded = node OK but contract unreadable; unhealthy = node unreachable
+        is_healthy:
+          type: boolean
+          description: true only when status is healthy (backwards-compatible)
+        contract_reachable:
+          type: boolean
+        checked_at_unix:
+          type: integer
+        data_source:
+          type: string
+          enum: [live, stale_cache, rpc_fallback]
+
+    ApiError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Machine-readable error code
+          example: INTERNAL_ERROR
+        message:
+          type: string
+          description: Human-readable error description
+
+    FeaturedMarketView:
+      type: object
+      required: [id, title, volume, ends_at, onchain_volume]
+      properties:
+        id:
+          type: integer
+          format: int64
+        title:
+          type: string
+        volume:
+          type: number
+          format: double
+        ends_at:
+          type: string
+          format: date-time
+        onchain_volume:
+          type: string
+        resolved_outcome:
+          type: integer
+          format: int32
+          nullable: true
+
+    InvalidationResult:
+      type: object
+      required: [invalidated_keys]
+      properties:
+        invalidated_keys:
+          type: integer
+
+    NewsletterSubscribeRequest:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+        source:
+          type: string
+          maxLength: 64
+
+    EmailRequest:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          format: email
+
+    NewsletterResponse:
+      type: object
+      required: [success, message]
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+
+    NewsletterExportResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+        data:
+          $ref: "#/components/schemas/AnyObject"
+
+    EmailTestRequest:
+      type: object
+      required: [recipient, template_name]
+      properties:
+        recipient:
+          type: string
+          format: email
+        template_name:
+          type: string
+
+    EmailTestResponse:
+      type: object
+      required: [success, message, message_id]
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        message_id:
+          type: string
+
+  responses:
+    ApiError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ApiError"
+    NewsletterResponse:
+      description: Newsletter operation result
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/NewsletterResponse"
+
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: Admin API key required for protected endpoints
