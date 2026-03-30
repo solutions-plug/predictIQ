@@ -162,32 +162,19 @@ fn is_disposable_email(email: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn client_ip(headers: &HeaderMap) -> String {
-    if let Some(forwarded_for) = headers.get("x-forwarded-for").and_then(|h| h.to_str().ok()) {
-        if let Some(ip) = forwarded_for.split(',').next() {
-            let ip = ip.trim();
-            if !ip.is_empty() {
-                return ip.to_string();
-            }
-        }
-    }
-
-    if let Some(real_ip) = headers.get("x-real-ip").and_then(|h| h.to_str().ok()) {
-        let ip = real_ip.trim();
-        if !ip.is_empty() {
-            return ip.to_string();
-        }
-    }
-
-    "unknown".to_string()
-}
+use crate::security::extract_client_ip;
 
 pub async fn newsletter_subscribe(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    connect_info: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>,
     Json(payload): Json<NewsletterSubscribeRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let ip = client_ip(&headers);
+    let ip = extract_client_ip(
+        &headers,
+        connect_info.as_ref(),
+        &state.config.trusted_proxy_cidrs,
+    );
     let allowed = state
         .newsletter_rate_limiter
         .allow(&ip, 5, Duration::from_secs(15 * 60))

@@ -97,19 +97,18 @@ impl Default for RateLimiter {
     }
 }
 
-/// Extract client IP from request with strict validation and precedence.
-///
-/// Forwarding headers (`X-Forwarded-For`, `X-Real-IP`) are **only** consulted
-/// when `trust_proxy` is `true`.  When `false` the socket address is used
-/// directly, preventing clients from spoofing their IP via those headers.
+/// Extract client IP with trusted proxy CIDR validation.
+/// Only trust x-forwarded-for/x-real-ip if the remote address is in a trusted proxy CIDR.
 pub fn extract_client_ip(
     headers: &HeaderMap,
     connect_info: Option<&ConnectInfo<std::net::SocketAddr>>,
-    trust_proxy: bool,
+    trusted_proxy_cidrs: &[ipnet::IpNet],
 ) -> String {
-    if trust_proxy {
+    let remote_ip = connect_info.map(|c| c.0.ip());
+    let proxy_trusted = remote_ip.map_or(false, |ip| trusted_proxy_cidrs.iter().any(|cidr| cidr.contains(&ip)));
+
+    if proxy_trusted {
         // 1. Check X-Forwarded-For header (from proxy/load balancer)
-        // We pick the first valid IP address in the list
         if let Some(forwarded_for) = headers.get("x-forwarded-for").and_then(|h| h.to_str().ok()) {
             for ip_str in forwarded_for.split(',') {
                 let ip_str = ip_str.trim();
@@ -118,7 +117,6 @@ pub fn extract_client_ip(
                 }
             }
         }
-
         // 2. Check X-Real-IP header
         if let Some(real_ip) = headers.get("x-real-ip").and_then(|h| h.to_str().ok()) {
             let ip_str = real_ip.trim();
@@ -127,12 +125,10 @@ pub fn extract_client_ip(
             }
         }
     }
-
     // 3. Fallback to connection info (Socket)
     if let Some(conn_info) = connect_info {
         return conn_info.0.ip().to_string();
     }
-
     "unknown".to_string()
 }
 

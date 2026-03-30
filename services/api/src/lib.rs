@@ -9,7 +9,7 @@ mod newsletter;
 mod rate_limit;
 pub mod security;
 mod shutdown;
-mod validation;
+pub mod validation;
 
 #[cfg(test)]
 mod shutdown_tests;
@@ -33,7 +33,7 @@ use security::{ApiKeyAuth, IpWhitelist, RateLimiter};
 use shutdown::ShutdownCoordinator;
 use tokio::net::TcpListener;
 use tower_http::{
-    cors::{Any, CorsLayer},
+    cors::{CorsLayer, Origin, Any},
     trace::TraceLayer,
 };
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -79,7 +79,7 @@ pub async fn run() -> anyhow::Result<()> {
 
     let rate_limiter = Arc::new(RateLimiter::new());
     let api_key_auth = Arc::new(ApiKeyAuth::new(config.api_keys.clone()));
-    let ip_whitelist = Arc::new(IpWhitelist::new(config.admin_whitelist_ips.clone()));
+    let _ip_whitelist = Arc::new(IpWhitelist::new(config.admin_whitelist_ips.clone()));
 
     // Setup shutdown coordination for 3 workers: rate limiter cleanup, blockchain (2), email queue
     let shutdown_coordinator = ShutdownCoordinator::new(4);
@@ -108,11 +108,11 @@ pub async fn run() -> anyhow::Result<()> {
 
     let state = Arc::new(AppState {
         config,
-        cache,
+        cache: cache.clone(),
         db,
         blockchain,
         metrics,
-        newsletter_rate_limiter: IpRateLimiter::default(),
+        newsletter_rate_limiter: IpRateLimiter::new(cache.clone()),
         email_service: email_service.clone(),
         email_queue: email_queue.clone(),
         webhook_handler: webhook_handler.clone(),
@@ -149,10 +149,43 @@ pub async fn run() -> anyhow::Result<()> {
         tracing::warn!("cache warming skipped: {err}");
     }
 
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    let cors = {
+        let origins = &state.config.cors_allowed_origins;
+        let methods = &state.config.cors_allowed_methods;
+        let headers = &state.config.cors_allowed_headers;
+        let allow_credentials = state.config.cors_allow_credentials;
+
+        let mut cors = CorsLayer::new();
+
+        // Allowed origins
+        if origins.len() == 1 && origins[0] == "*" {
+            cors = cors.allow_origin(Any);
+        } else {
+            let origins_vec: Vec<Origin> = origins.iter().filter_map(|o| Origin::try_from(o.as_str()).ok()).collect();
+            cors = cors.allow_origin(origins_vec);
+        }
+
+        // Allowed methods
+        if methods.len() == 1 && methods[0] == "*" {
+            cors = cors.allow_methods(Any);
+        } else {
+            cors = cors.allow_methods(methods.clone());
+        }
+
+        // Allowed headers
+        if headers.len() == 1 && headers[0] == "*" {
+            cors = cors.allow_headers(Any);
+        } else {
+            cors = cors.allow_headers(headers.clone());
+        }
+
+        // Allow credentials
+        if allow_credentials {
+            cors = cors.allow_credentials(true);
+        }
+
+        cors
+    };
 
     let public_routes = Router::new()
         .route("/health", get(handlers::health))
@@ -234,16 +267,8 @@ pub async fn run() -> anyhow::Result<()> {
             get(handlers::email_queue_stats),
         )
         .layer(middleware::from_fn_with_state(
-            (ip_whitelist.clone(), TrustProxy(config.trust_proxy)),
-            security::ip_whitelist_middleware,
-        ))
-        .layer(middleware::from_fn_with_state(
-            api_key_auth.clone(),
+            api_key_auth,
             security::api_key_middleware,
-        ))
-        .layer(middleware::from_fn_with_state(
-            (rate_limiter.clone(), TrustProxy(config.trust_proxy)),
-            rate_limit::admin_rate_limit_middleware,
         ))
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());
@@ -263,6 +288,13 @@ pub async fn run() -> anyhow::Result<()> {
         .merge(newsletter_routes)
         .merge(admin_routes)
         .merge(webhook_routes)
+        .layer(middleware::from_fn(validation::request_validation_middleware))
+        .layer(middleware::from_fn(
+            validation::content_type_validation_middleware,
+        ))
+        .layer(middleware::from_fn(
+            validation::request_size_validation_middleware,
+        ))
         .layer(cors);
 
     let listener = TcpListener::bind(bind_addr).await?;
