@@ -119,6 +119,79 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
+    // #281: trust-boundary tests for spoofed forwarding headers
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn trust_proxy_disabled_xff_is_ignored() {
+        use axum::extract::ConnectInfo;
+        use axum::http::HeaderMap;
+        use predictiq_api::security::extract_client_ip;
+        use std::net::SocketAddr;
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "9.9.9.9".parse().unwrap());
+        let ci = ConnectInfo("1.2.3.4:80".parse::<SocketAddr>().unwrap());
+
+        assert_eq!(
+            extract_client_ip(&headers, Some(&ci), false),
+            "1.2.3.4",
+            "X-Forwarded-For must be ignored when trust_proxy is false"
+        );
+    }
+
+    #[test]
+    fn trust_proxy_disabled_x_real_ip_is_ignored() {
+        use axum::extract::ConnectInfo;
+        use axum::http::HeaderMap;
+        use predictiq_api::security::extract_client_ip;
+        use std::net::SocketAddr;
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-real-ip", "9.9.9.9".parse().unwrap());
+        let ci = ConnectInfo("1.2.3.4:80".parse::<SocketAddr>().unwrap());
+
+        assert_eq!(
+            extract_client_ip(&headers, Some(&ci), false),
+            "1.2.3.4",
+            "X-Real-IP must be ignored when trust_proxy is false"
+        );
+    }
+
+    #[test]
+    fn trust_proxy_enabled_xff_is_used() {
+        use axum::extract::ConnectInfo;
+        use axum::http::HeaderMap;
+        use predictiq_api::security::extract_client_ip;
+        use std::net::SocketAddr;
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "5.6.7.8".parse().unwrap());
+        let ci = ConnectInfo("1.2.3.4:80".parse::<SocketAddr>().unwrap());
+
+        assert_eq!(
+            extract_client_ip(&headers, Some(&ci), true),
+            "5.6.7.8",
+            "X-Forwarded-For must be used when trust_proxy is true"
+        );
+    }
+
+    #[test]
+    fn trust_proxy_disabled_no_connect_info_returns_unknown() {
+        use axum::http::HeaderMap;
+        use predictiq_api::security::extract_client_ip;
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "9.9.9.9".parse().unwrap());
+
+        assert_eq!(
+            extract_client_ip(&headers, None, false),
+            "unknown",
+            "Must return 'unknown' when trust_proxy is false and no socket info"
+        );
+    }
+
+    // -------------------------------------------------------------------------
     // #290: generate_signature — fallible API + panic-safety tests
     // -------------------------------------------------------------------------
 

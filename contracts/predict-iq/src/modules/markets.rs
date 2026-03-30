@@ -386,6 +386,36 @@ pub fn claim_creation_deposit(
     Ok(())
 }
 
+/// Issue #182: Set the payout mode for a market.
+///
+/// The mode may only be changed while the market is still `Active`.
+/// Once the resolution process begins (`PendingResolution`, `Disputed`, or
+/// `Resolved`) the payout mode is locked to guarantee stable gas and
+/// distribution-path calculations throughout finalization.
+pub fn set_payout_mode(
+    e: &Env,
+    caller: Address,
+    market_id: u64,
+    mode: PayoutMode,
+) -> Result<(), ErrorCode> {
+    caller.require_auth();
+
+    let mut market = get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
+
+    if caller != market.creator {
+        return Err(ErrorCode::NotAuthorized);
+    }
+
+    if market.status != MarketStatus::Active {
+        return Err(ErrorCode::PayoutModeLocked);
+    }
+
+    market.payout_mode = mode;
+    update_market(e, market);
+
+    Ok(())
+}
+
 pub fn bump_market_ttl(e: &Env, market_id: u64) {
     e.storage().persistent().extend_ttl(
         &DataKey::Market(market_id),

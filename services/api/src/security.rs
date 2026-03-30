@@ -6,7 +6,6 @@ use std::{
 };
 
 use axum::{
-    body::Body,
     extract::{ConnectInfo, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     middleware::Next,
@@ -16,7 +15,10 @@ use axum::{
 use serde::Serialize;
 use tokio::sync::RwLock;
 
-/// Rate limiter configuration
+/// Newtype wrapper so `trust_proxy: bool` can be injected as Axum `State`.
+#[derive(Clone, Copy, Debug)]
+pub struct TrustProxy(pub bool);
+
 #[derive(Debug, Clone)]
 pub struct RateLimitConfig {
     pub requests: u32,
@@ -95,27 +97,34 @@ impl Default for RateLimiter {
     }
 }
 
-/// Extract client IP from request with strict validation and precedence
+/// Extract client IP from request with strict validation and precedence.
+///
+/// Forwarding headers (`X-Forwarded-For`, `X-Real-IP`) are **only** consulted
+/// when `trust_proxy` is `true`.  When `false` the socket address is used
+/// directly, preventing clients from spoofing their IP via those headers.
 pub fn extract_client_ip(
     headers: &HeaderMap,
     connect_info: Option<&ConnectInfo<std::net::SocketAddr>>,
+    trust_proxy: bool,
 ) -> String {
-    // 1. Check X-Forwarded-For header (from proxy/load balancer)
-    // We pick the first valid IP address in the list
-    if let Some(forwarded_for) = headers.get("x-forwarded-for").and_then(|h| h.to_str().ok()) {
-        for ip_str in forwarded_for.split(',') {
-            let ip_str = ip_str.trim();
+    if trust_proxy {
+        // 1. Check X-Forwarded-For header (from proxy/load balancer)
+        // We pick the first valid IP address in the list
+        if let Some(forwarded_for) = headers.get("x-forwarded-for").and_then(|h| h.to_str().ok()) {
+            for ip_str in forwarded_for.split(',') {
+                let ip_str = ip_str.trim();
+                if !ip_str.is_empty() && ip_str.parse::<IpAddr>().is_ok() {
+                    return ip_str.to_string();
+                }
+            }
+        }
+
+        // 2. Check X-Real-IP header
+        if let Some(real_ip) = headers.get("x-real-ip").and_then(|h| h.to_str().ok()) {
+            let ip_str = real_ip.trim();
             if !ip_str.is_empty() && ip_str.parse::<IpAddr>().is_ok() {
                 return ip_str.to_string();
             }
-        }
-    }
-
-    // 2. Check X-Real-IP header
-    if let Some(real_ip) = headers.get("x-real-ip").and_then(|h| h.to_str().ok()) {
-        let ip_str = real_ip.trim();
-        if !ip_str.is_empty() && ip_str.parse::<IpAddr>().is_ok() {
-            return ip_str.to_string();
         }
     }
 
@@ -129,13 +138,13 @@ pub fn extract_client_ip(
 
 /// Global rate limiting middleware (100 req/min per IP)
 pub async fn global_rate_limit_middleware(
-    State(limiter): State<Arc<RateLimiter>>,
+    State((limiter, TrustProxy(trust_proxy))): State<(Arc<RateLimiter>, TrustProxy)>,
     headers: HeaderMap,
     connect_info: Option<ConnectInfo<std::net::SocketAddr>>,
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    let ip = extract_client_ip(&headers, connect_info.as_ref());
+    let ip = extract_client_ip(&headers, connect_info.as_ref(), trust_proxy);
     let config = RateLimitConfig::new(100, Duration::from_secs(60));
 
     if !limiter.check(&format!("global:{}", ip), &config).await {
@@ -319,13 +328,13 @@ impl IpWhitelist {
 
 /// IP whitelist middleware
 pub async fn ip_whitelist_middleware(
-    State(whitelist): State<Arc<IpWhitelist>>,
+    State((whitelist, TrustProxy(trust_proxy))): State<(Arc<IpWhitelist>, TrustProxy)>,
     headers: HeaderMap,
     connect_info: Option<ConnectInfo<std::net::SocketAddr>>,
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    let ip = extract_client_ip(&headers, connect_info.as_ref());
+    let ip = extract_client_ip(&headers, connect_info.as_ref(), trust_proxy);
 
     if !whitelist.is_allowed(&ip) {
         return Err(StatusCode::FORBIDDEN);
@@ -438,44 +447,56 @@ mod tests {
     use axum::http::HeaderMap;
     use std::net::SocketAddr;
 
+    // ── helpers ──────────────────────────────────────────────────────────────
+
+    fn addr(s: &str) -> ConnectInfo<SocketAddr> {
+        ConnectInfo(s.parse().unwrap())
+    }
+
+    fn xff(val: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-for", val.parse().unwrap());
+        h
+    }
+
+    fn xri(val: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert("x-real-ip", val.parse().unwrap());
+        h
+    }
+
+    // ── existing behaviour (trust_proxy = true) ───────────────────────────
+
     #[test]
     fn test_extract_client_ip_precedence() {
         let mut headers = HeaderMap::new();
         headers.insert("x-forwarded-for", "1.1.1.1, 2.2.2.2".parse().unwrap());
         headers.insert("x-real-ip", "3.3.3.3".parse().unwrap());
-        let addr: SocketAddr = "4.4.4.4:8080".parse().unwrap();
-        let connect_info = ConnectInfo(addr);
+        let ci = addr("4.4.4.4:8080");
 
-        // X-Forwarded-For has absolute precedence
-        assert_eq!(extract_client_ip(&headers, Some(&connect_info)), "1.1.1.1");
+        assert_eq!(extract_client_ip(&headers, Some(&ci), true), "1.1.1.1");
 
-        // X-Real-IP is next if X-Forwarded-For is missing
         headers.remove("x-forwarded-for");
-        assert_eq!(extract_client_ip(&headers, Some(&connect_info)), "3.3.3.3");
+        assert_eq!(extract_client_ip(&headers, Some(&ci), true), "3.3.3.3");
 
-        // Socket info is last
         headers.remove("x-real-ip");
-        assert_eq!(extract_client_ip(&headers, Some(&connect_info)), "4.4.4.4");
+        assert_eq!(extract_client_ip(&headers, Some(&ci), true), "4.4.4.4");
     }
 
     #[test]
     fn test_extract_client_ip_validation() {
         let mut headers = HeaderMap::new();
-        let addr: SocketAddr = "4.4.4.4:8080".parse().unwrap();
-        let connect_info = ConnectInfo(addr);
+        let ci = addr("4.4.4.4:8080");
 
-        // Malformed X-Forwarded-For should be skipped
         headers.insert("x-forwarded-for", "malformed, 1.1.1.1".parse().unwrap());
-        assert_eq!(extract_client_ip(&headers, Some(&connect_info)), "1.1.1.1");
+        assert_eq!(extract_client_ip(&headers, Some(&ci), true), "1.1.1.1");
 
-        // If all X-Forwarded-For are malformed, move to X-Real-IP
         headers.insert("x-forwarded-for", "not-an-ip, also-bad".parse().unwrap());
         headers.insert("x-real-ip", "2.2.2.2".parse().unwrap());
-        assert_eq!(extract_client_ip(&headers, Some(&connect_info)), "2.2.2.2");
+        assert_eq!(extract_client_ip(&headers, Some(&ci), true), "2.2.2.2");
 
-        // If X-Real-IP is also malformed, fallback to socket
         headers.insert("x-real-ip", "invalid-ip".parse().unwrap());
-        assert_eq!(extract_client_ip(&headers, Some(&connect_info)), "4.4.4.4");
+        assert_eq!(extract_client_ip(&headers, Some(&ci), true), "4.4.4.4");
     }
 
     #[test]
@@ -485,14 +506,47 @@ mod tests {
         // No headers, no connect info
         assert_eq!(extract_client_ip(&headers, None), "unknown");
 
-        // Only connect info
-        let addr: SocketAddr = "5.5.5.5:80".parse().unwrap();
-        let connect_info = ConnectInfo(addr);
-        assert_eq!(extract_client_ip(&headers, Some(&connect_info)), "5.5.5.5");
+        let ci = addr("5.5.5.5:80");
+        assert_eq!(extract_client_ip(&headers, Some(&ci), true), "5.5.5.5");
     }
 
     #[test]
     fn test_extract_client_ip_ipv6() {
+        let headers = xff("2001:db8::1, 192.168.1.1");
+        assert_eq!(extract_client_ip(&headers, None, true), "2001:db8::1");
+    }
+
+    // ── trust-boundary tests (issue #281) ────────────────────────────────
+
+    /// Without a trusted proxy, X-Forwarded-For MUST be ignored and the real
+    /// socket address used instead.
+    #[test]
+    fn spoofed_xff_ignored_when_trust_proxy_disabled() {
+        let headers = xff("9.9.9.9");
+        let ci = addr("1.2.3.4:1234");
+        assert_eq!(
+            extract_client_ip(&headers, Some(&ci), false),
+            "1.2.3.4",
+            "X-Forwarded-For must not be trusted without proxy config"
+        );
+    }
+
+    /// Without a trusted proxy, X-Real-IP MUST be ignored.
+    #[test]
+    fn spoofed_x_real_ip_ignored_when_trust_proxy_disabled() {
+        let headers = xri("9.9.9.9");
+        let ci = addr("1.2.3.4:1234");
+        assert_eq!(
+            extract_client_ip(&headers, Some(&ci), false),
+            "1.2.3.4",
+            "X-Real-IP must not be trusted without proxy config"
+        );
+    }
+
+    /// Both spoofed headers present — socket address still wins when proxy
+    /// trust is disabled.
+    #[test]
+    fn both_spoofed_headers_ignored_when_trust_proxy_disabled() {
         let mut headers = HeaderMap::new();
         headers.insert(
             "x-forwarded-for",

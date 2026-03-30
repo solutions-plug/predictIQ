@@ -1,8 +1,8 @@
-//! Issue #252: Tests for payout mode immutability after market creation.
+//! Issue #252 / #182: Tests for payout mode immutability after market creation.
 //!
-//! `payout_mode` is documented as immutable after creation (disputes.rs line 44).
-//! These tests verify that resolve, dispute, and admin-fallback flows cannot
-//! silently mutate the mode set at creation time.
+//! `payout_mode` is fixed at creation time and must not be mutated by any
+//! resolution path (oracle, dispute, admin-fallback) or while the market is
+//! in PendingResolution or Disputed state (issue #182).
 
 #![cfg(test)]
 
@@ -42,7 +42,7 @@ fn create_two_outcome_market(
     let oracle_config = OracleConfig {
         oracle_address: Address::generate(e),
         feed_id: String::from_str(e, "BTC/USD"),
-        min_responses: 1,
+        min_responses: Some(1),
         max_staleness_seconds: 3600,
         max_confidence_bps: 200,
     };
@@ -53,7 +53,10 @@ fn create_two_outcome_market(
         &1000,
         &2000,
         &oracle_config,
+        &crate::types::MarketTier::Basic,
         token_address,
+        &0u64,
+        &0u32,
     )
 }
 
@@ -237,3 +240,220 @@ fn test_resolve_market_does_not_mutate_payout_mode() {
     );
 }
 
+
+// ── issue #182: payout_mode locked once status leaves Active ─────────────────
+
+/// Helper: force market into a given status directly in storage.
+fn force_status(e: &Env, contract_id: &Address, market_id: u64, status: MarketStatus) {
+    e.as_contract(contract_id, || {
+        let mut market: Market = e
+            .storage()
+            .persistent()
+            .get(&MarketDataKey::Market(market_id))
+            .unwrap();
+        market.status = status.clone();
+        if status == MarketStatus::PendingResolution {
+            market.pending_resolution_timestamp = Some(e.ledger().timestamp());
+        }
+        if status == MarketStatus::Disputed {
+            market.dispute_timestamp = Some(e.ledger().timestamp());
+        }
+        e.storage()
+            .persistent()
+            .set(&MarketDataKey::Market(market_id), &market);
+    });
+}
+
+/// resolve_market must NOT change payout_mode when market is PendingResolution.
+#[test]
+fn test_resolve_market_does_not_change_payout_mode_during_pending_resolution() {
+    let e = Env::default();
+    let (client, contract_id, _, token_address) = setup(&e);
+    let market_id = create_two_outcome_market(&e, &client, &token_address);
+
+    let mode_before = get_payout_mode(&e, &contract_id, market_id);
+
+    force_status(&e, &contract_id, market_id, MarketStatus::PendingResolution);
+
+    e.as_contract(&contract_id, || {
+        crate::modules::disputes::resolve_market(&e, market_id, 0).unwrap();
+    });
+
+    assert_eq!(
+        mode_before,
+        get_payout_mode(&e, &contract_id, market_id),
+        "payout_mode must not change during PendingResolution (issue #182)"
+    );
+}
+
+/// resolve_market must NOT change payout_mode when market is Disputed.
+#[test]
+fn test_resolve_market_does_not_change_payout_mode_during_disputed() {
+    let e = Env::default();
+    let (client, contract_id, _, token_address) = setup(&e);
+    let market_id = create_two_outcome_market(&e, &client, &token_address);
+
+    let mode_before = get_payout_mode(&e, &contract_id, market_id);
+
+    force_status(&e, &contract_id, market_id, MarketStatus::Disputed);
+
+    e.as_contract(&contract_id, || {
+        crate::modules::disputes::resolve_market(&e, market_id, 0).unwrap();
+    });
+
+    assert_eq!(
+        mode_before,
+        get_payout_mode(&e, &contract_id, market_id),
+        "payout_mode must not change during Disputed phase (issue #182)"
+    );
+}
+
+/// payout_mode set at creation survives the full lifecycle:
+/// Active → PendingResolution → Disputed → Resolved.
+#[test]
+fn test_payout_mode_stable_across_full_lifecycle() {
+    let e = Env::default();
+    let (client, contract_id, _, token_address) = setup(&e);
+    let market_id = create_two_outcome_market(&e, &client, &token_address);
+
+    let mode_at_creation = get_payout_mode(&e, &contract_id, market_id);
+
+    force_status(&e, &contract_id, market_id, MarketStatus::PendingResolution);
+    assert_eq!(mode_at_creation, get_payout_mode(&e, &contract_id, market_id));
+
+    force_status(&e, &contract_id, market_id, MarketStatus::Disputed);
+    assert_eq!(mode_at_creation, get_payout_mode(&e, &contract_id, market_id));
+
+    e.as_contract(&contract_id, || {
+        crate::modules::disputes::resolve_market(&e, market_id, 0).unwrap();
+    });
+    assert_eq!(
+        mode_at_creation,
+        get_payout_mode(&e, &contract_id, market_id),
+        "payout_mode must be stable across the full market lifecycle (issue #182)"
+    );
+}
+
+// ── issue #182: set_payout_mode API enforcement ───────────────────────────────
+
+/// Creator can change payout_mode while the market is Active.
+#[test]
+fn test_set_payout_mode_allowed_when_active() {
+    let e = Env::default();
+    let (client, contract_id, _, token_address) = setup(&e);
+    let market_id = create_two_outcome_market(&e, &client, &token_address);
+
+    let creator = e.as_contract(&contract_id, || {
+        let market: Market = e
+            .storage()
+            .persistent()
+            .get(&MarketDataKey::Market(market_id))
+            .unwrap();
+        market.creator
+    });
+
+    // Default is Pull — switch to Push while Active
+    client.set_payout_mode(&creator, &market_id, &PayoutMode::Push);
+    assert_eq!(get_payout_mode(&e, &contract_id, market_id), PayoutMode::Push);
+
+    // Switch back to Pull
+    client.set_payout_mode(&creator, &market_id, &PayoutMode::Pull);
+    assert_eq!(get_payout_mode(&e, &contract_id, market_id), PayoutMode::Pull);
+}
+
+/// set_payout_mode must be rejected once the market enters PendingResolution.
+#[test]
+fn test_set_payout_mode_rejected_when_pending_resolution() {
+    let e = Env::default();
+    let (client, contract_id, _, token_address) = setup(&e);
+    let market_id = create_two_outcome_market(&e, &client, &token_address);
+
+    let creator = e.as_contract(&contract_id, || {
+        let market: Market = e
+            .storage()
+            .persistent()
+            .get(&MarketDataKey::Market(market_id))
+            .unwrap();
+        market.creator
+    });
+
+    force_status(&e, &contract_id, market_id, MarketStatus::PendingResolution);
+
+    let result = client.try_set_payout_mode(&creator, &market_id, &PayoutMode::Push);
+    assert_eq!(
+        result,
+        Err(Ok(crate::errors::ErrorCode::PayoutModeLocked)),
+        "set_payout_mode must return PayoutModeLocked during PendingResolution (issue #182)"
+    );
+}
+
+/// set_payout_mode must be rejected once the market enters Disputed.
+#[test]
+fn test_set_payout_mode_rejected_when_disputed() {
+    let e = Env::default();
+    let (client, contract_id, _, token_address) = setup(&e);
+    let market_id = create_two_outcome_market(&e, &client, &token_address);
+
+    let creator = e.as_contract(&contract_id, || {
+        let market: Market = e
+            .storage()
+            .persistent()
+            .get(&MarketDataKey::Market(market_id))
+            .unwrap();
+        market.creator
+    });
+
+    force_status(&e, &contract_id, market_id, MarketStatus::Disputed);
+
+    let result = client.try_set_payout_mode(&creator, &market_id, &PayoutMode::Push);
+    assert_eq!(
+        result,
+        Err(Ok(crate::errors::ErrorCode::PayoutModeLocked)),
+        "set_payout_mode must return PayoutModeLocked during Disputed phase (issue #182)"
+    );
+}
+
+/// set_payout_mode must be rejected once the market is Resolved.
+#[test]
+fn test_set_payout_mode_rejected_when_resolved() {
+    let e = Env::default();
+    let (client, contract_id, _, token_address) = setup(&e);
+    let market_id = create_two_outcome_market(&e, &client, &token_address);
+
+    let creator = e.as_contract(&contract_id, || {
+        let market: Market = e
+            .storage()
+            .persistent()
+            .get(&MarketDataKey::Market(market_id))
+            .unwrap();
+        market.creator
+    });
+
+    force_status(&e, &contract_id, market_id, MarketStatus::Disputed);
+    e.as_contract(&contract_id, || {
+        crate::modules::disputes::resolve_market(&e, market_id, 0).unwrap();
+    });
+
+    let result = client.try_set_payout_mode(&creator, &market_id, &PayoutMode::Push);
+    assert_eq!(
+        result,
+        Err(Ok(crate::errors::ErrorCode::PayoutModeLocked)),
+        "set_payout_mode must return PayoutModeLocked when market is Resolved (issue #182)"
+    );
+}
+
+/// Non-creator must be rejected regardless of market status.
+#[test]
+fn test_set_payout_mode_rejected_for_non_creator() {
+    let e = Env::default();
+    let (client, contract_id, _, token_address) = setup(&e);
+    let market_id = create_two_outcome_market(&e, &client, &token_address);
+
+    let stranger = Address::generate(&e);
+    let result = client.try_set_payout_mode(&stranger, &market_id, &PayoutMode::Push);
+    assert_eq!(
+        result,
+        Err(Ok(crate::errors::ErrorCode::NotAuthorized)),
+        "set_payout_mode must reject non-creator callers"
+    );
+}

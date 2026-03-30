@@ -1,7 +1,7 @@
 use crate::errors::ErrorCode;
 use crate::modules::{markets, resolution};
-use crate::types::{ConfigKey, MarketStatus, PayoutMode};
-use soroban_sdk::{contracttype, Address, Env};
+use crate::types::{ConfigKey, MarketStatus};
+use soroban_sdk::{Address, Env};
 
 #[contracttype]
 #[derive(Clone)]
@@ -51,18 +51,9 @@ pub fn resolve_market(e: &Env, market_id: u64, winning_outcome: u32) -> Result<(
         return Err(ErrorCode::InvalidOutcome);
     }
 
-    // Issue #24: read the precise per-outcome winner counter maintained by place_bet.
-    // This replaces the unsafe tally/100 heuristic that underestimated winners for
-    // micro-bet markets, risking gas-limit overflows in Push resolution.
-    let actual_winners = markets::count_bets_for_outcome(e, market_id, winning_outcome);
-    let max_push_winners = get_max_push_payout_winners(e);
-
-    // Automatically select payout mode based on exact winner count
-    if actual_winners > max_push_winners {
-        market.payout_mode = PayoutMode::Pull;
-    } else {
-        market.payout_mode = PayoutMode::Push;
-    }
+    // payout_mode is intentionally NOT mutated here — it is fixed at creation
+    // time and must remain stable throughout PendingResolution and Disputed
+    // phases so that gas and distribution path calculations are consistent.
 
     market.status = MarketStatus::Resolved;
     market.winning_outcome = Some(winning_outcome);

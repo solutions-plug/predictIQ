@@ -5,6 +5,8 @@ pub mod errors;
 mod modules;
 #[cfg(test)]
 mod test_tie_handling;
+#[cfg(test)]
+mod test_payout_mode_immutability;
 pub mod types;
 
 pub use errors::ErrorCode;
@@ -382,6 +384,18 @@ impl PredictIQ {
     /// Issue #47: Permissionless prune after grace period.
     pub fn prune_market(e: Env, market_id: u64) -> Result<(), ErrorCode> {
         crate::modules::markets::prune_market(&e, market_id)
+    }
+
+    /// Issue #182: Set the payout mode for a market.
+    /// Only allowed while the market is Active. Returns PayoutModeLocked if
+    /// the resolution process has already started.
+    pub fn set_payout_mode(
+        e: Env,
+        caller: Address,
+        market_id: u64,
+        mode: crate::types::PayoutMode,
+    ) -> Result<(), ErrorCode> {
+        crate::modules::markets::set_payout_mode(&e, caller, market_id, mode)
     }
 
     pub fn get_minimum_bet_amount(e: Env) -> i128 {

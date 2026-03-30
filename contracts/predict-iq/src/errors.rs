@@ -92,4 +92,9 @@ pub enum ErrorCode {
     // --- Configuration validation ---
     /// Emitted when an invalid threshold is provided (Issue #170)
     InvalidThreshold = 52,
+
+    // --- Payout mode ---
+    /// Issue #182: payout_mode cannot be changed once the resolution process
+    /// has started (i.e. status is no longer Active).
+    PayoutModeLocked = 53,
 }
