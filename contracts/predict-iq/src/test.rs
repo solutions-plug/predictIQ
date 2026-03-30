@@ -25,6 +25,52 @@ fn setup_test_env() -> (Env, Address, soroban_sdk::Address, PredictIQClient<'sta
     (e, admin, contract_id, client)
 }
 
+#[test]
+fn test_config_setters_reject_non_admin() {
+    let (e, admin, _contract_id, client) = setup_test_env();
+    let non_admin = Address::generate(&e);
+    let guardian = Address::generate(&e);
+    let token = Address::generate(&e);
+
+    // Remove admin auth mocking for this test
+    e.remove_all_auths();
+
+    // Helper to call and check NotAuthorized
+    macro_rules! expect_not_authorized {
+        ($expr:expr) => {
+            let res = $expr;
+            assert_eq!(res, Err(Ok(ErrorCode::NotAuthorized)));
+        };
+    }
+
+    // set_max_push_payout_winners
+    expect_not_authorized!(client.try_set_max_push_payout_winners(&5));
+
+    // set_creation_deposit
+    expect_not_authorized!(client.try_set_creation_deposit(&100));
+
+    // set_base_fee
+    expect_not_authorized!(client.try_set_base_fee(&100));
+
+    // set_fee_admin
+    expect_not_authorized!(client.try_set_fee_admin(&non_admin));
+
+    // set_dispute_window
+    expect_not_authorized!(client.try_set_dispute_window(&100_000));
+
+    // set_minimum_bet_amount
+    expect_not_authorized!(client.try_set_minimum_bet_amount(&1000));
+
+    // set_creator_reputation
+    expect_not_authorized!(client.try_set_creator_reputation(&non_admin, &types::CreatorReputation::Pro));
+
+    // set_guardian
+    expect_not_authorized!(client.try_set_guardian(&guardian));
+
+    // set_governance_token
+    expect_not_authorized!(client.try_set_governance_token(&token));
+}
+
 fn upgrade_wasm_hash(e: &Env) -> BytesN<32> {
     BytesN::from_array(e, &[7; 32])
 }

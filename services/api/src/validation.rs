@@ -10,6 +10,9 @@ use serde::Serialize;
 
 use crate::security::sanitize;
 
+const DEFAULT_REQUEST_BODY_MAX_BYTES: usize = 1_048_576;
+const REQUEST_BODY_MAX_BYTES_ENV: &str = "REQUEST_BODY_MAX_BYTES";
+
 #[derive(Serialize)]
 pub struct ValidationError {
     pub error: String,
@@ -20,6 +23,16 @@ impl IntoResponse for ValidationError {
     fn into_response(self) -> Response {
         (StatusCode::BAD_REQUEST, Json(self)).into_response()
     }
+}
+
+pub fn parse_request_body_max_bytes(raw: Option<&str>) -> usize {
+    raw.and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|bytes| *bytes > 0)
+        .unwrap_or(DEFAULT_REQUEST_BODY_MAX_BYTES)
+}
+
+pub fn request_body_max_bytes_from_env() -> usize {
+    parse_request_body_max_bytes(std::env::var(REQUEST_BODY_MAX_BYTES_ENV).ok().as_deref())
 }
 
 /// Request validation middleware
@@ -102,13 +115,13 @@ pub async fn request_size_validation_middleware(
     next: Next,
 ) -> Result<Response, StatusCode> {
     let headers = request.headers();
+    let max_bytes = request_body_max_bytes_from_env();
 
     // Check Content-Length header
     if let Some(content_length) = headers.get("content-length") {
         if let Ok(length_str) = content_length.to_str() {
             if let Ok(length) = length_str.parse::<usize>() {
-                // Limit request body to 1MB
-                if length > 1_048_576 {
+                if length > max_bytes {
                     return Err(StatusCode::PAYLOAD_TOO_LARGE);
                 }
             }

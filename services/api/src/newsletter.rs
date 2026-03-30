@@ -1,8 +1,5 @@
-use std::{
-    collections::HashMap,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::time::Duration;
+use crate::cache::RedisCache;
 
 use anyhow::Context;
 use serde_json::json;
@@ -10,24 +7,37 @@ use tokio::sync::Mutex;
 
 use crate::config::Config;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct IpRateLimiter {
-    entries: Arc<Mutex<HashMap<String, Vec<Instant>>>>,
+    pub cache: RedisCache,
 }
 
 impl IpRateLimiter {
+    pub fn new(cache: RedisCache) -> Self {
+        Self { cache }
+    }
+
+    /// Returns true if allowed, false if rate limited.
     pub async fn allow(&self, key: &str, max_requests: usize, window: Duration) -> bool {
-        let now = Instant::now();
-        let mut map = self.entries.lock().await;
-        let entry = map.entry(key.to_string()).or_default();
-
-        entry.retain(|instant| now.duration_since(*instant) <= window);
-        if entry.len() >= max_requests {
-            return false;
+        let redis_key = format!("newsletter:ratelimit:{}", key);
+        let mut conn = self.cache.manager.clone();
+        let script = r#"
+            local current = redis.call('INCR', KEYS[1])
+            if tonumber(current) == 1 then
+                redis.call('EXPIRE', KEYS[1], ARGV[1])
+            end
+            return current
+        "#;
+        let ttl_secs = window.as_secs() as usize;
+        let result: Result<u64, _> = redis::Script::new(script)
+            .key(&redis_key)
+            .arg(ttl_secs)
+            .invoke_async(&mut conn)
+            .await;
+        match result {
+            Ok(count) => count as usize <= max_requests,
+            Err(_) => true, // fail open if Redis is unavailable
         }
-
-        entry.push(now);
-        true
     }
 }
 

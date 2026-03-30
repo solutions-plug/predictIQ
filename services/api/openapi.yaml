@@ -108,14 +108,29 @@ paths:
     get:
       tags: [blockchain]
       operationId: getBlockchainHealth
-      summary: Blockchain node health
+      summary: Blockchain node and contract health
+      description: |
+        Returns the health of the blockchain node and contract.
+
+        **`status` values:**
+        - `healthy` – node reachable and contract readable. HTTP 200.
+        - `degraded` – node reachable but contract read failed. HTTP 503.
+        - `unhealthy` – node unreachable. HTTP 503.
+
+        `is_healthy` is `true` only when `status == "healthy"` (backwards-compatible field).
       responses:
         "200":
-          description: Health data
+          description: Node and contract are healthy
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AnyObject"
+                $ref: "#/components/schemas/BlockchainHealth"
+        "503":
+          description: Degraded (node up, contract unreachable) or unhealthy (node down)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BlockchainHealth"
         "500":
           $ref: "#/components/responses/ApiError"
 
@@ -460,6 +475,31 @@ components:
     AnyObject:
       type: object
       additionalProperties: true
+
+    BlockchainHealth:
+      type: object
+      required: [network, rpc_url, latest_ledger, status, is_healthy, contract_reachable, checked_at_unix, data_source]
+      properties:
+        network:
+          type: string
+        rpc_url:
+          type: string
+        latest_ledger:
+          type: integer
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+          description: healthy = node + contract OK; degraded = node OK but contract unreadable; unhealthy = node unreachable
+        is_healthy:
+          type: boolean
+          description: true only when status is healthy (backwards-compatible)
+        contract_reachable:
+          type: boolean
+        checked_at_unix:
+          type: integer
+        data_source:
+          type: string
+          enum: [live, stale_cache, rpc_fallback]
 
     ApiError:
       type: object
