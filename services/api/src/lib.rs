@@ -29,7 +29,7 @@ use db::Database;
 use email::{queue::EmailQueue, service::EmailService, webhook::WebhookHandler};
 use metrics::Metrics;
 use newsletter::IpRateLimiter;
-use security::{ApiKeyAuth, IpWhitelist, RateLimiter};
+use security::{ApiKeyAuth, IpWhitelist, RateLimiter, TrustProxy};
 use shutdown::ShutdownCoordinator;
 use tokio::net::TcpListener;
 use tower_http::{

@@ -464,7 +464,30 @@ mod tests {
         h
     }
 
-    // ── existing behaviour (trust_proxy = true) ───────────────────────────
+    // ── security headers middleware ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn security_headers_middleware_sets_required_headers() {
+        use axum::{body::Body, http::Request, middleware, routing::get, Router};
+        use tower::ServiceExt;
+
+        let app = Router::new()
+            .route("/", get(|| async { "ok" }))
+            .layer(middleware::from_fn(super::security_headers_middleware));
+
+        let response = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        let headers = response.headers();
+        assert!(headers.contains_key("content-security-policy"));
+        assert!(headers.contains_key("strict-transport-security"));
+        assert!(headers.contains_key("x-frame-options"));
+        assert!(headers.contains_key("referrer-policy"));
+        assert_eq!(headers["x-frame-options"], "DENY");
+        assert_eq!(headers["x-content-type-options"], "nosniff");
+    }
 
     #[test]
     fn test_extract_client_ip_precedence() {
