@@ -407,6 +407,8 @@ impl BlockchainClient {
         Ok(value)
     }
 
+    /// Efficiently fetches a page of user bets without full materialization.
+    /// Assumes upstream contract/RPC supports offset/limit or page token.
     pub async fn user_bets_cached(
         &self,
         user: &str,
@@ -423,12 +425,16 @@ impl BlockchainClient {
             .cache
             .get_or_set_json(&key, ttl, || async move {
                 let ledger = self.latest_ledger().await.unwrap_or(0);
+                // Use offset/limit in the RPC call if supported by the contract
+                let offset = ((page - 1) * page_size).max(0);
                 let rpc_result = self
                     .rpc_call::<Value>(
                         "getContractData",
                         json!({
                             "contractId": self.contract_id,
                             "key": format!("user_bets:{}", user),
+                            "offset": offset,
+                            "limit": page_size,
                         }),
                     )
                     .await;
@@ -442,21 +448,15 @@ impl BlockchainClient {
                     }
                 };
 
+                // Only materialize the requested page
                 let bets = data
                     .get("bets")
                     .and_then(Value::as_array)
                     .cloned()
                     .unwrap_or_default();
+                let total = data.get("total").and_then(Value::as_i64).unwrap_or(bets.len() as i64);
 
-                let total = bets.len() as i64;
-                let offset = ((page - 1) * page_size) as usize;
-                let paged = bets
-                    .into_iter()
-                    .skip(offset)
-                    .take(page_size as usize)
-                    .collect::<Vec<_>>();
-
-                let items = paged
+                let items = bets
                     .into_iter()
                     .map(|entry| UserBet {
                         market_id: entry
