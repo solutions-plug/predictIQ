@@ -10,7 +10,7 @@ mod tests {
         Router,
     };
     use predictiq_api::security::{
-        ip_whitelist_middleware, sanitize, signing, IpWhitelist, RateLimitConfig, RateLimiter,
+        ip_whitelist_middleware, sanitize, signing, IpWhitelist, RateLimitConfig, RateLimiter, TrustProxy,
     };
     use tower::ServiceExt;
 
@@ -264,7 +264,7 @@ mod tests {
         Router::new()
             .route("/admin", get(|| async { "ok" }))
             .layer(middleware::from_fn_with_state(
-                wl,
+                (wl, TrustProxy(true)),
                 ip_whitelist_middleware,
             ))
     }
@@ -312,6 +312,14 @@ mod tests {
         let req = Request::builder().uri("/admin").body(Body::empty()).unwrap();
         let status = whitelist_app(wl).oneshot(req).await.unwrap().status();
         assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn middleware_allows_when_whitelist_empty() {
+        let wl = Arc::new(IpWhitelist::new(vec![]));
+        let req = Request::builder().uri("/admin").body(Body::empty()).unwrap();
+        let status = whitelist_app(wl).oneshot(req).await.unwrap().status();
+        assert_eq!(status, StatusCode::OK);
     }
 
     // -------------------------------------------------------------------------

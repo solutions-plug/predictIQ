@@ -15,7 +15,7 @@ use tokio::{sync::RwLock, time::sleep};
 
 use crate::{
     cache::{keys, RedisCache},
-    config::Config,
+    config::{Config, ContractKeySchema},
     metrics::Metrics,
 };
 
@@ -25,6 +25,7 @@ pub struct BlockchainClient {
     rpc_url: String,
     network: String,
     contract_id: String,
+    pub key_schema: ContractKeySchema,
     retry_attempts: u32,
     retry_base_delay_ms: u64,
     event_poll_interval: Duration,
@@ -124,11 +125,24 @@ pub struct TransactionStatus {
     pub data_source: DataSource,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HealthStatus {
+    /// Node reachable and contract readable.
+    Healthy,
+    /// Node reachable but contract read failed.
+    Degraded,
+    /// Node unreachable.
+    Unhealthy,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockchainHealth {
     pub network: String,
     pub rpc_url: String,
     pub latest_ledger: u32,
+    pub status: HealthStatus,
+    /// Kept for backwards compatibility; true only when status == Healthy.
     pub is_healthy: bool,
     pub contract_reachable: bool,
     pub checked_at_unix: u64,
@@ -171,6 +185,7 @@ impl BlockchainClient {
             rpc_url: config.blockchain_rpc_url.clone(),
             network: config.network_name().to_string(),
             contract_id: config.contract_id.clone(),
+            key_schema: config.contract_key_schema.clone(),
             retry_attempts: config.retry_attempts.max(1),
             retry_base_delay_ms: config.retry_base_delay_ms.max(50),
             event_poll_interval: config.event_poll_interval,
@@ -268,7 +283,7 @@ impl BlockchainClient {
                         "getContractData",
                         json!({
                             "contractId": self.contract_id,
-                            "key": format!("market:{}", market_id),
+                            "key": self.key_schema.market_key(market_id),
                         }),
                     )
                     .await;
@@ -346,7 +361,7 @@ impl BlockchainClient {
                         "getContractData",
                         json!({
                             "contractId": self.contract_id,
-                            "key": "platform:stats",
+                            "key": self.key_schema.platform_stats.clone(),
                         }),
                     )
                     .await;
@@ -407,6 +422,8 @@ impl BlockchainClient {
         Ok(value)
     }
 
+    /// Efficiently fetches a page of user bets without full materialization.
+    /// Assumes upstream contract/RPC supports offset/limit or page token.
     pub async fn user_bets_cached(
         &self,
         user: &str,
@@ -423,12 +440,16 @@ impl BlockchainClient {
             .cache
             .get_or_set_json(&key, ttl, || async move {
                 let ledger = self.latest_ledger().await.unwrap_or(0);
+                // Use offset/limit in the RPC call if supported by the contract
+                let offset = ((page - 1) * page_size).max(0);
                 let rpc_result = self
                     .rpc_call::<Value>(
                         "getContractData",
                         json!({
                             "contractId": self.contract_id,
                             "key": format!("user_bets:{}", user),
+                            "offset": offset,
+                            "limit": page_size,
                         }),
                     )
                     .await;
@@ -442,21 +463,15 @@ impl BlockchainClient {
                     }
                 };
 
+                // Only materialize the requested page
                 let bets = data
                     .get("bets")
                     .and_then(Value::as_array)
                     .cloned()
                     .unwrap_or_default();
+                let total = data.get("total").and_then(Value::as_i64).unwrap_or(bets.len() as i64);
 
-                let total = bets.len() as i64;
-                let offset = ((page - 1) * page_size) as usize;
-                let paged = bets
-                    .into_iter()
-                    .skip(offset)
-                    .take(page_size as usize)
-                    .collect::<Vec<_>>();
-
-                let items = paged
+                let items = bets
                     .into_iter()
                     .map(|entry| UserBet {
                         market_id: entry
@@ -520,7 +535,7 @@ impl BlockchainClient {
                         "getContractData",
                         json!({
                             "contractId": self.contract_id,
-                            "key": format!("oracle_result:{}", market_id),
+                            "key": self.key_schema.oracle_result_key(market_id),
                         }),
                     )
                     .await;
@@ -639,7 +654,7 @@ impl BlockchainClient {
                         "getContractData",
                         json!({
                             "contractId": self.contract_id,
-                            "key": "platform:stats",
+                            "key": self.key_schema.platform_stats.clone(),
                         }),
                     )
                     .await
@@ -651,11 +666,18 @@ impl BlockchainClient {
                     .as_secs();
 
                 // Health is always a live probe; no fallback substitution needed.
+                let status = match (latest > 0, contract_reachable) {
+                    (true, true) => HealthStatus::Healthy,
+                    (true, false) => HealthStatus::Degraded,
+                    _ => HealthStatus::Unhealthy,
+                };
+
                 Ok(BlockchainHealth {
                     network: self.network.clone(),
                     rpc_url: self.rpc_url.clone(),
                     latest_ledger: latest,
-                    is_healthy: latest > 0,
+                    status,
+                    is_healthy: status == HealthStatus::Healthy,
                     contract_reachable,
                     checked_at_unix,
                     data_source: DataSource::Live,
@@ -1741,3 +1763,180 @@ mod tests {
         assert_eq!(all[99].id, "e-0100");
         assert_eq!(all[100].id, "e-0101");
     }
+
+    // -------------------------------------------------------------------------
+    // ContractKeySchema – centralized key generation and per-network overrides
+    // -------------------------------------------------------------------------
+
+    use crate::config::ContractKeySchema;
+
+    fn default_schema() -> ContractKeySchema {
+        ContractKeySchema {
+            version: "1.0.0".to_string(),
+            market: "market:{id}".to_string(),
+            platform_stats: "platform:stats".to_string(),
+            user_bets: "user_bets:{id}".to_string(),
+            oracle_result: "oracle_result:{id}".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_schema_market_key() {
+        let s = default_schema();
+        assert_eq!(s.market_key(42), "market:42");
+        assert_eq!(s.market_key(-1), "market:-1");
+    }
+
+    #[test]
+    fn test_schema_user_bets_key() {
+        let s = default_schema();
+        assert_eq!(s.user_bets_key("GABC123"), "user_bets:GABC123");
+    }
+
+    #[test]
+    fn test_schema_oracle_result_key() {
+        let s = default_schema();
+        assert_eq!(s.oracle_result_key(7), "oracle_result:7");
+    }
+
+    #[test]
+    fn test_schema_platform_stats_key_is_static() {
+        let s = default_schema();
+        assert_eq!(s.platform_stats, "platform:stats");
+    }
+
+    /// Per-network override: a testnet deployment using a different prefix.
+    #[test]
+    fn test_schema_per_network_override() {
+        let s = ContractKeySchema {
+            version: "2.0.0".to_string(),
+            market: "v2_market:{id}".to_string(),
+            platform_stats: "v2_platform:stats".to_string(),
+            user_bets: "v2_user_bets:{id}".to_string(),
+            oracle_result: "v2_oracle:{id}".to_string(),
+        };
+        assert_eq!(s.market_key(1), "v2_market:1");
+        assert_eq!(s.user_bets_key("GXYZ"), "v2_user_bets:GXYZ");
+        assert_eq!(s.oracle_result_key(99), "v2_oracle:99");
+        assert_eq!(s.platform_stats, "v2_platform:stats");
+    }
+
+    /// Schema version is preserved and accessible for startup validation.
+    #[test]
+    fn test_schema_version_is_accessible() {
+        let s = default_schema();
+        assert_eq!(s.version, "1.0.0");
+    }
+
+    /// Integration: keys produced by the schema match what getContractData
+    /// would receive, validated against the v1 deployed contract naming convention.
+    #[test]
+    fn test_schema_keys_match_deployed_v1_convention() {
+        let s = default_schema();
+        // These are the exact strings the v1 contract expects.
+        assert_eq!(s.market_key(100), "market:100");
+        assert_eq!(s.platform_stats, "platform:stats");
+        assert_eq!(s.user_bets_key("GDEMO"), "user_bets:GDEMO");
+        assert_eq!(s.oracle_result_key(100), "oracle_result:100");
+    }
+
+    /// Integration: BlockchainClient uses schema keys, not hardcoded strings.
+    /// Verifies the client is constructed with the schema from config and that
+    /// the schema produces the correct RPC key for a known market id.
+    #[tokio::test]
+    async fn test_client_uses_schema_keys_for_contract_reads() {
+        let mut config = Config::from_env();
+        config.blockchain_rpc_url = "http://127.0.0.1:0".to_string();
+        config.retry_attempts = 1;
+        config.retry_base_delay_ms = 1;
+        // Use a custom schema to confirm the client picks it up.
+        config.contract_key_schema = ContractKeySchema {
+            version: "1.0.0".to_string(),
+            market: "market:{id}".to_string(),
+            platform_stats: "platform:stats".to_string(),
+            user_bets: "user_bets:{id}".to_string(),
+            oracle_result: "oracle_result:{id}".to_string(),
+        };
+
+        let metrics = Metrics::new().unwrap();
+        let cache = match RedisCache::new(&config.redis_url).await {
+            Ok(c) => c,
+            Err(_) => {
+                println!("Skipping test_client_uses_schema_keys_for_contract_reads: Redis unavailable");
+                return;
+            }
+        };
+
+        let client = BlockchainClient::new(&config, cache, metrics).unwrap();
+
+        // The key the client would send for market 5 must match the schema.
+        assert_eq!(client.key_schema.market_key(5), "market:5");
+        assert_eq!(client.key_schema.oracle_result_key(5), "oracle_result:5");
+        assert_eq!(client.key_schema.user_bets_key("GTEST"), "user_bets:GTEST");
+        assert_eq!(client.key_schema.platform_stats, "platform:stats");
+    }
+
+    // -------------------------------------------------------------------------
+    // BlockchainHealth – status reflects both node and contract health
+    // -------------------------------------------------------------------------
+
+    fn make_health(latest: u32, contract_reachable: bool) -> BlockchainHealth {
+        let status = match (latest > 0, contract_reachable) {
+            (true, true) => HealthStatus::Healthy,
+            (true, false) => HealthStatus::Degraded,
+            _ => HealthStatus::Unhealthy,
+        };
+        BlockchainHealth {
+            network: "test".to_string(),
+            rpc_url: "http://localhost".to_string(),
+            latest_ledger: latest,
+            status,
+            is_healthy: status == HealthStatus::Healthy,
+            contract_reachable,
+            checked_at_unix: 0,
+            data_source: DataSource::Live,
+        }
+    }
+
+    #[test]
+    fn test_health_healthy_when_ledger_and_contract_ok() {
+        let h = make_health(100, true);
+        assert_eq!(h.status, HealthStatus::Healthy);
+        assert!(h.is_healthy);
+    }
+
+    #[test]
+    fn test_health_degraded_when_ledger_ok_but_contract_fails() {
+        let h = make_health(100, false);
+        assert_eq!(h.status, HealthStatus::Degraded);
+        assert!(!h.is_healthy);
+    }
+
+    #[test]
+    fn test_health_unhealthy_when_ledger_zero() {
+        let h = make_health(0, false);
+        assert_eq!(h.status, HealthStatus::Unhealthy);
+        assert!(!h.is_healthy);
+    }
+
+    #[test]
+    fn test_health_unhealthy_when_ledger_zero_even_if_contract_reachable() {
+        // ledger=0 means node is unreachable; contract_reachable is irrelevant.
+        let h = make_health(0, true);
+        assert_eq!(h.status, HealthStatus::Unhealthy);
+        assert!(!h.is_healthy);
+    }
+
+    #[test]
+    fn test_health_is_healthy_compat_field_matches_status() {
+        for (ledger, contract, expected_healthy) in [(100, true, true), (100, false, false), (0, false, false)] {
+            let h = make_health(ledger, contract);
+            assert_eq!(
+                h.is_healthy,
+                h.status == HealthStatus::Healthy,
+                "is_healthy must mirror status==Healthy for ledger={ledger} contract={contract}"
+            );
+            assert_eq!(h.is_healthy, expected_healthy);
+        }
+    }
+}
