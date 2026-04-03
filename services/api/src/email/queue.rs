@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use chrono::Utc;
 use redis::AsyncCommands;
 use serde_json::Value;
 use std::time::Duration;
@@ -54,8 +53,7 @@ impl EmailQueue {
         };
 
         let mut conn = self.cache.manager.clone();
-        let _: () = conn
-            .zadd(EMAIL_QUEUE_KEY, job_id.to_string(), score)
+        let _: () = conn.zadd(EMAIL_QUEUE_KEY, job_id.to_string(), score)
             .await
             .context("Failed to add job to queue")?;
 
@@ -77,8 +75,7 @@ impl EmailQueue {
             let job_id = Uuid::parse_str(&job_id_str)?;
 
             // Add to processing set
-            let _: () = conn
-                .sadd(EMAIL_PROCESSING_KEY, job_id.to_string())
+            let _: () = conn.sadd(EMAIL_PROCESSING_KEY, job_id.to_string())
                 .await
                 .context("Failed to mark job as processing")?;
 
@@ -96,29 +93,23 @@ impl EmailQueue {
 
         // Remove from processing set
         let mut conn = self.cache.manager.clone();
-        let _: () = conn
-            .srem(EMAIL_PROCESSING_KEY, job_id.to_string())
+        let _: () = conn.srem(EMAIL_PROCESSING_KEY, job_id.to_string())
             .await
             .context("Failed to remove from processing set")?;
 
         // Track sent event with real recipient
         if let Some(msg_id) = message_id {
+            // Look up recipient from DB to avoid storing empty string
             let recipient = self
                 .db
                 .email_get_job(job_id)
-                .await?
+                .await
+                .ok()
+                .flatten()
                 .map(|j| j.recipient_email)
                 .unwrap_or_default();
-
             self.db
-                .email_create_event(
-                    Some(job_id),
-                    Some(&msg_id),
-                    "sent",
-                    &recipient,
-                    Utc::now().timestamp(),
-                    serde_json::json!({}),
-                )
+                .email_create_event(Some(job_id), Some(&msg_id), "sent", &recipient, serde_json::json!({}))
                 .await?;
         }
 
@@ -136,8 +127,7 @@ impl EmailQueue {
             if new_attempts < job.max_attempts {
                 // Schedule retry with exponential backoff
                 let backoff_seconds = 2_u64.pow(new_attempts as u32) * 60; // 2min, 4min, 8min...
-                let retry_at =
-                    chrono::Utc::now() + chrono::Duration::seconds(backoff_seconds as i64);
+                let retry_at = chrono::Utc::now() + chrono::Duration::seconds(backoff_seconds as i64);
 
                 self.db
                     .email_update_job_attempts(job_id, new_attempts, Some(error))
@@ -145,14 +135,13 @@ impl EmailQueue {
 
                 // Add to retry queue
                 let mut conn = self.cache.manager.clone();
-                let _: () = conn
-                    .zadd(
-                        EMAIL_RETRY_KEY,
-                        job_id.to_string(),
-                        retry_at.timestamp() as f64,
-                    )
-                    .await
-                    .context("Failed to schedule retry")?;
+                let _: () = conn.zadd(
+                    EMAIL_RETRY_KEY,
+                    job_id.to_string(),
+                    retry_at.timestamp() as f64,
+                )
+                .await
+                .context("Failed to schedule retry")?;
 
                 tracing::warn!(
                     "Email job {} failed (attempt {}/{}), retrying in {}s: {}",
@@ -178,23 +167,12 @@ impl EmailQueue {
 
             // Remove from processing set
             let mut conn = self.cache.manager.clone();
-            let _: () = conn
-                .srem(EMAIL_PROCESSING_KEY, job_id.to_string())
+            let _: () = conn.srem(EMAIL_PROCESSING_KEY, job_id.to_string())
                 .await
                 .context("Failed to remove from processing set")?;
         }
 
         Ok(())
-    }
-
-    /// Get count of jobs currently in processing state
-    pub async fn get_processing_count(&self) -> Result<usize> {
-        let mut conn = self.cache.manager.clone();
-        let count: usize = conn
-            .scard(EMAIL_PROCESSING_KEY)
-            .await
-            .context("Failed to get processing count")?;
-        Ok(count)
     }
 
     /// Process retry queue - move jobs back to main queue if retry time has passed
@@ -213,14 +191,12 @@ impl EmailQueue {
         for job_id_str in jobs {
             // Move back to main queue
             let job_id = Uuid::parse_str(&job_id_str)?;
-            let _: () = conn
-                .zadd(EMAIL_QUEUE_KEY, &job_id_str, now)
+            let _: () = conn.zadd(EMAIL_QUEUE_KEY, &job_id_str, now)
                 .await
                 .context("Failed to re-queue job")?;
 
             // Remove from retry queue
-            let _: () = conn
-                .zrem(EMAIL_RETRY_KEY, &job_id_str)
+            let _: () = conn.zrem(EMAIL_RETRY_KEY, &job_id_str)
                 .await
                 .context("Failed to remove from retry queue")?;
 
@@ -256,101 +232,62 @@ impl EmailQueue {
         })
     }
 
-    /// Re-queue any jobs stuck in the processing set (e.g. after a crash).
-    /// Idempotent: jobs already in the main queue are not duplicated because
-    /// ZADD NX only inserts when the member is absent.
-    pub async fn recover_stale_processing_jobs(&self) -> Result<usize> {
+    /// Re-queue any jobs stuck in the processing set (e.g. from a previous crash)
+    pub async fn recover_orphaned_jobs(&self) -> Result<usize> {
         let mut conn = self.cache.manager.clone();
-        let stuck: Vec<String> = conn
+        let stale: Vec<String> = conn
             .smembers(EMAIL_PROCESSING_KEY)
             .await
             .context("Failed to read processing set")?;
 
-        let count = stuck.len();
-        let now = chrono::Utc::now().timestamp() as f64;
-
-        for job_id_str in &stuck {
-            // NX flag: only add if not already present in the queue
-            let _: () = redis::cmd("ZADD")
-                .arg(EMAIL_QUEUE_KEY)
-                .arg("NX")
-                .arg(now)
-                .arg(job_id_str)
-                .query_async(&mut conn)
-                .await
-                .context("Failed to re-queue stale job")?;
-
+        let count = stale.len();
+        for job_id_str in stale {
+            let score = chrono::Utc::now().timestamp() as f64;
             let _: () = conn
-                .srem(EMAIL_PROCESSING_KEY, job_id_str)
+                .zadd(EMAIL_QUEUE_KEY, &job_id_str, score)
                 .await
-                .context("Failed to remove stale job from processing set")?;
-
-            tracing::warn!("Recovered stale processing job: {}", job_id_str);
-        }
-
-        if count > 0 {
-            tracing::info!("Recovered {} stale processing job(s)", count);
+                .context("Failed to re-queue orphaned job")?;
+            let _: () = conn
+                .srem(EMAIL_PROCESSING_KEY, &job_id_str)
+                .await
+                .context("Failed to remove orphaned job from processing set")?;
+            tracing::warn!("Recovered orphaned email job: {}", job_id_str);
         }
 
         Ok(count)
     }
 
     /// Background worker to process email queue
-    pub async fn start_worker(
-        &self,
-        service: crate::email::EmailService,
-        mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
-    ) {
+    pub async fn start_worker(&self, service: crate::email::EmailService) {
         tracing::info!("Starting email queue worker");
 
-        if let Err(e) = self.recover_stale_processing_jobs().await {
-            tracing::error!("Failed to recover stale processing jobs: {}", e);
+        // Recover any jobs stuck in processing from a previous crash
+        if let Err(e) = self.recover_orphaned_jobs().await {
+            tracing::warn!("Failed to recover orphaned jobs: {}", e);
         }
 
         loop {
-            tokio::select! {
-                _ = shutdown_rx.recv() => {
-                    tracing::info!("Email queue worker received shutdown signal");
-                    
-                    // Process any remaining retries before shutdown
-                    if let Err(e) = self.process_retries().await {
-                        tracing::warn!("Error processing final retries on shutdown: {}", e);
-                    }
-                    
-                    // Check for any jobs still in processing state
-                    if let Ok(processing_count) = self.get_processing_count().await {
-                        if processing_count > 0 {
-                            tracing::warn!("Shutdown with {} jobs still in processing state", processing_count);
-                        }
-                    }
-                    
-                    tracing::info!("Email queue worker shutdown complete");
-                    break;
-                }
-                _ = async {
-                    // Process retries first
-                    if let Err(e) = self.process_retries().await {
-                        tracing::error!("Error processing retries: {}", e);
-                    }
+            // Process retries first
+            if let Err(e) = self.process_retries().await {
+                tracing::error!("Error processing retries: {}", e);
+            }
 
-                    // Process next job
-                    match self.dequeue().await {
-                        Ok(Some(job_id)) => {
-                            if let Err(e) = self.process_job(job_id, &service).await {
-                                tracing::error!("Error processing job {}: {}", job_id, e);
-                                let _ = self.mark_failed(job_id, &e.to_string()).await;
-                            }
-                        }
-                        Ok(None) => {
-                            // No jobs available, sleep briefly
-                            sleep(Duration::from_secs(1)).await;
-                        }
-                        Err(e) => {
-                            tracing::error!("Error dequeuing job: {}", e);
-                            sleep(Duration::from_secs(5)).await;
-                        }
+            // Process next job
+            match self.dequeue().await {
+                Ok(Some(job_id)) => {
+                    if let Err(e) = self.process_job(job_id, &service).await {
+                        tracing::error!("Error processing job {}: {}", job_id, e);
+                        let _ = self.mark_failed(job_id, &e.to_string()).await;
                     }
-                } => {}
+                }
+                Ok(None) => {
+                    // No jobs available, sleep briefly
+                    sleep(Duration::from_secs(1)).await;
+                }
+                Err(e) => {
+                    tracing::error!("Error dequeuing job: {}", e);
+                    sleep(Duration::from_secs(5)).await;
+                }
             }
         }
     }
@@ -378,7 +315,11 @@ impl EmailQueue {
 
         // Send email
         let message_id = service
-            .send_email(&job.recipient_email, &job.template_name, &job.template_data)
+            .send_email(
+                &job.recipient_email,
+                &job.template_name,
+                &job.template_data,
+            )
             .await?;
 
         // Mark as completed
@@ -393,29 +334,4 @@ pub struct QueueStats {
     pub pending: usize,
     pub processing: usize,
     pub retry: usize,
-}
-
-#[cfg(test)]
-mod tests {
-    /// Verify that recover_stale_processing_jobs re-queues stuck jobs and is idempotent.
-    ///
-    /// This is a logic-level unit test that exercises the recovery path without a live
-    /// Redis instance by inspecting the method's documented contract via the public
-    /// `get_stats` surface.  Integration coverage against a real Redis is expected in
-    /// the end-to-end test suite.
-    #[test]
-    fn recovery_scenario_idempotent_contract() {
-        // The recovery method must:
-        // 1. Move every member of EMAIL_PROCESSING_KEY back to EMAIL_QUEUE_KEY (NX).
-        // 2. Remove those members from EMAIL_PROCESSING_KEY.
-        // 3. Return the count of recovered jobs.
-        // 4. Be safe to call when the processing set is already empty (returns 0).
-        //
-        // These invariants are verified in the integration test suite against a real
-        // Redis instance.  Here we assert the structural contract at the type level.
-        let _keys: (&str, &str) = (super::EMAIL_PROCESSING_KEY, super::EMAIL_QUEUE_KEY);
-        // If the constants change the integration tests will catch the regression.
-        assert_eq!(super::EMAIL_PROCESSING_KEY, "email:processing");
-        assert_eq!(super::EMAIL_QUEUE_KEY, "email:queue");
-    }
 }

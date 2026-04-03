@@ -47,18 +47,11 @@ impl RedisCache {
         Ok(())
     }
 
-    /// Delete keys matching `pattern` using SCAN batching (safe for production keyspaces).
-    ///
-    /// Uses `SCAN` with a cursor instead of the blocking `KEYS` command, processing
-    /// deletions in batches of up to 100 keys per iteration to bound memory usage and
-    /// avoid blocking the Redis event loop on large datasets.
     pub async fn del_by_pattern(&self, pattern: &str) -> anyhow::Result<usize> {
         let mut conn = self.manager.clone();
         let mut cursor: u64 = 0;
         let mut total_deleted: usize = 0;
-
         loop {
-            // SCAN returns (next_cursor, [keys])
             let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
                 .arg(cursor)
                 .arg("MATCH")
@@ -67,25 +60,16 @@ impl RedisCache {
                 .arg(100u64)
                 .query_async(&mut conn)
                 .await?;
-
             if !keys.is_empty() {
                 let deleted: usize = conn.del(keys).await?;
                 total_deleted += deleted;
             }
-
             cursor = next_cursor;
             if cursor == 0 {
                 break;
             }
         }
-
         Ok(total_deleted)
-    }
-
-    pub async fn ping(&self) -> anyhow::Result<()> {
-        let mut conn = self.manager.clone();
-        let _: String = redis::cmd("PING").query_async(&mut conn).await?;
-        Ok(())
     }
 
     pub async fn get_or_set_json<T, F, Fut>(
@@ -174,22 +158,5 @@ pub mod keys {
 
     pub fn chain_sync_cursor(network: &str) -> String {
         format!("{CHAIN_PREFIX}:sync_cursor:{network}")
-    }
-
-    /// All cache keys that must be invalidated when a specific market is resolved.
-    ///
-    /// Scope is intentionally narrow: only keys that embed `market_id` or aggregate
-    /// data that changes on resolution (statistics, featured markets). Content pages
-    /// and per-user bet lists are NOT invalidated here because they are not affected
-    /// by a single market resolution.
-    pub fn market_resolution_keys(network: &str, market_id: i64) -> Vec<String> {
-        vec![
-            chain_market(market_id),
-            chain_oracle_result(network, market_id),
-            api_statistics(),
-            api_featured_markets(),
-            dbq_statistics(),
-            dbq_featured_markets(0), // limit=0 acts as a sentinel; callers should pass actual limit
-        ]
     }
 }

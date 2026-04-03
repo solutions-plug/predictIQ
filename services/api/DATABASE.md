@@ -1,112 +1,79 @@
-# Database Documentation
+# Database Schema Documentation
 
-The PredictIQ API service uses PostgreSQL. All schema changes are managed through ordered SQL migration files.
+This service uses PostgreSQL. Schema and seed scripts are in:
 
-## API server connection pool
-
-The API builds a [`sqlx`](https://docs.rs/sqlx) PostgreSQL pool at startup. Pool sizing and timeouts can be tuned with environment variables (defaults match the previous hard-coded values).
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DB_POOL_MIN_CONNECTIONS` | `5` | Minimum idle connections kept open. |
-| `DB_POOL_MAX_CONNECTIONS` | `25` | Upper bound on concurrent connections. If `min` and `max` are reversed, they are swapped; `max` is clamped to at least `1`. |
-| `DB_POOL_ACQUIRE_TIMEOUT_SECS` | `5` | Max time to wait for a connection from the pool (seconds). Clamped to at least `1`. |
-| `DB_POOL_IDLE_TIMEOUT_SECS` | *(unset)* | If set to a positive integer, idle connections older than this are closed (seconds). When unset, sqlx’s default applies. `0` is ignored (same as unset). |
-| `DB_POOL_MAX_LIFETIME_SECS` | *(unset)* | If set to a positive integer, connections are recycled after this lifetime (seconds). When unset, sqlx’s default applies. `0` is ignored (same as unset). |
-
-`DATABASE_URL` is still required for the connection string (see default in `config.rs` for local development).
-
-## Running Migrations
-
-From the workspace root:
-
-```bash
-# Apply all migrations (requires DATABASE_URL in environment or .env)
-cd services/api
-cargo sqlx migrate run
-```
-
-Or apply manually in order:
-
-```bash
-psql "$DATABASE_URL" -f services/api/database/migrations/001_enable_pgcrypto.sql
-psql "$DATABASE_URL" -f services/api/database/migrations/002_create_newsletter_subscribers.sql
-psql "$DATABASE_URL" -f services/api/database/migrations/003_create_contact_form_submissions.sql
-psql "$DATABASE_URL" -f services/api/database/migrations/004_create_waitlist_entries.sql
-psql "$DATABASE_URL" -f services/api/database/migrations/005_create_content_management.sql
-psql "$DATABASE_URL" -f services/api/database/migrations/006_create_analytics_events.sql
-psql "$DATABASE_URL" -f services/api/database/migrations/007_create_audit_logs.sql
-psql "$DATABASE_URL" -f services/api/database/migrations/008_create_email_tracking.sql
-```
-
-## Seed Data (Development Only)
-
-```bash
-psql "$DATABASE_URL" -f services/api/database/seeds/01_newsletter_subscriptions.sql
-psql "$DATABASE_URL" -f services/api/database/seeds/02_waitlist_entries.sql
-psql "$DATABASE_URL" -f services/api/database/seeds/03_contact_form_submissions.sql
-psql "$DATABASE_URL" -f services/api/database/seeds/04_content_management.sql
-psql "$DATABASE_URL" -f services/api/database/seeds/05_analytics_events.sql
-psql "$DATABASE_URL" -f services/api/database/seeds/06_audit_logs.sql
-```
+- `services/api/database/migrations/`
+- `services/api/database/seeds/`
 
 ## Tables
 
-### `newsletter_subscribers`
+- `newsletter_subscribers` — email opt-in list with double-opt-in confirmation
+- `contact_form_submissions`
+- `waitlist_entries`
+- `analytics_events`
+- `content_management`
+- `audit_logs`
+- `email_jobs` — async email queue tracking
 
-Stores newsletter subscription state. The application code (see `services/api/src/db.rs`) references this table as `newsletter_subscribers`.
+## Migration Files
 
-> **Note:** The migration file is named `002_create_newsletter_subscribers.sql` and the seed file inserts into `newsletter_subscriptions` — the migration must be updated to match. See [Schema Reconciliation](#schema-reconciliation) below.
+1. `001_enable_pgcrypto.sql`
+2. `002_create_newsletter_subscriptions.sql` — creates `newsletter_subscribers` table
+3. `003_create_contact_form_submissions.sql`
+4. `004_create_waitlist_entries.sql`
+5. `005_create_content_management.sql`
+6. `006_create_analytics_events.sql`
+7. `007_create_audit_logs.sql`
+8. `008_create_email_tracking.sql`
 
-| Column | Type | Notes |
-|--------|------|-------|
-| `id` | `UUID` | Primary key, auto-generated |
-| `email` | `VARCHAR(255)` | Unique, normalized to lowercase |
-| `source` | `VARCHAR(100)` | Acquisition channel (e.g. `homepage`, `blog`) |
-| `confirmed` | `BOOLEAN` | `true` after email confirmation |
-| `confirmation_token` | `TEXT` | Nullable; cleared on confirmation |
-| `created_at` | `TIMESTAMPTZ` | Row creation time |
-| `confirmed_at` | `TIMESTAMPTZ` | Nullable |
-| `unsubscribed_at` | `TIMESTAMPTZ` | Nullable |
+## Apply Migrations
 
-### `waitlist_entries`
+Run from the workspace root:
 
-| Column | Type | Notes |
-|--------|------|-------|
-| `id` | `UUID` | Primary key |
-| `email` | `VARCHAR(255)` | Unique |
-| `created_at` | `TIMESTAMPTZ` | |
-
-### `contact_form_submissions`
-
-Stores contact form messages.
-
-### `content_management`
-
-CMS content items with category and publish state.
-
-### `analytics_events`
-
-Append-only event log for product analytics.
-
-### `audit_logs`
-
-Immutable audit trail for admin actions.
-
-### `email_jobs` / `email_tracking`
-
-Email delivery queue and open/click tracking (migration `008`).
-
----
-
-## Schema Reconciliation
-
-The application (`db.rs`) uses the table name **`newsletter_subscribers`**, while the migration file (`002`) and seed file (`01`) currently create/insert into **`newsletter_subscriptions`**.
-
-**Resolution:** The migration file `002_create_newsletter_subscriptions.sql` should be renamed to `002_create_newsletter_subscribers.sql` and the `CREATE TABLE` statement updated to use `newsletter_subscribers`. The seed file column list should also be updated to match the application schema (`confirmed`, `confirmation_token` columns instead of `status`).
-
-Until that migration is applied, run the following one-time rename in your database:
-
-```sql
-ALTER TABLE newsletter_subscriptions RENAME TO newsletter_subscribers;
+```bash
+for f in services/api/database/migrations/*.sql; do
+  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+done
 ```
+
+Or use the provided script:
+
+```bash
+bash services/api/scripts/run_migrations.sh
+```
+
+## Rollback
+
+This repository uses forward-only SQL migrations. For rollback:
+
+- Write explicit reverse scripts before production rollout.
+- Restore from backup/snapshot for emergency rollback.
+
+## Seeding
+
+```bash
+for f in services/api/database/seeds/*.sql; do
+  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+done
+```
+
+## Backup Strategy
+
+- Daily logical backups with `pg_dump`, 30-day retention.
+- Weekly full snapshot, 90-day retention.
+- Quarterly restore drills in staging.
+- Encrypt backup storage at rest.
+
+## Data Retention Policy
+
+- `analytics_events`: 13 months raw, then archive/aggregate.
+- `audit_logs`: 24 months minimum for compliance.
+- `contact_form_submissions`: 12 months unless legal hold.
+- `newsletter_subscribers` / `waitlist_entries`: retain active records; hard-delete on GDPR request.
+
+## Notes
+
+- UUID primary keys via `gen_random_uuid()`.
+- All tables include `created_at` / `updated_at` timestamps.
+- Soft deletes via `deleted_at` in `content_management` and `audit_logs`.
+- Indexes on high-frequency query fields (`email`, `status`, `created_at`).

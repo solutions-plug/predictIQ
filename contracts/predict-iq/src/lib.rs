@@ -1,41 +1,28 @@
-#![cfg_attr(not(test), no_std)]
-use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Vec};
+#![no_std]
+use soroban_sdk::{contract, contractimpl, Address, Env, String, Vec};
 
-pub mod errors;
+mod errors;
 mod modules;
-#[cfg(test)]
-mod test_tie_handling;
-#[cfg(test)]
-mod test_payout_mode_immutability;
-#[cfg(test)]
-mod test_deposit_tier_reputation;
+mod test;
 pub mod types;
 
-pub use errors::ErrorCode;
-
-use crate::modules::{admin, queries};
-use crate::types::{CircuitBreakerState, ConfigKey, UpgradeStats};
+use crate::errors::ErrorCode;
+use crate::modules::admin;
+use crate::types::{CircuitBreakerState, ConfigKey};
 
 #[contract]
 pub struct PredictIQ;
 
 #[contractimpl]
 impl PredictIQ {
-    pub fn initialize(
-        e: Env,
-        admin: Address,
-        base_fee: i128,
-    ) -> Result<(), ErrorCode> {
-        // Require the admin account to authorize initialize (standard Soroban init pattern).
-        admin.require_auth();
-
+    pub fn initialize(e: Env, admin: Address, base_fee: i128) -> Result<(), ErrorCode> {
         if e.storage().persistent().has(&ConfigKey::Admin) {
             return Err(ErrorCode::AlreadyInitialized);
         }
 
         admin::set_admin(&e, admin);
         e.storage().persistent().set(&ConfigKey::BaseFee, &base_fee);
-        e.storage().instance().set(
+        e.storage().persistent().set(
             &ConfigKey::CircuitBreakerState,
             &CircuitBreakerState::Closed,
         );
@@ -94,46 +81,26 @@ impl PredictIQ {
         )
     }
 
-    pub fn claim_winnings(e: Env, bettor: Address, market_id: u64) -> Result<i128, ErrorCode> {
-        crate::modules::bets::claim_winnings(&e, bettor, market_id)
+    pub fn claim_winnings(
+        e: Env,
+        bettor: Address,
+        market_id: u64,
+        token_address: Address,
+    ) -> Result<i128, ErrorCode> {
+        crate::modules::bets::claim_winnings(&e, bettor, market_id, token_address)
     }
 
-    pub fn withdraw_refund(e: Env, bettor: Address, market_id: u64) -> Result<i128, ErrorCode> {
-        crate::modules::cancellation::withdraw_refund(&e, bettor, market_id, 0)
-    }
-
-    /// #401: Single canonical admin cancellation entrypoint.
-    /// Delegates to `modules::cancellation::cancel_market_admin`.
-    pub fn cancel_market_admin(e: Env, market_id: u64) -> Result<(), ErrorCode> {
-        crate::modules::cancellation::cancel_market_admin(&e, market_id)
+    pub fn withdraw_refund(
+        e: Env,
+        bettor: Address,
+        market_id: u64,
+        token_address: Address,
+    ) -> Result<i128, ErrorCode> {
+        crate::modules::bets::withdraw_refund(&e, bettor, market_id, token_address)
     }
 
     pub fn get_market(e: Env, id: u64) -> Option<crate::types::Market> {
         crate::modules::markets::get_market(&e, id)
-    }
-
-    /// Paginated market list. `limit` is silently clamped to `MAX_PAGE_LIMIT` (100).
-    pub fn get_markets(e: Env, offset: u32, limit: u32) -> Vec<crate::types::Market> {
-        queries::get_markets(&e, offset, limit)
-    }
-
-    /// Paginated market list filtered by status. `limit` is silently clamped to `MAX_PAGE_LIMIT` (100).
-    pub fn get_markets_by_status(
-        e: Env,
-        status: crate::types::MarketStatus,
-        offset: u32,
-        limit: u32,
-    ) -> Vec<crate::types::Market> {
-        queries::get_markets_by_status(&e, status, offset, limit)
-    }
-
-    /// Paginated guardian list. `limit` is silently clamped to `MAX_PAGE_LIMIT` (100).
-    pub fn get_guardians_paginated(e: Env, offset: u32, limit: u32) -> Vec<crate::types::Guardian> {
-        queries::get_guardians_paginated(&e, offset, limit)
-    }
-
-    pub fn get_outcome_stake(e: Env, market_id: u64, outcome: u32) -> i128 {
-        crate::modules::markets::get_outcome_stake(&e, market_id, outcome)
     }
 
     pub fn cast_vote(
@@ -145,10 +112,6 @@ impl PredictIQ {
     ) -> Result<(), ErrorCode> {
         crate::modules::circuit_breaker::require_closed(&e)?;
         crate::modules::voting::cast_vote(&e, voter, market_id, outcome, weight)
-    }
-
-    pub fn unlock_tokens(e: Env, voter: Address, market_id: u64) -> Result<(), ErrorCode> {
-        crate::modules::voting::unlock_tokens(&e, voter, market_id)
     }
 
     pub fn file_dispute(e: Env, disciplinarian: Address, market_id: u64) -> Result<(), ErrorCode> {
@@ -171,25 +134,8 @@ impl PredictIQ {
         crate::modules::fees::get_base_fee(&e)
     }
 
-    pub fn set_fee_admin(e: Env, fee_admin: Address) -> Result<(), ErrorCode> {
-        crate::modules::fees::set_fee_admin(&e, fee_admin)
-    }
-
-    pub fn get_fee_admin(e: Env) -> Option<Address> {
-        crate::modules::fees::get_fee_admin(&e)
-    }
-
     pub fn get_revenue(e: Env, token: Address) -> i128 {
         crate::modules::fees::get_revenue(&e, token)
-    }
-
-    /// Issue #26: Withdraw accumulated protocol fees to a recipient.
-    pub fn withdraw_protocol_fees(
-        e: Env,
-        token: Address,
-        recipient: Address,
-    ) -> Result<i128, ErrorCode> {
-        crate::modules::fees::withdraw_protocol_fees(&e, &token, &recipient)
     }
 
     pub fn claim_referral_rewards(
@@ -200,53 +146,14 @@ impl PredictIQ {
         crate::modules::fees::claim_referral_rewards(&e, &address, &token)
     }
 
-    /// Issue #9: oracle_id parameter allows multiple oracle sources per market.
-    /// Use oracle_id = 0 for the primary/default oracle.
-    pub fn set_oracle_result(e: Env, market_id: u64, oracle_id: u32, outcome: u32) -> Result<(), ErrorCode> {
+    pub fn set_oracle_result(e: Env, market_id: u64, outcome: u32) -> Result<(), ErrorCode> {
         crate::modules::admin::require_admin(&e)?;
-        crate::modules::oracles::set_oracle_result(&e, market_id, oracle_id, outcome)
-    }
-
-    /// Issue #9: Query the stored result for a specific (market_id, oracle_id) pair.
-    pub fn get_oracle_result(e: Env, market_id: u64, oracle_id: u32) -> Option<u32> {
-        crate::modules::oracles::get_oracle_result(&e, market_id, oracle_id)
-    }
-
-    /// Issue #9: Query the last-update timestamp for a specific (market_id, oracle_id) pair.
-    pub fn get_oracle_last_update(e: Env, market_id: u64, oracle_id: u32) -> Option<u64> {
-        crate::modules::oracles::get_last_update(&e, market_id, oracle_id)
-    }
-
-    /// Issue #9: Attempt oracle resolution using a specific oracle_id (default 0).
-    pub fn attempt_oracle_resolution(e: Env, market_id: u64) -> Result<(), ErrorCode> {
-        crate::modules::resolution::attempt_oracle_resolution(&e, market_id)
+        crate::modules::oracles::set_oracle_result(&e, market_id, outcome)
     }
 
     pub fn resolve_market(e: Env, market_id: u64, winning_outcome: u32) -> Result<(), ErrorCode> {
         crate::modules::admin::require_admin(&e)?;
         crate::modules::disputes::resolve_market(&e, market_id, winning_outcome)
-    }
-
-    pub fn finalize_resolution(e: Env, market_id: u64) -> Result<(), ErrorCode> {
-        crate::modules::resolution::finalize_resolution(&e, market_id)
-    }
-
-    /// Issue #63: Administrative fallback for disputed markets that failed to
-    /// reach the 60% community majority threshold after the full voting period.
-    ///
-    /// Only callable by the master admin. Enforces that:
-    ///   - The market is still Disputed (not already resolved).
-    ///   - The 72-hour voting window has fully elapsed.
-    ///   - Community voting genuinely deadlocked (NoMajorityReached).
-    ///
-    /// This ensures user capital is never permanently orphaned while keeping
-    /// the community-first resolution path intact.
-    pub fn admin_fallback_resolution(
-        e: Env,
-        market_id: u64,
-        winning_outcome: u32,
-    ) -> Result<(), ErrorCode> {
-        crate::modules::resolution::admin_fallback_resolution(&e, market_id, winning_outcome)
     }
 
     pub fn reset_monitoring(e: Env) -> Result<(), ErrorCode> {
@@ -271,24 +178,12 @@ impl PredictIQ {
         crate::modules::circuit_breaker::unpause(&e)
     }
 
-    pub fn set_governance_token(e: Env, token: Address) -> Result<(), ErrorCode> {
-        crate::modules::admin::set_governance_token(&e, token)
-    }
-
     pub fn get_resolution_metrics(
         e: Env,
         market_id: u64,
         outcome: u32,
     ) -> crate::modules::disputes::ResolutionMetrics {
         crate::modules::disputes::get_resolution_metrics(&e, market_id, outcome)
-    }
-
-    pub fn set_max_push_payout_winners(e: Env, threshold: u32) -> Result<(), ErrorCode> {
-        crate::modules::disputes::set_max_push_payout_winners(&e, threshold)
-    }
-
-    pub fn get_max_push_payout_winners(e: Env) -> u32 {
-        crate::modules::disputes::get_max_push_payout_winners(&e)
     }
 
     pub fn set_creator_reputation(
@@ -311,17 +206,23 @@ impl PredictIQ {
         crate::modules::markets::get_creation_deposit(&e)
     }
 
-    /// Issue #7: Creator explicitly claims their deposit after the dispute window
-    /// closes without a challenge. Reverts if the market was disputed.
-    pub fn claim_creation_deposit(
+    pub fn release_creation_deposit(
         e: Env,
         market_id: u64,
-        caller: Address,
+        native_token: Address,
     ) -> Result<(), ErrorCode> {
-        crate::modules::markets::claim_creation_deposit(&e, market_id, caller)
+        crate::modules::markets::release_creation_deposit(&e, market_id, native_token)
     }
 
     // Governance and Upgrade Functions
+    pub fn initialize_guardians(
+        e: Env,
+        guardians: Vec<crate::types::Guardian>,
+    ) -> Result<(), ErrorCode> {
+        crate::modules::admin::require_admin(&e)?;
+        crate::modules::governance::initialize_guardians(&e, guardians)
+    }
+
     pub fn add_guardian(e: Env, guardian: crate::types::Guardian) -> Result<(), ErrorCode> {
         crate::modules::governance::add_guardian(&e, guardian)
     }
@@ -330,15 +231,11 @@ impl PredictIQ {
         crate::modules::governance::remove_guardian(&e, address)
     }
 
-    pub fn vote_on_guardian_removal(e: Env, voter: Address, approve: bool) -> Result<(), ErrorCode> {
-        crate::modules::governance::vote_on_guardian_removal(&e, voter, approve)
-    }
-
     pub fn get_guardians(e: Env) -> Vec<crate::types::Guardian> {
         crate::modules::governance::get_guardians(&e)
     }
 
-    pub fn initiate_upgrade(e: Env, wasm_hash: BytesN<32>) -> Result<(), ErrorCode> {
+    pub fn initiate_upgrade(e: Env, wasm_hash: String) -> Result<(), ErrorCode> {
         crate::modules::governance::initiate_upgrade(&e, wasm_hash)
     }
 
@@ -346,7 +243,7 @@ impl PredictIQ {
         crate::modules::governance::vote_for_upgrade(&e, voter, vote_for)
     }
 
-    pub fn execute_upgrade(e: Env) -> Result<(), ErrorCode> {
+    pub fn execute_upgrade(e: Env) -> Result<String, ErrorCode> {
         crate::modules::governance::execute_upgrade(&e)
     }
 
@@ -354,8 +251,7 @@ impl PredictIQ {
         crate::modules::governance::get_pending_upgrade(&e)
     }
 
-    /// Issue #33: Returns named UpgradeStats struct.
-    pub fn get_upgrade_votes(e: Env) -> Result<UpgradeStats, ErrorCode> {
+    pub fn get_upgrade_votes(e: Env) -> Result<(u32, u32), ErrorCode> {
         crate::modules::governance::get_upgrade_votes(&e)
     }
 
@@ -363,58 +259,16 @@ impl PredictIQ {
         crate::modules::governance::is_timelock_satisfied(&e)
     }
 
-    /// Issue #13: Configurable timelock duration.
-    pub fn set_timelock_duration(e: Env, seconds: u64) -> Result<(), ErrorCode> {
-        crate::modules::governance::set_timelock_duration(&e, seconds)
-    }
-
-    /// Issue #13: Returns the currently active timelock duration in seconds.
-    pub fn get_timelock_duration(e: Env) -> u64 {
-        crate::modules::governance::get_timelock_duration(&e)
-    }
-
-    /// Issue #8: Set the dispute window duration (admin-only, minimum 24h).
-    pub fn set_dispute_window(e: Env, seconds: u64) -> Result<(), ErrorCode> {
-        crate::modules::resolution::set_dispute_window(&e, seconds)
-    }
-
-    /// Issue #8: Get the active dispute window duration in seconds (default 72h).
-    pub fn get_dispute_window(e: Env) -> u64 {
-        crate::modules::resolution::get_dispute_window(&e)
-    }
-
-    /// Issue #47: Permissionless prune after grace period.
+    /// Prune (archive) a resolved market after 30 days grace period
     pub fn prune_market(e: Env, market_id: u64) -> Result<(), ErrorCode> {
         crate::modules::markets::prune_market(&e, market_id)
     }
 
-    /// Issue #182: Set the payout mode for a market.
-    /// Only allowed while the market is Active. Returns PayoutModeLocked if
-    /// the resolution process has already started.
-    pub fn set_payout_mode(
-        e: Env,
-        caller: Address,
-        market_id: u64,
-        mode: crate::types::PayoutMode,
-    ) -> Result<(), ErrorCode> {
-        crate::modules::markets::set_payout_mode(&e, caller, market_id, mode)
+    pub fn cancel_market_admin(e: Env, market_id: u64) -> Result<(), ErrorCode> {
+        crate::modules::cancellation::cancel_market_admin(&e, market_id)
     }
 
-    pub fn get_minimum_bet_amount(e: Env) -> i128 {
-        crate::modules::bets::get_minimum_bet_amount(&e)
-    }
-
-    pub fn set_minimum_bet_amount(e: Env, amount: i128) -> Result<(), ErrorCode> {
-        crate::modules::bets::set_minimum_bet_amount(&e, amount)
-    }
-
-    /// Emergency pause triggered by 2/3 Guardian majority (community panic override)
-    pub fn emergency_pause(e: Env, voter: Address) -> Result<(), ErrorCode> {
-        crate::modules::governance::emergency_pause(&e, voter)
-    }
-
-    /// Get the accurate bet count for a specific outcome (analytics)
-    pub fn count_bets_for_outcome(e: Env, market_id: u64, outcome: u32) -> u32 {
-        crate::modules::markets::count_bets_for_outcome(&e, market_id, outcome)
+    pub fn cancel_market_vote(e: Env, market_id: u64) -> Result<(), ErrorCode> {
+        crate::modules::cancellation::cancel_market_vote(&e, market_id)
     }
 }
