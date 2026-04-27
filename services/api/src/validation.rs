@@ -45,7 +45,14 @@ pub fn request_body_max_bytes_from_env() -> usize {
     parse_request_body_max_bytes(std::env::var(REQUEST_BODY_MAX_BYTES_ENV).ok().as_deref())
 }
 
-/// Request validation middleware
+/// Request validation middleware — applied globally to all routes.
+///
+/// Rejects requests with `400 Bad Request` when:
+/// - Query string or path contains SQL injection patterns (detected via [`sanitize::contains_sql_injection`])
+/// - Query string exceeds 2 048 characters
+/// - Path contains `..` (directory traversal) or `//` (double-slash)
+///
+/// Safe traffic passes through unmodified.
 pub async fn request_validation_middleware(
     request: Request,
     next: Next,
@@ -167,4 +174,137 @@ pub async fn request_size_validation_middleware(
 
     let request = Request::from_parts(parts, Body::from(bytes));
     Ok(next.run(request).await)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{body::Body, http::Request, middleware, routing::get, Router};
+    use tower::ServiceExt;
+
+    async fn validation_app() -> Router {
+        Router::new()
+            .route("/api/v1/items/:id", get(|| async { "ok" }))
+            .layer(middleware::from_fn(request_validation_middleware))
+    }
+
+    // ── request_validation_middleware ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn allows_clean_request() {
+        let response = validation_app()
+            .await
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/items/42?sort=asc")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn blocks_sql_injection_in_query() {
+        let response = validation_app()
+            .await
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/items/42?id=1%20OR%201%3D1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn blocks_sql_injection_in_path() {
+        let response = validation_app()
+            .await
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/items/1%20UNION%20SELECT%201")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn blocks_path_traversal() {
+        let response = validation_app()
+            .await
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/items/../secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn blocks_query_string_too_long() {
+        let long_query = "a=".to_string() + &"x".repeat(2048);
+        let uri = format!("/api/v1/items/1?{long_query}");
+        let response = validation_app()
+            .await
+            .oneshot(
+                Request::builder()
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ── request_size_validation_middleware ────────────────────────────────
+
+    #[tokio::test]
+    async fn allows_request_within_size_limit() {
+        let app = Router::new()
+            .route("/", get(|| async { "ok" }))
+            .layer(middleware::from_fn(request_size_validation_middleware));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("content-length", "100")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn blocks_request_exceeding_size_limit() {
+        let app = Router::new()
+            .route("/", get(|| async { "ok" }))
+            .layer(middleware::from_fn(request_size_validation_middleware));
+
+        let over_limit = DEFAULT_REQUEST_BODY_MAX_BYTES + 1;
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("content-length", over_limit.to_string())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
 }

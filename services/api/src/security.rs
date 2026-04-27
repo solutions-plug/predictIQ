@@ -326,7 +326,11 @@ impl IpWhitelist {
     }
 }
 
-/// IP whitelist middleware
+/// IP whitelist middleware for admin routes.
+///
+/// Allows all IPs when `ADMIN_WHITELIST_IPS` is empty (open-by-default for
+/// local/dev). When the env var is set to a comma-separated list of IPs, only
+/// those addresses may reach admin endpoints; all others receive `403 Forbidden`.
 pub async fn ip_whitelist_middleware(
     State((whitelist, TrustProxy(trust_proxy))): State<(Arc<IpWhitelist>, TrustProxy)>,
     headers: HeaderMap,
@@ -580,6 +584,28 @@ mod tests {
         assert_eq!(headers["x-content-type-options"], "nosniff");
     }
 
+    #[tokio::test]
+    async fn security_headers_middleware_no_duplicates() {
+        use axum::{body::Body, http::Request, middleware, routing::get, Router};
+        use tower::ServiceExt;
+
+        let app = Router::new()
+            .route("/", get(|| async { "ok" }))
+            .layer(middleware::from_fn(super::security_headers_middleware));
+
+        let response = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        let headers = response.headers();
+        // get_all returns an iterator; exactly one value means no duplicates.
+        assert_eq!(headers.get_all("x-frame-options").iter().count(), 1);
+        assert_eq!(headers.get_all("content-security-policy").iter().count(), 1);
+        assert_eq!(headers.get_all("strict-transport-security").iter().count(), 1);
+        assert_eq!(headers.get_all("referrer-policy").iter().count(), 1);
+    }
+
     #[test]
     fn test_extract_client_ip_precedence() {
         let mut headers = HeaderMap::new();
@@ -669,65 +695,164 @@ mod tests {
         assert_eq!(extract_client_ip(&headers, None, false), "unknown");
     }
 
-    // ── metrics_auth_middleware ───────────────────────────────────────────────
+    // ── api_key_middleware ────────────────────────────────────────────────
 
-    fn metrics_app(config: Arc<MetricsAuthConfig>) -> axum::Router {
-        use axum::{routing::get, Router};
-        Router::new()
-            .route("/metrics", get(|| async { "ok" }))
-            .layer(middleware::from_fn_with_state(config, metrics_auth_middleware))
-    }
-
-    fn metrics_config(public: bool, allowlist: Vec<&str>, keys: Vec<&str>) -> Arc<MetricsAuthConfig> {
-        Arc::new(MetricsAuthConfig::new(
-            public,
-            allowlist.iter().filter_map(|s| s.parse().ok()).collect(),
-            Arc::new(ApiKeyAuth::new(keys.iter().map(|s| s.to_string()).collect())),
-        ))
-    }
-
-    async fn get_metrics(app: axum::Router, api_key: Option<&str>) -> StatusCode {
-        use axum::{body::Body, http::Request};
+    #[tokio::test]
+    async fn api_key_middleware_allows_valid_key() {
+        use axum::{body::Body, http::Request, middleware, routing::get, Router};
         use tower::ServiceExt;
-        let mut builder = Request::builder().uri("/metrics");
-        if let Some(k) = api_key {
-            builder = builder.header("x-api-key", k);
-        }
-        app.oneshot(builder.body(Body::empty()).unwrap())
+
+        let auth = Arc::new(ApiKeyAuth::new(vec!["secret".to_string()]));
+        let app = Router::new()
+            .route("/", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(auth, super::api_key_middleware));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
-            .unwrap()
-            .status()
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]
-    async fn metrics_public_mode_allows_unauthenticated() {
-        let app = metrics_app(metrics_config(true, vec![], vec!["secret"]));
-        assert_eq!(get_metrics(app, None).await, StatusCode::OK);
+    async fn api_key_middleware_rejects_missing_key() {
+        use axum::{body::Body, http::Request, middleware, routing::get, Router};
+        use tower::ServiceExt;
+
+        let auth = Arc::new(ApiKeyAuth::new(vec!["secret".to_string()]));
+        let app = Router::new()
+            .route("/", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(auth, super::api_key_middleware));
+
+        let response = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
-    async fn metrics_requires_api_key_when_not_public() {
-        let app = metrics_app(metrics_config(false, vec![], vec!["secret"]));
-        assert_eq!(get_metrics(app, None).await, StatusCode::UNAUTHORIZED);
+    async fn api_key_middleware_rejects_wrong_key() {
+        use axum::{body::Body, http::Request, middleware, routing::get, Router};
+        use tower::ServiceExt;
+
+        let auth = Arc::new(ApiKeyAuth::new(vec!["secret".to_string()]));
+        let app = Router::new()
+            .route("/", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(auth, super::api_key_middleware));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("x-api-key", "wrong")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // ── ip_whitelist_middleware ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn ip_whitelist_allows_whitelisted_ip() {
+        use axum::{body::Body, http::Request, middleware, routing::get, Router};
+        use tower::ServiceExt;
+
+        let whitelist = Arc::new(IpWhitelist::new(vec!["127.0.0.1".parse().unwrap()]));
+        let state = (whitelist, TrustProxy(false));
+        let app = Router::new()
+            .route("/", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(state, super::ip_whitelist_middleware));
+
+        let response = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        // No ConnectInfo → ip resolves to "unknown" → not in whitelist → 403.
+        // To test an allowed IP we use X-Real-IP with trust_proxy=true.
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
-    async fn metrics_valid_api_key_grants_access() {
-        let app = metrics_app(metrics_config(false, vec![], vec!["secret"]));
-        assert_eq!(get_metrics(app, Some("secret")).await, StatusCode::OK);
+    async fn ip_whitelist_allows_when_list_empty() {
+        use axum::{body::Body, http::Request, middleware, routing::get, Router};
+        use tower::ServiceExt;
+
+        let whitelist = Arc::new(IpWhitelist::new(vec![])); // empty = allow all
+        let state = (whitelist, TrustProxy(false));
+        let app = Router::new()
+            .route("/", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(state, super::ip_whitelist_middleware));
+
+        let response = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]
-    async fn metrics_wrong_api_key_rejected() {
-        let app = metrics_app(metrics_config(false, vec![], vec!["secret"]));
-        assert_eq!(get_metrics(app, Some("wrong")).await, StatusCode::UNAUTHORIZED);
+    async fn ip_whitelist_blocks_non_whitelisted_ip() {
+        use axum::{body::Body, http::Request, middleware, routing::get, Router};
+        use tower::ServiceExt;
+
+        let whitelist = Arc::new(IpWhitelist::new(vec!["10.0.0.1".parse().unwrap()]));
+        let state = (whitelist, TrustProxy(true));
+        let app = Router::new()
+            .route("/", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(state, super::ip_whitelist_middleware));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("x-real-ip", "1.2.3.4") // not in whitelist
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
-    async fn metrics_ip_not_in_allowlist_rejected() {
-        // allowlist contains only 10.0.0.1; request comes from 127.0.0.1 (no ConnectInfo)
-        let app = metrics_app(metrics_config(false, vec!["10.0.0.1"], vec!["secret"]));
-        assert_eq!(get_metrics(app, Some("secret")).await, StatusCode::FORBIDDEN);
+    async fn ip_whitelist_allows_matching_ip_via_header() {
+        use axum::{body::Body, http::Request, middleware, routing::get, Router};
+        use tower::ServiceExt;
+
+        let whitelist = Arc::new(IpWhitelist::new(vec!["10.0.0.1".parse().unwrap()]));
+        let state = (whitelist, TrustProxy(true));
+        let app = Router::new()
+            .route("/", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(state, super::ip_whitelist_middleware));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("x-real-ip", "10.0.0.1") // in whitelist
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }
 

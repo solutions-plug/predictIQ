@@ -189,9 +189,6 @@ async fn main() -> anyhow::Result<()> {
         .layer(middleware::from_fn(correlation::correlation_id_middleware))
         .layer(TraceLayer::new_for_http())
         .layer(middleware::from_fn(versioning::versioning_middleware))
-        .layer(middleware::from_fn(security::security_headers_middleware))
-        .layer(middleware::from_fn(validation::request_validation_middleware))
-        .layer(middleware::from_fn(validation::request_size_validation_middleware))
         .layer(middleware::from_fn_with_state(
             (rate_limiter.clone(), security::TrustProxy(config_trust_proxy)),
             security::global_rate_limit_middleware,
@@ -241,8 +238,11 @@ async fn main() -> anyhow::Result<()> {
         ))
         .layer(middleware::from_fn(correlation::correlation_id_middleware))
         .layer(TraceLayer::new_for_http())
+<<<<<<< feat/admin-security-middleware-446-447-448-449
+=======
         .layer(middleware::from_fn(security::security_headers_middleware))
         .layer(middleware::from_fn(validation::request_size_validation_middleware))
+>>>>>>> main
         .with_state(state.clone());
 
     let admin_routes = Router::new()
@@ -312,6 +312,9 @@ async fn main() -> anyhow::Result<()> {
         .merge(newsletter_routes)
         .merge(webhook_routes)
         .merge(admin_routes)
+        .layer(middleware::from_fn(validation::request_validation_middleware))
+        .layer(middleware::from_fn(validation::request_size_validation_middleware))
+        .layer(middleware::from_fn(security::security_headers_middleware))
         .layer(compression::compression_layer())
         .layer(cors_layer);
 
