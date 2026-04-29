@@ -95,6 +95,7 @@ pub struct OracleConfig {
     pub min_responses: Option<u32>, // Optimized: None defaults to 1
     pub max_staleness_seconds: u64, // Max age of price data in seconds
     pub max_confidence_bps: u64,    // Max confidence interval as basis points of price
+    pub strike_price: Option<i64>,  // Strike price for outcome determination
 }
 
 // Gas optimization constants
