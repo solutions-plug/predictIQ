@@ -1,3 +1,56 @@
+# [1.1.0](https://github.com/Hexstar-labs/predictIQ/compare/v1.0.0...v1.1.0) (2026-05-28)
+
+
+### Bug Fixes
+
+* **#452:** remove double newsletter rate limiting, make policy configurable ([6169065](https://github.com/Hexstar-labs/predictIQ/commit/61690655bf7a99fda542e68fbb396ab0fcdae0b8)), closes [#452](https://github.com/Hexstar-labs/predictIQ/issues/452) [#452](https://github.com/Hexstar-labs/predictIQ/issues/452)
+* **#453:** Redis-backed newsletter IP rate limiter with atomic counters ([932a14d](https://github.com/Hexstar-labs/predictIQ/commit/932a14d21c3a1f1bdea07d14c72d415f26d1b56e)), closes [#453](https://github.com/Hexstar-labs/predictIQ/issues/453)
+* **#454:** harden client IP extraction with trusted proxy CIDRs ([04db648](https://github.com/Hexstar-labs/predictIQ/commit/04db648d93421f44f1cee80082bbc32996f8a537)), closes [#454](https://github.com/Hexstar-labs/predictIQ/issues/454)
+* **#463:** add TTL and max-size eviction to watched_txs ([428b7a7](https://github.com/Hexstar-labs/predictIQ/commit/428b7a714ec3ce92ca751a6943020ecc4e9250c0)), closes [#463](https://github.com/Hexstar-labs/predictIQ/issues/463)
+* **#485-#488:** sync API_SPEC, add email DLQ, validate templates at startup ([0749bc5](https://github.com/Hexstar-labs/predictIQ/commit/0749bc50934b4666608cf59d886ce79cddd69619)), closes [#485](https://github.com/Hexstar-labs/predictIQ/issues/485) [-#488](https://github.com/-/issues/488) [#485](https://github.com/Hexstar-labs/predictIQ/issues/485) [#486](https://github.com/Hexstar-labs/predictIQ/issues/486) [#487](https://github.com/Hexstar-labs/predictIQ/issues/487) [#488](https://github.com/Hexstar-labs/predictIQ/issues/488)
+* **#624:** fetch_pyth_price calls on-chain Pyth contract via oracle_address/feed_id ([eb3079f](https://github.com/Hexstar-labs/predictIQ/commit/eb3079fa236b45a9130ac802d5a0584e871e6312)), closes [#624](https://github.com/Hexstar-labs/predictIQ/issues/624)
+* **#625:** determine_outcome uses per-market strike_price from OracleConfig ([901f800](https://github.com/Hexstar-labs/predictIQ/commit/901f800f03ac2ec05fdeb7066ebe045a407c14b8)), closes [#625](https://github.com/Hexstar-labs/predictIQ/issues/625)
+* **#626:** validate_oracle_staleness checks all oracle indices ([bc53975](https://github.com/Hexstar-labs/predictIQ/commit/bc5397508088bb58b4c0feab04e1291f1a831528)), closes [#626](https://github.com/Hexstar-labs/predictIQ/issues/626)
+* **#627:** align DISPUTE_WINDOW_SECONDS to 72h (259200) ([4f26453](https://github.com/Hexstar-labs/predictIQ/commit/4f26453e0eafb3eefa8eb1fdca4011a8807411e5)), closes [#627](https://github.com/Hexstar-labs/predictIQ/issues/627)
+* **api:** stop leaking internal error details to API consumers ([#628](https://github.com/Hexstar-labs/predictIQ/issues/628)) ([e3d8cd9](https://github.com/Hexstar-labs/predictIQ/commit/e3d8cd96d70df53aa060679d008f7f57eb12aaf7))
+* contract query optimizations and docs fixes ([#481](https://github.com/Hexstar-labs/predictIQ/issues/481)-484) ([2a0d193](https://github.com/Hexstar-labs/predictIQ/commit/2a0d193bcbfdee2ad717d01abf774e413c4d0f04)), closes [#481-484](https://github.com/Hexstar-labs/predictIQ/issues/481-484)
+* Enforce SendGrid webhook signature validation ([d49109a](https://github.com/Hexstar-labs/predictIQ/commit/d49109af28339e06dc3970fc260c571ae06a21e0)), closes [#24](https://github.com/Hexstar-labs/predictIQ/issues/24)
+* log cache warming errors and cover all critical endpoints ([bf978d5](https://github.com/Hexstar-labs/predictIQ/commit/bf978d5b667419468201010ac6e56cfde3644e70)), closes [#493](https://github.com/Hexstar-labs/predictIQ/issues/493)
+* replace single-connection SCAN loop with per-batch connection acquisition ([#458](https://github.com/Hexstar-labs/predictIQ/issues/458)) ([2cfdec4](https://github.com/Hexstar-labs/predictIQ/commit/2cfdec428ae675c6c85d02fe105fe2f33d903016))
+* resolve compile errors from issues [#477](https://github.com/Hexstar-labs/predictIQ/issues/477)-[#480](https://github.com/Hexstar-labs/predictIQ/issues/480) ([81235ac](https://github.com/Hexstar-labs/predictIQ/commit/81235ac67f103aa5dfe06900a0eed2d706695cf9)), closes [#478](https://github.com/Hexstar-labs/predictIQ/issues/478)
+* stop swallowing blockchain RPC errors into silent defaults ([#460](https://github.com/Hexstar-labs/predictIQ/issues/460)) ([fc0ec9c](https://github.com/Hexstar-labs/predictIQ/commit/fc0ec9cd65cf3caf9d3f608c5333e3d41d80e94a))
+* structured API errors, webhook sig verification, OpenAPI sync ([2430bfe](https://github.com/Hexstar-labs/predictIQ/commit/2430bfe0ee09b24a204aa241acdac1951f596bd6))
+
+
+### Features
+
+* **#519:** Enhance accessibility compliance with improved ARIA labels and keyboard navigation ([174c41a](https://github.com/Hexstar-labs/predictIQ/commit/174c41a46558cacede22beab5cef2a3d22b4ebfc)), closes [#519](https://github.com/Hexstar-labs/predictIQ/issues/519)
+* **#520:** Add frontend error boundary components ([6deea3f](https://github.com/Hexstar-labs/predictIQ/commit/6deea3f09fa7c8f365e683d18a9f3144ae2da92c)), closes [#520](https://github.com/Hexstar-labs/predictIQ/issues/520)
+* **#521:** Implement frontend route-based code splitting ([e4166bc](https://github.com/Hexstar-labs/predictIQ/commit/e4166bc9e00f0d211be398a793c71d9f2d697c9f)), closes [#521](https://github.com/Hexstar-labs/predictIQ/issues/521)
+* **#522:** Add frontend environment variable validation ([b6dc301](https://github.com/Hexstar-labs/predictIQ/commit/b6dc301c639e858bb59f9435ec70adff559845c1)), closes [#522](https://github.com/Hexstar-labs/predictIQ/issues/522)
+* **#523:** Implement frontend API response caching ([4daf584](https://github.com/Hexstar-labs/predictIQ/commit/4daf5847b26a49ae642a3f9764de8d59d5d4b89a)), closes [#523](https://github.com/Hexstar-labs/predictIQ/issues/523)
+* **#524:** Add frontend internationalization support ([266a5e3](https://github.com/Hexstar-labs/predictIQ/commit/266a5e36e788718eb87ddfe64dd30c33b6ba9ca3)), closes [#524](https://github.com/Hexstar-labs/predictIQ/issues/524)
+* **#525:** Implement frontend dark mode support ([e171d57](https://github.com/Hexstar-labs/predictIQ/commit/e171d57926f6937ccaf81b712b43287a2086d4eb)), closes [#525](https://github.com/Hexstar-labs/predictIQ/issues/525)
+* **#526:** Add k6 load test for newsletter subscribe endpoint ([b31196d](https://github.com/Hexstar-labs/predictIQ/commit/b31196decc9ee16d2adc2a40d1d193ee3c1a30f2)), closes [#526](https://github.com/Hexstar-labs/predictIQ/issues/526)
+* add cache stampede protection (Issue [#047](https://github.com/Hexstar-labs/predictIQ/issues/047)) ([4fff7e7](https://github.com/Hexstar-labs/predictIQ/commit/4fff7e7717b1b028fd15ef9d1a3e00402cacebdb))
+* add configurable database query timeout ([#049](https://github.com/Hexstar-labs/predictIQ/issues/049)) ([522e0f0](https://github.com/Hexstar-labs/predictIQ/commit/522e0f02d02d7bf0c63d8a54997180fd393f2f27))
+* add Dependabot configuration for automated security updates ([34ed35e](https://github.com/Hexstar-labs/predictIQ/commit/34ed35e49998bcf36044cb623e627e4697c8ffa2))
+* add E2E tests for market creation flow with CI and flaky detection ([8778933](https://github.com/Hexstar-labs/predictIQ/commit/87789333a684ad43ff6353c78ac3af6bad152bb8))
+* add idempotency key support for email sends (Issue [#045](https://github.com/Hexstar-labs/predictIQ/issues/045)) ([54dde3f](https://github.com/Hexstar-labs/predictIQ/commit/54dde3f5add093a3d453b11b0fb0cb163d2157f1))
+* **api:** add database connection health check ([#495](https://github.com/Hexstar-labs/predictIQ/issues/495)) ([e012013](https://github.com/Hexstar-labs/predictIQ/commit/e012013dd3c93716e22998f0ee9cf8a384784318))
+* **frontend:** add form validation with accessible user feedback ([#073](https://github.com/Hexstar-labs/predictIQ/issues/073)) ([f376168](https://github.com/Hexstar-labs/predictIQ/commit/f3761686c81870957630b2aaa88bfd8a30143579))
+* implement cache TTL per key type (Issue [#046](https://github.com/Hexstar-labs/predictIQ/issues/046)) ([8f2bbb1](https://github.com/Hexstar-labs/predictIQ/commit/8f2bbb11a06add5635d047676dc9e11162d73083))
+* implement database migration version tracking ([281e2a2](https://github.com/Hexstar-labs/predictIQ/commit/281e2a2241362cc255af7537ff02a081a9e6b4b3)), closes [#496](https://github.com/Hexstar-labs/predictIQ/issues/496)
+* implement graceful shutdown for background workers ([0ef02d4](https://github.com/Hexstar-labs/predictIQ/commit/0ef02d4680cf468e2ee4b2610acbdcf6d66ef021))
+* implement issues [#513](https://github.com/Hexstar-labs/predictIQ/issues/513) [#514](https://github.com/Hexstar-labs/predictIQ/issues/514) [#515](https://github.com/Hexstar-labs/predictIQ/issues/515) [#516](https://github.com/Hexstar-labs/predictIQ/issues/516) ([f8cdec2](https://github.com/Hexstar-labs/predictIQ/commit/f8cdec222a9d26942f1fa67483428a7c91037620))
+* implement real market resolve write flow ([#457](https://github.com/Hexstar-labs/predictIQ/issues/457)) ([ca9de29](https://github.com/Hexstar-labs/predictIQ/commit/ca9de29585f8907259f17c41a7011bb2653997c9))
+* introduce targeted cache invalidation tags ([#459](https://github.com/Hexstar-labs/predictIQ/issues/459)) ([e2924e3](https://github.com/Hexstar-labs/predictIQ/commit/e2924e3caf178dce83c42269cfd6fe9a43257bee))
+* newsletter-security-issues ([59e2a2d](https://github.com/Hexstar-labs/predictIQ/commit/59e2a2d845e937e3a3adbb3c9ad343c45a015fb1))
+* protect /metrics endpoint with auth and IP allowlist ([044ef94](https://github.com/Hexstar-labs/predictIQ/commit/044ef947b9bdda5d35988d086a7612f54b730597)), closes [#456](https://github.com/Hexstar-labs/predictIQ/issues/456)
+* Redis pooling, circuit breaker, retry, correlation IDs, OTel tracing ([cab2ffb](https://github.com/Hexstar-labs/predictIQ/commit/cab2ffb779e66405adbcf52b0772da612cce7e61))
+* sanitize email recipients before SendGrid call (Issue [#044](https://github.com/Hexstar-labs/predictIQ/issues/044)) ([13ff88a](https://github.com/Hexstar-labs/predictIQ/commit/13ff88a648caf81a74e18922069654445a36f407))
+* wire and globalise admin security & validation middleware ([#446](https://github.com/Hexstar-labs/predictIQ/issues/446) [#447](https://github.com/Hexstar-labs/predictIQ/issues/447) [#448](https://github.com/Hexstar-labs/predictIQ/issues/448) [#449](https://github.com/Hexstar-labs/predictIQ/issues/449)) ([38ad7b3](https://github.com/Hexstar-labs/predictIQ/commit/38ad7b38c312dfb9459f58cae24c69f9aedcf3e6))
+
 # 1.0.0 (2026-04-29)
 
 
