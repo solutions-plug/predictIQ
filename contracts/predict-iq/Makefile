@@ -1,6 +1,6 @@
 # PredictIQ Test Suite Makefile
 
-.PHONY: help test test-unit test-integration test-all bench coverage clean install-tools format lint audit
+.PHONY: help test test-unit test-integration test-all bench coverage clean install-tools format lint audit deploy-testnet deploy-mainnet
 
 help:
 	@echo "PredictIQ Test Suite Commands:"
@@ -14,6 +14,8 @@ help:
 	@echo "  make audit             - Run security audit"
 	@echo "  make clean             - Clean build artifacts"
 	@echo "  make install-tools     - Install required tools"
+	@echo "  make deploy-testnet    - Deploy contract to Stellar testnet"
+	@echo "  make deploy-mainnet    - Deploy contract to Stellar mainnet"
 
 # Install required testing tools
 install-tools:
@@ -146,3 +148,47 @@ test-report:
 	@echo "Generating test report..."
 	cargo test --workspace -- --format=json | tee test-report.json
 	@echo "Test report saved to test-report.json"
+
+# Deploy to Stellar testnet
+deploy-testnet:
+	@echo "🚀 Deploying to Stellar Testnet"
+	@echo ""
+	@read -p "Are you sure you want to deploy to TESTNET? [y/N] " confirm; \
+	if [ "$$confirm" = "y" ] || [ "$$confirm" = "Y" ]; then \
+		echo "Proceeding with testnet deployment..."; \
+		cargo build --target wasm32-unknown-unknown --release; \
+		soroban contract deploy \
+			--wasm target/wasm32-unknown-unknown/release/predict_iq.wasm \
+			--source-account $(SOROBAN_ACCOUNT) \
+			--network testnet; \
+		echo "✅ Testnet deployment completed"; \
+	else \
+		echo "❌ Deployment cancelled"; \
+		exit 1; \
+	fi
+
+# Deploy to Stellar mainnet (requires explicit confirmation)
+deploy-mainnet:
+	@echo "🚀 Deploying to Stellar Mainnet"
+	@echo ""
+	@echo "⚠️  WARNING: This will deploy to MAINNET"
+	@echo "⚠️  This action cannot be easily undone"
+	@echo ""
+	@read -p "Are you sure you want to deploy to MAINNET? [y/N] " confirm; \
+	if [ "$$confirm" = "y" ] || [ "$$confirm" = "Y" ]; then \
+		if [ -z "$(CONFIRM_MAINNET)" ] || [ "$(CONFIRM_MAINNET)" != "yes" ]; then \
+			echo "❌ Mainnet deployment requires CONFIRM_MAINNET=yes"; \
+			echo "   Usage: make deploy-mainnet CONFIRM_MAINNET=yes"; \
+			exit 1; \
+		fi; \
+		echo "Proceeding with mainnet deployment..."; \
+		cargo build --target wasm32-unknown-unknown --release; \
+		soroban contract deploy \
+			--wasm target/wasm32-unknown-unknown/release/predict_iq.wasm \
+			--source-account $(SOROBAN_ACCOUNT) \
+			--network mainnet; \
+		echo "✅ Mainnet deployment completed"; \
+	else \
+		echo "❌ Deployment cancelled"; \
+		exit 1; \
+	fi

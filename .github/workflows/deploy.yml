@@ -76,6 +76,13 @@ jobs:
           role-to-assume: ${{ secrets[format('AWS_ROLE_{0}', matrix.environment)] }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Check SLO Compliance (Production Only)
+        if: matrix.environment == 'prod'
+        run: |
+          node performance/scripts/check-slo-compliance.js
+        env:
+          PROMETHEUS_URL: ${{ secrets.PROMETHEUS_URL }}
+
       - name: Download plan
         uses: actions/download-artifact@v3
         with:
