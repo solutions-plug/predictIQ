@@ -277,3 +277,195 @@ fn bench_full_market_lifecycle_max_outcomes() {
     let result = client.try_claim_winnings(&bettor0, &market_id);
     assert!(result.is_ok(), "winner must be able to claim winnings");
 }
+
+// ── Dispute flow gas benchmarks ───────────────────────────────────────────────
+//
+// Regression thresholds for the dispute flow (CI pass/fail gates):
+//   - GAS_THRESHOLD_DISPUTE_PAYOUT (2_600_000) applies to the resolution step
+//     after a dispute, using the same formula as regular resolution.
+//
+// Flow under test:
+//   create_market → place_bet → set_oracle_result → attempt_oracle_resolution
+//   → file_dispute → cast_vote (N participants) → finalize_resolution
+
+/// Advance the market from Active to PendingResolution via oracle and return
+/// the market_id together with the betting-token address.
+fn setup_pending_resolution(
+    env: &Env,
+    client: &PredictIQClient,
+    outcome_count: u32,
+) -> (u64, Address) {
+    let (market_id, token_address) = create_market_with_token(env, client, outcome_count);
+
+    // Place a bet so at least one winner exists after resolution.
+    place_bet(env, client, market_id, 0, 1_000, &token_address);
+
+    // Record oracle result for outcome 0 at current ledger time (timestamp 0).
+    client.set_oracle_result(&market_id, &0, &0);
+
+    // Advance past the resolution_deadline (markets are created with deadline 2000).
+    env.ledger().with_mut(|li| li.timestamp = 2_001);
+
+    // Trigger oracle resolution → PendingResolution.
+    client
+        .try_attempt_oracle_resolution(&market_id)
+        .expect("attempt_oracle_resolution must succeed");
+
+    (market_id, token_address)
+}
+
+/// Advance a PendingResolution market to Disputed.
+fn setup_disputed_market(
+    env: &Env,
+    client: &PredictIQClient,
+    outcome_count: u32,
+) -> (u64, Address) {
+    let (market_id, token_address) = setup_pending_resolution(env, client, outcome_count);
+
+    // Dispute must be filed within the 72-hour dispute window.
+    env.ledger().with_mut(|li| li.timestamp = 2_100);
+    let disputer = Address::generate(env);
+    client
+        .try_file_dispute(&disputer, &market_id)
+        .expect("file_dispute must succeed on PendingResolution market");
+
+    (market_id, token_address)
+}
+
+// ── Benchmark 1: open dispute (file_dispute) ─────────────────────────────────
+
+/// Gas benchmark: filing a dispute on a PendingResolution market.
+/// Validates that the state transition Active→PendingResolution→Disputed
+/// completes and the gas estimate remains within threshold.
+#[test]
+fn bench_dispute_open() {
+    let (env, _admin, client) = create_test_env();
+    let (market_id, _) = setup_pending_resolution(&env, &client, 4);
+
+    env.ledger().with_mut(|li| li.timestamp = 2_100);
+    let disputer = Address::generate(&env);
+    let result = client.try_file_dispute(&disputer, &market_id);
+    assert!(result.is_ok(), "open dispute must succeed: {:?}", result);
+
+    let market = client.get_market(&market_id).unwrap();
+    assert_eq!(
+        market.status,
+        predict_iq::types::MarketStatus::Disputed,
+        "market must be in Disputed state after file_dispute"
+    );
+}
+
+// ── Benchmark 2: vote on dispute (single participant) ────────────────────────
+
+/// Gas benchmark: single voter casting a vote on a disputed market.
+#[test]
+fn bench_dispute_vote_single_participant() {
+    let (env, _admin, client) = create_test_env();
+
+    // Register a governance token so cast_vote can lock voter weight.
+    let gov_admin = Address::generate(&env);
+    let gov_id = env.register_stellar_asset_contract_v2(gov_admin.clone());
+    let gov_token = gov_id.address();
+    let gov_stellar = token::StellarAssetClient::new(&env, &gov_token);
+    client
+        .try_set_governance_token(&gov_token)
+        .expect("set_governance_token must succeed");
+
+    let (market_id, _) = setup_disputed_market(&env, &client, 4);
+
+    let voter = Address::generate(&env);
+    gov_stellar.mint(&voter, &5_000);
+
+    let result = client.try_cast_vote(&voter, &market_id, &0, &5_000);
+    assert!(result.is_ok(), "single-participant vote must succeed: {:?}", result);
+}
+
+// ── Benchmark 3: vote on dispute (multiple participants) ─────────────────────
+
+/// Gas benchmark: ten voters participating in a dispute — the most gas-intensive
+/// voting scenario before pull-mode kicks in.
+#[test]
+fn bench_dispute_vote_multiple_participants() {
+    const VOTER_COUNT: u32 = 10;
+
+    let (env, _admin, client) = create_test_env();
+
+    let gov_admin = Address::generate(&env);
+    let gov_id = env.register_stellar_asset_contract_v2(gov_admin.clone());
+    let gov_token = gov_id.address();
+    let gov_stellar = token::StellarAssetClient::new(&env, &gov_token);
+    client
+        .try_set_governance_token(&gov_token)
+        .expect("set_governance_token must succeed");
+
+    let (market_id, _) = setup_disputed_market(&env, &client, 4);
+
+    for i in 0..VOTER_COUNT {
+        let voter = Address::generate(&env);
+        gov_stellar.mint(&voter, &1_000);
+        // Split votes: even-indexed voters choose outcome 0, odd choose outcome 1.
+        let outcome: u32 = if i % 2 == 0 { 0 } else { 1 };
+        let result = client.try_cast_vote(&voter, &market_id, &outcome, &1_000);
+        assert!(
+            result.is_ok(),
+            "vote {} must succeed: {:?}",
+            i,
+            result
+        );
+    }
+}
+
+// ── Benchmark 4: resolve dispute (finalize_resolution) ───────────────────────
+
+/// Gas benchmark: full dispute lifecycle — open, vote, then finalize.
+/// Asserts that the gas estimate after finalization stays within
+/// GAS_THRESHOLD_DISPUTE_PAYOUT (worst-case push-payout ceiling).
+#[test]
+fn bench_dispute_resolve() {
+    let (env, _admin, client) = create_test_env();
+
+    let gov_admin = Address::generate(&env);
+    let gov_id = env.register_stellar_asset_contract_v2(gov_admin.clone());
+    let gov_token = gov_id.address();
+    let gov_stellar = token::StellarAssetClient::new(&env, &gov_token);
+    client
+        .try_set_governance_token(&gov_token)
+        .expect("set_governance_token must succeed");
+
+    let (market_id, _) =
+        setup_disputed_market(&env, &client, predict_iq::types::MAX_OUTCOMES_PER_MARKET);
+
+    // Majority votes for outcome 0 (confirming the oracle result).
+    let voter_a = Address::generate(&env);
+    let voter_b = Address::generate(&env);
+    gov_stellar.mint(&voter_a, &7_000);
+    gov_stellar.mint(&voter_b, &3_000);
+    client.cast_vote(&voter_a, &market_id, &0, &7_000);
+    client.cast_vote(&voter_b, &market_id, &1, &3_000);
+
+    // Advance past the 72-hour voting period (dispute filed at timestamp 2_100).
+    env.ledger().with_mut(|li| li.timestamp = 2_100 + 259_200 + 1);
+
+    let result = client.try_finalize_resolution(&market_id);
+    assert!(
+        result.is_ok(),
+        "finalize_resolution must succeed after voting period: {:?}",
+        result
+    );
+
+    let market = client.get_market(&market_id).unwrap();
+    assert_eq!(
+        market.status,
+        predict_iq::types::MarketStatus::Resolved,
+        "market must be Resolved after finalize_resolution"
+    );
+
+    // Validate gas estimate stays within the CI regression threshold.
+    let metrics = client.get_resolution_metrics(&market_id, &0);
+    assert!(
+        metrics.gas_estimate <= GAS_THRESHOLD_DISPUTE_PAYOUT,
+        "dispute resolve gas estimate {} exceeds CI threshold {}",
+        metrics.gas_estimate,
+        GAS_THRESHOLD_DISPUTE_PAYOUT
+    );
+}

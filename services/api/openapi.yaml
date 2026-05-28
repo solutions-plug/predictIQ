@@ -50,6 +50,8 @@ paths:
               schema:
                 type: string
                 example: ok
+        "500":
+          $ref: "#/components/responses/ApiError"
 
   /api/v1/statistics:
     get:
@@ -65,6 +67,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AnyObject"
+        "400":
+          $ref: "#/components/responses/ApiError"
+        "401":
+          $ref: "#/components/responses/ApiError"
+        "429":
+          $ref: "#/components/responses/ApiError"
         "500":
           $ref: "#/components/responses/ApiError"
 
@@ -84,6 +92,10 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/FeaturedMarketView"
+        "400":
+          $ref: "#/components/responses/ApiError"
+        "429":
+          $ref: "#/components/responses/ApiError"
         "500":
           $ref: "#/components/responses/ApiError"
 
@@ -103,6 +115,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AnyObject"
+        "400":
+          $ref: "#/components/responses/ApiError"
+        "429":
+          $ref: "#/components/responses/ApiError"
         "500":
           $ref: "#/components/responses/ApiError"
 
@@ -123,9 +139,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/InvalidationResult"
+        "400":
+          $ref: "#/components/responses/ApiError"
         "401":
           $ref: "#/components/responses/ApiError"
         "403":
+          $ref: "#/components/responses/ApiError"
+        "404":
+          $ref: "#/components/responses/ApiError"
+        "429":
           $ref: "#/components/responses/ApiError"
         "500":
           $ref: "#/components/responses/ApiError"
@@ -153,14 +175,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BlockchainHealth"
+        "400":
+          $ref: "#/components/responses/ApiError"
+        "429":
+          $ref: "#/components/responses/ApiError"
+        "500":
+          $ref: "#/components/responses/ApiError"
         "503":
           description: Degraded (node up, contract unreachable) or unhealthy (node down)
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/BlockchainHealth"
-        "500":
-          $ref: "#/components/responses/ApiError"
 
   /api/v1/blockchain/markets/{market_id}:
     get:
@@ -177,6 +203,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AnyObject"
+        "400":
+          $ref: "#/components/responses/ApiError"
+        "404":
+          $ref: "#/components/responses/ApiError"
+        "429":
+          $ref: "#/components/responses/ApiError"
         "500":
           $ref: "#/components/responses/ApiError"
 
@@ -194,6 +226,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AnyObject"
+        "400":
+          $ref: "#/components/responses/ApiError"
+        "429":
+          $ref: "#/components/responses/ApiError"
         "500":
           $ref: "#/components/responses/ApiError"
 
@@ -219,6 +255,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AnyObject"
+        "400":
+          $ref: "#/components/responses/ApiError"
+        "404":
+          $ref: "#/components/responses/ApiError"
+        "429":
+          $ref: "#/components/responses/ApiError"
         "500":
           $ref: "#/components/responses/ApiError"
 
@@ -237,6 +279,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AnyObject"
+        "400":
+          $ref: "#/components/responses/ApiError"
+        "404":
+          $ref: "#/components/responses/ApiError"
+        "429":
+          $ref: "#/components/responses/ApiError"
         "500":
           $ref: "#/components/responses/ApiError"
 
@@ -259,6 +307,12 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AnyObject"
+        "400":
+          $ref: "#/components/responses/ApiError"
+        "404":
+          $ref: "#/components/responses/ApiError"
+        "429":
+          $ref: "#/components/responses/ApiError"
         "500":
           $ref: "#/components/responses/ApiError"
 
@@ -285,6 +339,8 @@ paths:
           $ref: "#/components/responses/NewsletterResponse"
         "429":
           $ref: "#/components/responses/NewsletterResponse"
+        "500":
+          $ref: "#/components/responses/ApiError"
 
   /api/v1/newsletter/confirm:
     get:
@@ -304,6 +360,8 @@ paths:
           $ref: "#/components/responses/NewsletterResponse"
         "404":
           $ref: "#/components/responses/NewsletterResponse"
+        "500":
+          $ref: "#/components/responses/ApiError"
 
   /api/v1/newsletter/unsubscribe:
     delete:
@@ -321,6 +379,10 @@ paths:
           $ref: "#/components/responses/NewsletterResponse"
         "400":
           $ref: "#/components/responses/NewsletterResponse"
+        "404":
+          $ref: "#/components/responses/NewsletterResponse"
+        "500":
+          $ref: "#/components/responses/ApiError"
 
   /api/v1/newsletter/gdpr/export:
     get:
@@ -345,6 +407,8 @@ paths:
           $ref: "#/components/responses/NewsletterResponse"
         "404":
           $ref: "#/components/responses/NewsletterResponse"
+        "500":
+          $ref: "#/components/responses/ApiError"
 
   /api/v1/newsletter/gdpr/delete:
     delete:
@@ -362,6 +426,10 @@ paths:
           $ref: "#/components/responses/NewsletterResponse"
         "400":
           $ref: "#/components/responses/NewsletterResponse"
+        "404":
+          $ref: "#/components/responses/NewsletterResponse"
+        "500":
+          $ref: "#/components/responses/ApiError"
 
   /api/v1/email/preview/{template_name}:
     get:
@@ -388,6 +456,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AnyObject"
+        "400":
+          $ref: "#/components/responses/ApiError"
+        "401":
+          $ref: "#/components/responses/ApiError"
+        "403":
+          $ref: "#/components/responses/ApiError"
+        "404":
+          $ref: "#/components/responses/ApiError"
+        "429":
+          $ref: "#/components/responses/ApiError"
         "500":
           $ref: "#/components/responses/ApiError"
 
@@ -411,6 +489,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EmailTestResponse"
+        "400":
+          $ref: "#/components/responses/ApiError"
+        "401":
+          $ref: "#/components/responses/ApiError"
+        "403":
+          $ref: "#/components/responses/ApiError"
+        "429":
+          $ref: "#/components/responses/ApiError"
         "500":
           $ref: "#/components/responses/ApiError"
 
@@ -442,6 +528,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AnyObject"
+        "400":
+          $ref: "#/components/responses/ApiError"
+        "401":
+          $ref: "#/components/responses/ApiError"
+        "403":
+          $ref: "#/components/responses/ApiError"
+        "429":
+          $ref: "#/components/responses/ApiError"
         "500":
           $ref: "#/components/responses/ApiError"
 
@@ -459,6 +553,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AnyObject"
+        "400":
+          $ref: "#/components/responses/ApiError"
+        "401":
+          $ref: "#/components/responses/ApiError"
+        "403":
+          $ref: "#/components/responses/ApiError"
+        "429":
+          $ref: "#/components/responses/ApiError"
         "500":
           $ref: "#/components/responses/ApiError"
 
@@ -530,6 +632,10 @@ paths:
           $ref: "#/components/responses/ApiError"
         "401":
           description: Signature verification failed (not authorized as SendGrid)
+          $ref: "#/components/responses/ApiError"
+        "429":
+          $ref: "#/components/responses/ApiError"
+        "500":
           $ref: "#/components/responses/ApiError"
 
 components:
@@ -624,6 +730,11 @@ components:
         message:
           type: string
           description: Human-readable error description
+        details:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: Optional additional context about the error
 
     FeaturedMarketView:
       type: object

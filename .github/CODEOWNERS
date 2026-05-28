@@ -1,0 +1,19 @@
+# CODEOWNERS
+# Each line maps a path pattern to one or more GitHub teams or users.
+# The last matching rule takes precedence.
+# Docs: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owner for everything not matched below
+* @solutions-plug/maintainers
+
+# Smart contract code — requires smart contract team review
+/contracts/ @solutions-plug/smart-contract-team
+
+# Security module — requires security team review
+/services/api/src/security.rs @solutions-plug/security-team
+
+# CI/CD workflows — requires DevOps review
+/.github/workflows/ @solutions-plug/devops
+
+# Infrastructure / Terraform — requires DevOps review
+/infrastructure/ @solutions-plug/devops

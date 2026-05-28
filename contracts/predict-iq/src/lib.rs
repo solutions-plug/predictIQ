@@ -184,6 +184,24 @@ impl PredictIQ {
         crate::modules::disputes::resolve_market(&e, market_id, winning_outcome)
     }
 
+    /// Set the governance token used for dispute voting weights.
+    pub fn set_governance_token(e: Env, token: Address) -> Result<(), ErrorCode> {
+        crate::modules::admin::set_governance_token(&e, token)
+    }
+
+    /// Attempt to resolve a market via the oracle after the resolution deadline.
+    /// Transitions status: Active → PendingResolution.
+    pub fn attempt_oracle_resolution(e: Env, market_id: u64) -> Result<(), ErrorCode> {
+        crate::modules::resolution::attempt_oracle_resolution(&e, market_id)
+    }
+
+    /// Finalize resolution after the dispute window has closed.
+    /// Handles both the no-dispute path (PendingResolution → Resolved) and
+    /// the post-vote path (Disputed → Resolved).
+    pub fn finalize_resolution(e: Env, market_id: u64) -> Result<(), ErrorCode> {
+        crate::modules::resolution::finalize_resolution(&e, market_id)
+    }
+
     pub fn reset_monitoring(e: Env) -> Result<(), ErrorCode> {
         crate::modules::admin::require_admin(&e)?;
         crate::modules::monitoring::reset_monitoring(&e);

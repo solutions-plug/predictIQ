@@ -1,75 +1,64 @@
 #!/bin/bash
-
-# Script to push branch and create PR for Issue #14
-# Run this from the project root: bash push_and_create_pr.sh
+# push_and_create_pr.sh — push current branch and open a PR via GitHub CLI.
+# Usage: bash push_and_create_pr.sh [--help]
 
 set -e
 
-echo "╔══════════════════════════════════════════════════════════════╗"
-echo "║  Pushing Issue #14 Branch and Creating Pull Request         ║"
-echo "╚══════════════════════════════════════════════════════════════╝"
-echo ""
+usage() {
+    cat <<EOF
+Usage: bash push_and_create_pr.sh [--help]
 
-# Check if we're on the correct branch
-CURRENT_BRANCH=$(git branch --show-current)
-EXPECTED_BRANCH="features/issue-14-Permissioned-Creation-Tiered-Market-Levels"
+Pushes the current branch to origin and creates a GitHub Pull Request.
 
-if [ "$CURRENT_BRANCH" != "$EXPECTED_BRANCH" ]; then
-    echo "❌ Error: Not on the correct branch"
-    echo "   Current: $CURRENT_BRANCH"
-    echo "   Expected: $EXPECTED_BRANCH"
+Requirements:
+  - gh CLI installed and authenticated (https://cli.github.com/)
+  - Must be run from inside the git repository
+
+Options:
+  --help    Show this help message and exit
+EOF
+    exit 0
+}
+
+[[ "${1:-}" == "--help" ]] && usage
+
+# Validate gh CLI is installed
+if ! command -v gh &>/dev/null; then
+    echo "❌ Error: 'gh' CLI is not installed."
+    echo "   Install it from https://cli.github.com/ then run: gh auth login"
     exit 1
 fi
 
-echo "✅ On correct branch: $CURRENT_BRANCH"
-echo ""
-
-# Show commits to be pushed
-echo "📦 Commits to be pushed:"
-git log --oneline -2
-echo ""
-
-# Push the branch
-echo "🚀 Pushing branch to origin..."
-git push origin "$CURRENT_BRANCH"
-echo ""
-
-echo "✅ Branch pushed successfully!"
-echo ""
-
-# Check if gh CLI is available
-if command -v gh &> /dev/null; then
-    echo "📝 GitHub CLI detected. Creating PR..."
-    echo ""
-    
-    # Create PR using gh CLI
-    gh pr create \
-        --base main \
-        --title "feat: Permissioned Creation & Tiered Market Levels (Issue #14)" \
-        --body-file PR_TEMPLATE_ISSUE_14.md \
-        --label "enhancement" \
-        --label "breaking-change"
-    
-    echo ""
-    echo "✅ Pull Request created successfully!"
-else
-    echo "ℹ️  GitHub CLI not found. Please create PR manually:"
-    echo ""
-    echo "1. Visit your repository on GitHub"
-    echo "2. Click 'Compare & pull request' button"
-    echo "3. Set base branch to: main (or develop if it exists)"
-    echo "4. Copy content from PR_TEMPLATE_ISSUE_14.md into PR description"
-    echo "5. Add labels: enhancement, breaking-change"
-    echo ""
-    echo "Or install GitHub CLI: https://cli.github.com/"
+# Validate gh CLI is authenticated
+if ! gh auth status &>/dev/null; then
+    echo "❌ Error: 'gh' CLI is not authenticated."
+    echo "   Run: gh auth login"
+    exit 1
 fi
 
+# Derive repo from git remote (works after forks/renames)
+REPO=$(git remote get-url origin | sed -E 's|.*[:/]([^/]+/[^/]+)(\.git)?$|\1|')
+CURRENT_BRANCH=$(git branch --show-current)
+
+if [[ -z "$CURRENT_BRANCH" ]]; then
+    echo "❌ Error: Could not determine current branch (detached HEAD?)."
+    exit 1
+fi
+
+echo "📦 Repository : $REPO"
+echo "🌿 Branch     : $CURRENT_BRANCH"
 echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "📚 Documentation files available:"
-echo "   • IMPLEMENTATION_ISSUE_14.md"
-echo "   • PR_TEMPLATE_ISSUE_14.md"
-echo "   • QUICK_REFERENCE_ISSUE_14.md"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+echo "🚀 Pushing branch to origin..."
+git push -u origin "$CURRENT_BRANCH"
 echo ""
-echo "✨ Done!"
+
+echo "📝 Creating Pull Request..."
+gh pr create \
+    --repo "$REPO" \
+    --base main \
+    --head "$CURRENT_BRANCH" \
+    --fill
+
+echo ""
+echo "✅ Done!"

@@ -34,18 +34,23 @@ regex = '''redis://[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+@[a-zA-Z0-9.-]+:[0-9]+'''
 tags = ["redis", "connection"]
 
 [allowlist]
-description = "Allowlist for false positives"
+description = "Allowlist for known false positives — each entry is intentional and scoped as narrowly as possible"
+
 paths = [
-  '''^\.env\.example$''',
-  '''^.*\.md$''',
-  '''^.*test.*\.rs$''',
-  '''^.*_test\.ts$''',
+  # .env.example documents required variables with empty or clearly fake values; never contains real secrets
+  '''^services/api/\.env\.example$''',
+  # frontend .env.example follows the same convention
+  '''^frontend/\.env\.example$''',
 ]
 
 regexes = [
+  # Generic placeholder domain used in code examples and templates — not a real host
   '''example\.com''',
+  # Loopback addresses are not secrets; they appear in default config and tests
   '''localhost''',
   '''127\.0\.0\.1''',
+  # Canonical Stellar placeholder public key (all X's) used in documentation
   '''GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX''',
+  # Canonical Stellar placeholder secret key (all X's) used in documentation
   '''SXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX''',
 ]

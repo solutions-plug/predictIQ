@@ -1,3 +1,26 @@
+// Validate required environment variables at build time.
+// If any are missing the build aborts with a clear error rather than
+// producing a bundle that fails silently at runtime.
+const { z } = require('zod');
+
+const envSchema = z.object({
+  NEXT_PUBLIC_API_URL: z
+    .string()
+    .min(1, 'NEXT_PUBLIC_API_URL must not be empty')
+    .url('NEXT_PUBLIC_API_URL must be a valid URL'),
+});
+
+const envResult = envSchema.safeParse({
+  NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
+});
+
+if (!envResult.success) {
+  const issues = envResult.error.errors
+    .map((e) => `  - ${e.path.join('.')}: ${e.message}`)
+    .join('\n');
+  throw new Error(`\nMissing or invalid environment variables:\n${issues}\n`);
+}
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   // Enable code splitting and optimization

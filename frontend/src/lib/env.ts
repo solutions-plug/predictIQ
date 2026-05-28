@@ -1,64 +1,47 @@
 /**
- * Environment variable validation for frontend
- * Validates required environment variables at startup
+ * Environment variable validation for frontend.
+ * Uses zod to validate required variables at build time so the app never
+ * starts with a missing NEXT_PUBLIC_API_URL and returns a cryptic runtime error.
  */
 
-interface EnvConfig {
-  apiUrl: string;
-}
+import { z } from 'zod';
 
-const REQUIRED_ENV_VARS = {
-  NEXT_PUBLIC_API_URL: 'API endpoint URL',
-} as const;
+const envSchema = z.object({
+  NEXT_PUBLIC_API_URL: z
+    .string()
+    .min(1, 'NEXT_PUBLIC_API_URL must not be empty')
+    .url('NEXT_PUBLIC_API_URL must be a valid URL'),
+});
+
+export type EnvConfig = z.infer<typeof envSchema>;
 
 /**
- * Validates that all required environment variables are set
- * @throws Error if any required environment variable is missing
+ * Validate environment variables against the schema.
+ * Throws with a descriptive message listing every missing or invalid variable.
  */
 export function validateEnvironment(): EnvConfig {
-  const missing: string[] = [];
+  const result = envSchema.safeParse({
+    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
+  });
 
-  for (const [key, description] of Object.entries(REQUIRED_ENV_VARS)) {
-    const value = process.env[key];
-    if (!value || value.trim() === '') {
-      missing.push(`${key} (${description})`);
-    }
+  if (!result.success) {
+    const issues = result.error.errors
+      .map((e) => `  - ${e.path.join('.')}: ${e.message}`)
+      .join('\n');
+    throw new Error(`Missing or invalid environment variables:\n${issues}`);
   }
 
-  if (missing.length > 0) {
-    const errorMessage = `Missing required environment variables:\n${missing.map(v => `  - ${v}`).join('\n')}`;
-    
-    // In development, log warning; in production, throw error
-    if (process.env.NODE_ENV === 'production') {
-      throw new Error(errorMessage);
-    } else {
-      console.warn('⚠️  Environment validation warning:\n' + errorMessage);
-    }
-  }
-
-  return {
-    apiUrl: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001',
-  };
+  return result.data;
 }
 
 /**
- * Get validated environment configuration
+ * Get validated environment configuration.
+ * Re-uses the cached result from module initialisation.
  */
 export function getEnvConfig(): EnvConfig {
-  return {
-    apiUrl: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001',
-  };
+  return env;
 }
 
-// Validate environment on module load
-if (typeof window === 'undefined') {
-  // Server-side validation
-  try {
-    validateEnvironment();
-  } catch (error) {
-    console.error('Environment validation failed:', error);
-    if (process.env.NODE_ENV === 'production') {
-      throw error;
-    }
-  }
-}
+// Validate once at module load so any import of this file fails fast —
+// on the server during `next build` this surfaces missing vars as a build error.
+export const env = validateEnvironment();

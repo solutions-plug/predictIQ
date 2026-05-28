@@ -32,11 +32,17 @@ interface RequestOptions {
 export class ApiError extends Error {
   /** HTTP status code, or 0 for network/connection failures. */
   readonly status: number;
+  /** Machine-readable error code from the API (e.g. "NOT_FOUND", "RATE_LIMITED"). */
+  readonly code: string;
+  /** Optional additional context returned by the API. */
+  readonly details?: Record<string, unknown>;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, code = "UNKNOWN_ERROR", details?: Record<string, unknown>) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.code = code;
+    this.details = details;
   }
 
   /** True for client errors (4xx). */
@@ -95,7 +101,9 @@ async function request<T>(
   if (!res.ok) {
     const err = await res.json().catch(() => ({ message: res.statusText }));
     const message = err?.message ?? `HTTP ${res.status}`;
-    throw new ApiError(message, res.status);
+    const code = err?.code ?? "UNKNOWN_ERROR";
+    const details = err?.details ?? undefined;
+    throw new ApiError(message, res.status, code, details);
   }
 
   // 204 / empty body
