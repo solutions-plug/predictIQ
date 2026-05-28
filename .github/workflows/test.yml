@@ -666,7 +666,33 @@ jobs:
       - build-optimized
       - api-cache-tests
       - e2e-market-creation
+      - documentation-sync
     runs-on: ubuntu-latest
     steps:
       - name: Success
         run: echo "All tests passed successfully!"
+
+  documentation-sync:
+    name: Documentation Sync Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: "18"
+
+      - name: Check API_SPEC.md is in sync with openapi.yaml
+        run: node scripts/generate-api-spec.js --check
+
+      - name: Fail if out of sync
+        if: failure()
+        run: |
+          echo "❌ API_SPEC.md is out of sync with openapi.yaml"
+          echo ""
+          echo "To fix this, run:"
+          echo "  node scripts/generate-api-spec.js"
+          echo "  git add API_SPEC.md"
+          echo "  git commit -m 'chore: regenerate API_SPEC.md'"
+          exit 1
