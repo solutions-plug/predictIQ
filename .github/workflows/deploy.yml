@@ -31,7 +31,7 @@ jobs:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets[format('AWS_ROLE_{0}', matrix.environment)] }}
           aws-region: ${{ env.AWS_REGION }}
@@ -71,7 +71,7 @@ jobs:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets[format('AWS_ROLE_{0}', matrix.environment)] }}
           aws-region: ${{ env.AWS_REGION }}
