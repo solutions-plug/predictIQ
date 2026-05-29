@@ -1,8 +1,9 @@
 use crate::errors::ErrorCode;
 use crate::types::ConfigKey;
-use soroban_sdk::{Env, Vec};
+use soroban_sdk::{contracttype, Env, Vec};
 
 /// Storage migration context for tracking version changes
+#[contracttype]
 #[derive(Clone)]
 pub struct MigrationContext {
     pub from_version: u32,
@@ -10,6 +11,7 @@ pub struct MigrationContext {
 }
 
 /// Execute a storage migration with rollback capability
+/// Post-migration validation checks key invariants. If validation fails, migration fails atomically.
 pub fn execute_migration(
     e: &Env,
     from_version: u32,
@@ -27,6 +29,13 @@ pub fn execute_migration(
     // Execute migration
     match migration_fn(e) {
         Ok(_) => {
+            // Post-migration validation: check invariants
+            if !verify_migration_integrity(e)? {
+                // Rollback on validation failure
+                restore_storage_state(e, from_version)?;
+                return Err(ErrorCode::MigrationValidationError);
+            }
+            
             // Record successful migration
             record_migration(e, from_version, to_version)?;
             Ok(())
@@ -78,6 +87,8 @@ fn record_migration(e: &Env, from_version: u32, to_version: u32) -> Result<(), E
 }
 
 /// Verify data integrity after migration
+/// Post-migration validation function that checks key invariants.
+/// Returns Ok(true) if all invariants pass, Ok(false) if validation fails.
 pub fn verify_migration_integrity(e: &Env) -> Result<bool, ErrorCode> {
     // Check critical storage keys exist
     let required_keys = vec![
@@ -91,6 +102,42 @@ pub fn verify_migration_integrity(e: &Env) -> Result<bool, ErrorCode> {
         }
     }
 
+    Ok(true)
+}
+
+/// Post-migration validation that checks stake conservation invariant:
+/// total_staked should equal sum of all outcome_stakes
+pub fn validate_stake_invariant(e: &Env, market_id: u64) -> Result<bool, ErrorCode> {
+    let market = match crate::modules::markets::get_market(e, market_id) {
+        Some(m) => m,
+        None => return Err(ErrorCode::MarketNotFound),
+    };
+
+    let total_staked = market.total_staked;
+    let mut sum_outcome_stakes: i128 = 0;
+    let mut outcome_idx: u32 = 0;
+
+    while outcome_idx < market.outcome_stakes.len() {
+        if let Some(stake) = market.outcome_stakes.get(outcome_idx) {
+            sum_outcome_stakes = sum_outcome_stakes.checked_add(stake).ok_or(ErrorCode::ArithmeticOverflow)?;
+        }
+        outcome_idx += 1;
+    }
+
+    Ok(total_staked == sum_outcome_stakes)
+}
+
+/// Validate all markets after migration - ensure stake conservation holds
+pub fn validate_all_markets_stake_invariant(e: &Env, market_count: u64) -> Result<bool, ErrorCode> {
+    let mut market_id: u64 = 1;
+    while market_id <= market_count {
+        if crate::modules::markets::get_market(e, market_id).is_some() {
+            if !validate_stake_invariant(e, market_id)? {
+                return Ok(false);
+            }
+        }
+        market_id += 1;
+    }
     Ok(true)
 }
 
@@ -148,5 +195,31 @@ mod tests {
         );
         
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_migration_validation_failure_rolls_back() {
+        use soroban_sdk::Address;
+        
+        let env = soroban_sdk::Env::default();
+        let admin = Address::generate(&env);
+        
+        env.storage().persistent().set(&ConfigKey::Admin, &admin);
+        env.storage().persistent().set(&ConfigKey::GuardianSet, &admin);
+
+        // Migration that removes admin key (invalidates state)
+        let result = execute_migration(
+            &env,
+            1,
+            2,
+            |_e| {
+                _e.storage().persistent().remove(&ConfigKey::Admin);
+                Ok(())
+            },
+        );
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), ErrorCode::MigrationValidationError);
+        assert!(env.storage().persistent().has(&ConfigKey::Admin));
     }
 }

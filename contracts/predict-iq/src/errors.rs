@@ -53,4 +53,11 @@ pub enum ErrorCode {
     GovernanceTokenNotSet = 146,
     MarketNotResolved = 147,
     InvalidDeadline = 148,
+    TokenFrozen = 149,
+    MigrationValidationError = 150,
+    AssetClawedBack = 151,
+    ArithmeticOverflow = 152,
+    AlreadyClaimed = 153,
+    NoWinnings = 154,
+    InvalidReferrer = 155,
 }

@@ -101,6 +101,9 @@ pub fn place_bet(
         return Err(ErrorCode::InvalidBetAmount);
     }
 
+    // Check if user's tokens are frozen for SAC-wrapped assets
+    sac::check_token_not_frozen(e, &token_address, &bettor)?;
+
     sac::safe_transfer(
         e,
         &token_address,
