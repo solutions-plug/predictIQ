@@ -1,5 +1,8 @@
 use std::net::IpAddr;
 
+pub mod client_ip;
+pub use client_ip::{extract_client_ip, trusted_cidrs_from_env};
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
