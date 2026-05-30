@@ -4,7 +4,6 @@ import { api } from '../lib/api/client';
 import { LoadingSpinner } from './LoadingSpinner';
 import { Skeleton } from './Skeleton';
 import './Statistics.css';
-import './Statistics.css';
 
 interface StatisticsData {
   totalMarkets?: number;
@@ -14,9 +13,28 @@ interface StatisticsData {
 }
 
 export const Statistics: React.FC = () => {
-  const { data, loading, error, execute } = useAsync<Record<string, unknown>>(
-    () => api.getStatistics(),
+  const fetchStatistics = React.useCallback(() => api.getStatistics(), []);
+  const { data, loading, error, execute } = useAsync<StatisticsData>(
+    fetchStatistics,
     { immediate: true }
+  );
+
+  const displayValues = React.useMemo(
+    () => ({
+      totalMarkets:
+        typeof data?.totalMarkets === 'number'
+          ? data.totalMarkets.toLocaleString()
+          : 'N/A',
+      totalVolume:
+        typeof data?.totalVolume === 'number'
+          ? `$${data.totalVolume.toLocaleString()}`
+          : '$N/A',
+      activeUsers:
+        typeof data?.activeUsers === 'number'
+          ? data.activeUsers.toLocaleString()
+          : 'N/A',
+    }),
+    [data?.activeUsers, data?.totalMarkets, data?.totalVolume],
   );
 
   const handleRetry = () => {
@@ -47,7 +65,7 @@ export const Statistics: React.FC = () => {
             <Skeleton width="4rem" height="2rem" aria-label="Loading total markets" />
           ) : (
             <p className="stat-value" aria-live="polite">
-              {typeof data?.totalMarkets === 'number' ? data.totalMarkets : 'N/A'}
+              {displayValues.totalMarkets}
             </p>
           )}
         </div>
@@ -57,7 +75,7 @@ export const Statistics: React.FC = () => {
             <Skeleton width="6rem" height="2rem" aria-label="Loading total volume" />
           ) : (
             <p className="stat-value" aria-live="polite">
-              ${typeof data?.totalVolume === 'number' ? data.totalVolume.toLocaleString() : 'N/A'}
+              {displayValues.totalVolume}
             </p>
           )}
         </div>
@@ -67,7 +85,7 @@ export const Statistics: React.FC = () => {
             <Skeleton width="5rem" height="2rem" aria-label="Loading active users" />
           ) : (
             <p className="stat-value" aria-live="polite">
-              {typeof data?.activeUsers === 'number' ? data.activeUsers.toLocaleString() : 'N/A'}
+              {displayValues.activeUsers}
             </p>
           )}
         </div>
