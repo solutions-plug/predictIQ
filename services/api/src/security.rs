@@ -468,7 +468,7 @@ pub async fn sendgrid_webhook_middleware(
 ) -> Result<Response, StatusCode> {
     let is_dev = std::env::var("ENVIRONMENT")
         .map(|e| e == "development")
-        .unwrap_or(true); // default to dev if not set
+        .unwrap_or(false); // default to non-dev so signature verification is enforced
 
     if config.secret.is_none() && !is_dev {
         return Err(StatusCode::UNAUTHORIZED);
