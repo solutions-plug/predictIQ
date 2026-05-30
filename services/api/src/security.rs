@@ -1029,6 +1029,47 @@ mod tests {
         assert!(limiter.check("test:3", &config).await); // 1/1 (window reset)
     }
 
+    // ── Argon2 password hashing tests (issue #664) ───────────────────────────
+
+    #[test]
+    fn password_hash_and_verify_roundtrip() {
+        let pw = "correct-horse-battery-staple";
+        let hash = hash_password(pw).expect("hash should succeed");
+        assert!(verify_password(pw, &hash));
+    }
+
+    #[test]
+    fn wrong_password_does_not_verify() {
+        let hash = hash_password("secret").expect("hash should succeed");
+        assert!(!verify_password("wrong", &hash));
+    }
+
+    #[test]
+    fn two_hashes_of_same_password_differ_due_to_salt() {
+        let h1 = hash_password("pw").unwrap();
+        let h2 = hash_password("pw").unwrap();
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn malformed_hash_returns_false_not_panic() {
+        assert!(!verify_password("any", "not-a-valid-phc-hash"));
+    }
+
+    #[test]
+    fn integrity_hash_is_deterministic_hex_64_chars() {
+        let h1 = integrity_hash(b"cache-key");
+        let h2 = integrity_hash(b"cache-key");
+        assert_eq!(h1, h2);
+        assert!(h1.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(h1.len(), 64);
+    }
+
+    #[test]
+    fn integrity_hash_differs_for_different_inputs() {
+        assert_ne!(integrity_hash(b"a"), integrity_hash(b"b"));
+    }
+
     /// Test cleanup removes expired entries.
     #[tokio::test]
     async fn rate_limiter_cleanup_removes_expired_entries() {
@@ -1173,6 +1214,41 @@ mod tests {
             grace_period
         ));
     }
+}
+
+// ── Password hashing (Argon2id) ───────────────────────────────────────────────
+
+use argon2::{
+    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    Argon2,
+};
+
+/// Hash a user password or API secret using Argon2id with a random salt.
+pub fn hash_password(plaintext: &str) -> Result<String, argon2::password_hash::Error> {
+    let salt = SaltString::generate(&mut OsRng);
+    let argon2 = Argon2::default();
+    Ok(argon2.hash_password(plaintext.as_bytes(), &salt)?.to_string())
+}
+
+/// Verify a plaintext password against a stored Argon2 PHC hash string.
+/// Returns `false` on any error — prevents oracle leaks.
+pub fn verify_password(plaintext: &str, hash: &str) -> bool {
+    let parsed = match PasswordHash::new(hash) {
+        Ok(h) => h,
+        Err(_) => return false,
+    };
+    Argon2::default()
+        .verify_password(plaintext.as_bytes(), &parsed)
+        .is_ok()
+}
+
+/// SHA-256 integrity hash for non-secret data: cache keys, ETags, content deduplication.
+/// Do NOT use for passwords or API secrets — use `hash_password` instead.
+pub fn integrity_hash(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    format!("{:x}", hasher.finalize())
 }
 
 /// Middleware to propagate trace context from incoming requests
