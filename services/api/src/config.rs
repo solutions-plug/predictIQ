@@ -150,6 +150,11 @@ pub struct Config {
     pub redis_url: String,
     pub database_url: String,
     pub hmac_key: String,
+    /// Previous HMAC key for zero-downtime key rotation. Optional.
+    pub hmac_key_previous: Option<String>,
+    /// Grace period in seconds for accepting tokens signed with the previous key.
+    /// Default: 3600 (1 hour). Set via `HMAC_KEY_ROTATION_GRACE_SECONDS`.
+    pub hmac_key_rotation_grace_seconds: u64,
     pub db_pool: DbPoolConfig,
     pub blockchain_rpc_url: String,
     pub blockchain_network: BlockchainNetwork,
@@ -284,6 +289,11 @@ impl Config {
             database_url: env::var("DATABASE_URL")
                 .unwrap_or_else(|_| "postgres://postgres:postgres@127.0.0.1/predictiq".to_string()),
             hmac_key: env::var("HMAC_KEY").unwrap_or_default(),
+            hmac_key_previous: env::var("HMAC_KEY_PREVIOUS").ok(),
+            hmac_key_rotation_grace_seconds: env::var("HMAC_KEY_ROTATION_GRACE_SECONDS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(3600),
             db_pool: DbPoolConfig {
                 min_connections: db_pool_min,
                 max_connections: db_pool_max,
@@ -629,6 +639,8 @@ mod tests {
             redis_url: "redis://127.0.0.1:6379".to_string(),
             database_url: "postgres://postgres@localhost/predictiq".to_string(),
             hmac_key: "secret-key-value".to_string(),
+            hmac_key_previous: None,
+            hmac_key_rotation_grace_seconds: 3600,
             db_pool: DbPoolConfig {
                 min_connections: 5,
                 max_connections: 25,
@@ -697,6 +709,8 @@ mod tests {
             redis_url: "redis://127.0.0.1:6379".to_string(),
             database_url: "postgres://postgres@localhost/predictiq".to_string(),
             hmac_key: "".to_string(),
+            hmac_key_previous: None,
+            hmac_key_rotation_grace_seconds: 3600,
             db_pool: DbPoolConfig {
                 min_connections: 5,
                 max_connections: 25,
@@ -765,6 +779,8 @@ mod tests {
             redis_url: "redis://127.0.0.1:6379".to_string(),
             database_url: "mysql://localhost/predictiq".to_string(),
             hmac_key: "secret".to_string(),
+            hmac_key_previous: None,
+            hmac_key_rotation_grace_seconds: 3600,
             db_pool: DbPoolConfig {
                 min_connections: 5,
                 max_connections: 25,
@@ -833,6 +849,8 @@ mod tests {
             redis_url: "memcached://127.0.0.1:11211".to_string(),
             database_url: "postgres://postgres@localhost/predictiq".to_string(),
             hmac_key: "secret".to_string(),
+            hmac_key_previous: None,
+            hmac_key_rotation_grace_seconds: 3600,
             db_pool: DbPoolConfig {
                 min_connections: 5,
                 max_connections: 25,

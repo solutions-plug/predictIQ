@@ -516,6 +516,7 @@ pub mod signing {
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
+    use std::time::SystemTime;
 
     type HmacSha256 = Hmac<Sha256>;
 
@@ -533,6 +534,51 @@ pub mod signing {
         };
 
         mac.verify_slice(&expected).is_ok()
+    }
+
+    /// Verify a signature against the current key, or the previous key if provided and
+    /// the token is within the grace period.
+    ///
+    /// # Arguments
+    /// * `payload` - The signed payload
+    /// * `signature` - The base64-encoded HMAC signature
+    /// * `current_key` - The current HMAC secret key
+    /// * `previous_key` - Optional previous HMAC secret key for rotation
+    /// * `token_timestamp_secs` - The timestamp when the token was created (Unix seconds)
+    /// * `grace_period_secs` - Grace period in seconds for accepting tokens signed with the previous key
+    ///
+    /// Returns true if the signature is valid against either key (within grace period for previous key)
+    pub fn verify_signature_with_rotation(
+        payload: &[u8],
+        signature: &str,
+        current_key: &str,
+        previous_key: Option<&str>,
+        token_timestamp_secs: i64,
+        grace_period_secs: u64,
+    ) -> bool {
+        // Always try the current key first
+        if verify_signature(payload, signature, current_key) {
+            return true;
+        }
+
+        // If no previous key, we're done
+        let Some(prev_key) = previous_key else {
+            return false;
+        };
+
+        // Try the previous key only if within the grace period
+        if !verify_signature(payload, signature, prev_key) {
+            return false;
+        }
+
+        // Check if token is within grace period
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        let age_secs = now - token_timestamp_secs;
+        age_secs >= 0 && (age_secs as u64) <= grace_period_secs
     }
 
     pub fn generate_signature(payload: &[u8], secret: &str) -> Result<String, SigningError> {
@@ -1020,6 +1066,112 @@ mod tests {
         // The RateLimiter.cleanup() task removes expired entries every 300s.
         //
         // Result: PASS - no memory leaks possible
+    }
+
+    // ── HMAC key rotation tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_verify_signature_with_rotation_current_key() {
+        use super::signing::{generate_signature, verify_signature_with_rotation};
+
+        let payload = b"test payload";
+        let current_key = "current-secret";
+        let previous_key = Some("previous-secret");
+
+        let signature = generate_signature(payload, current_key).unwrap();
+        let token_timestamp = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64)
+            - 1800; // 30 minutes ago
+        let grace_period = 3600; // 1 hour
+
+        assert!(verify_signature_with_rotation(
+            payload,
+            &signature,
+            current_key,
+            previous_key.as_deref(),
+            token_timestamp,
+            grace_period
+        ));
+    }
+
+    #[test]
+    fn test_verify_signature_with_rotation_previous_key_within_grace() {
+        use super::signing::{generate_signature, verify_signature_with_rotation};
+
+        let payload = b"test payload";
+        let current_key = "current-secret";
+        let previous_key = "previous-secret";
+
+        let signature = generate_signature(payload, previous_key).unwrap();
+        let token_timestamp = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64)
+            - 1800; // 30 minutes ago
+        let grace_period = 3600; // 1 hour
+
+        assert!(verify_signature_with_rotation(
+            payload,
+            &signature,
+            current_key,
+            Some(previous_key),
+            token_timestamp,
+            grace_period
+        ));
+    }
+
+    #[test]
+    fn test_verify_signature_with_rotation_previous_key_outside_grace() {
+        use super::signing::{generate_signature, verify_signature_with_rotation};
+
+        let payload = b"test payload";
+        let current_key = "current-secret";
+        let previous_key = "previous-secret";
+
+        let signature = generate_signature(payload, previous_key).unwrap();
+        let token_timestamp = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64)
+            - 7200; // 2 hours ago
+        let grace_period = 3600; // 1 hour
+
+        assert!(!verify_signature_with_rotation(
+            payload,
+            &signature,
+            current_key,
+            Some(previous_key),
+            token_timestamp,
+            grace_period
+        ));
+    }
+
+    #[test]
+    fn test_verify_signature_with_rotation_no_previous_key() {
+        use super::signing::{generate_signature, verify_signature_with_rotation};
+
+        let payload = b"test payload";
+        let current_key = "current-secret";
+        let wrong_key = "wrong-secret";
+
+        let signature = generate_signature(payload, wrong_key).unwrap();
+        let token_timestamp = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64)
+            - 1800; // 30 minutes ago
+        let grace_period = 3600; // 1 hour
+
+        assert!(!verify_signature_with_rotation(
+            payload,
+            &signature,
+            current_key,
+            None,
+            token_timestamp,
+            grace_period
+        ));
     }
 }
 

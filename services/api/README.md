@@ -43,5 +43,32 @@ cargo test -p predictiq-api -- --nocapture
 | `ADMIN_WHITELIST_IPS` | _(none)_ | Comma-separated IPs allowed to hit admin routes |
 | `TRUST_PROXY` | `true` | Trust `X-Forwarded-For` header |
 | `METRICS_PUBLIC` | `false` | Expose `/metrics` without auth |
+| `HMAC_KEY` | _(required)_ | Current HMAC secret key for signing tokens |
+| `HMAC_KEY_PREVIOUS` | _(none)_ | Previous HMAC key for zero-downtime key rotation |
+| `HMAC_KEY_ROTATION_GRACE_SECONDS` | `3600` | Grace period (seconds) for accepting tokens signed with the previous key |
 
 See `DATABASE.md` for database-specific configuration.
+
+## HMAC Key Rotation
+
+To rotate the HMAC key without downtime:
+
+1. **Generate a new key** and set it as `HMAC_KEY_PREVIOUS`:
+   ```bash
+   export HMAC_KEY_PREVIOUS="<current-value-of-HMAC_KEY>"
+   ```
+   Deploy the API with this change. Tokens signed with both keys are now accepted.
+
+2. **Promote the new key** by setting the new key as `HMAC_KEY` and clearing `HMAC_KEY_PREVIOUS`:
+   ```bash
+   export HMAC_KEY="<new-key-value>"
+   unset HMAC_KEY_PREVIOUS  # or set to empty
+   ```
+   Deploy the API. All future tokens are signed with the new key.
+
+3. **Grace period**: By default, tokens signed with `HMAC_KEY_PREVIOUS` are accepted for 3600 seconds (1 hour). Adjust with `HMAC_KEY_ROTATION_GRACE_SECONDS` if needed. Tokens beyond the grace period are rejected.
+
+**Example timeline**:
+- 12:00 PM: Deploy with `HMAC_KEY_PREVIOUS` set to old key. New tokens use new key; old tokens still accepted.
+- 1:00 PM: Grace period expires. Old tokens are now rejected.
+- Deploy with `HMAC_KEY_PREVIOUS` unset to complete rotation.
