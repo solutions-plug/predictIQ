@@ -485,9 +485,17 @@ jobs:
       contents: read
     strategy:
       matrix:
-        language: ["javascript", "typescript"]
+        language: ["javascript", "typescript", "rust"]
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Rust (for Rust analysis)
+        if: matrix.language == 'rust'
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
