@@ -148,3 +148,24 @@ how many seconds to wait before retrying.
 **Generated from:** `services/api/openapi.yaml`  
 **Last Updated:** 2026-05-28T13:37:38.653Z  
 **Note:** This file is auto-generated. Do not edit directly. Update `services/api/openapi.yaml` instead.
+
+## Pagination
+
+All list endpoints support pagination via query parameters.
+
+| Parameter | Type   | Default | Maximum | Description                              |
+|-----------|--------|---------|---------|------------------------------------------|
+| `limit`   | uint32 | 20      | **100** | Number of rows to return per page        |
+| `offset`  | uint32 | 0       | —       | Zero-based row offset (offset pagination)|
+| `cursor`  | string | —       | —       | Opaque cursor (cursor pagination)        |
+
+Requests with `limit > 100` receive **400 Bad Request**:
+
+```json
+{
+  "error": "limit_exceeded",
+  "message": "limit 500 exceeds the maximum allowed value of 100.",
+  "max_limit": 100
+}
+```
+
