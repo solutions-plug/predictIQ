@@ -215,6 +215,10 @@ pub struct Config {
     /// Contract storage key schema.  See [`ContractKeySchema`] for per-field
     /// documentation and startup validation.
     pub contract_key_schema: ContractKeySchema,
+    /// Expected Stellar network passphrase. Validated against the RPC node at
+    /// startup. Configured via `STELLAR_NETWORK_PASSPHRASE`; defaults to the
+    /// canonical passphrase for the configured `BLOCKCHAIN_NETWORK`.
+    pub network_passphrase: String,
 }
 
 impl Config {
@@ -282,6 +286,15 @@ impl Config {
         let trusted_proxy_cidrs = env::var("TRUSTED_PROXY_CIDRS")
             .map(|v| v.split(',').filter_map(|s| s.trim().parse().ok()).collect())
             .unwrap_or_else(|_| vec![]);
+
+        let network_passphrase = env::var("STELLAR_NETWORK_PASSPHRASE")
+            .unwrap_or_else(|_| match &blockchain_network {
+                BlockchainNetwork::Testnet => "Test SDF Network ; September 2015".to_string(),
+                BlockchainNetwork::Mainnet => {
+                    "Public Global Stellar Network ; September 2015".to_string()
+                }
+                BlockchainNetwork::Custom => String::new(),
+            });
 
         Self {
             bind_addr,
@@ -422,6 +435,7 @@ impl Config {
             unsubscribe_signing_secret: env::var("UNSUBSCRIBE_SIGNING_SECRET").ok(),
             cors: CorsConfig::from_env(),
             contract_key_schema: ContractKeySchema::from_env(),
+            network_passphrase,
         }
     }
 

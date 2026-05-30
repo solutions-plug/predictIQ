@@ -95,6 +95,7 @@ async fn main() -> anyhow::Result<()> {
     let cache = RedisCache::new(&config.redis_url).await?;
     let db = Database::new(&config.database_url, cache.clone(), metrics.clone(), &config.db_pool).await?;
     let blockchain = BlockchainClient::new(&config, cache.clone(), metrics.clone())?;
+    blockchain.validate_network_passphrase().await?;
 
     let email_service = EmailService::new(config.clone())?;
     let email_queue = EmailQueue::new(cache.clone(), db.clone());

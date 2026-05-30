@@ -33,6 +33,7 @@ pub struct BlockchainClient {
     cache: RedisCache,
     metrics: Metrics,
     monitor: Arc<MonitoringState>,
+    expected_passphrase: String,
 }
 
 /// TTL for watched transaction hashes. Entries older than this are evicted
@@ -218,7 +219,48 @@ impl BlockchainClient {
             cache,
             metrics,
             monitor: Arc::new(MonitoringState::default()),
+            expected_passphrase: config.network_passphrase.clone(),
         })
+    }
+
+    /// Query the RPC node for its network passphrase and verify it matches
+    /// the configured `STELLAR_NETWORK_PASSPHRASE`. Startup must call this and
+    /// fail fast if the passphrase does not match, preventing silently signed
+    /// transactions for the wrong network.
+    ///
+    /// When `STELLAR_NETWORK_PASSPHRASE` is unset (empty string, e.g. for a
+    /// custom network without a known passphrase), validation is skipped.
+    pub async fn validate_network_passphrase(&self) -> anyhow::Result<()> {
+        if self.expected_passphrase.is_empty() {
+            tracing::info!("STELLAR_NETWORK_PASSPHRASE not set; skipping passphrase validation");
+            return Ok(());
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct NetworkResult {
+            passphrase: String,
+        }
+
+        let result: NetworkResult = self
+            .rpc_call("getNetwork", serde_json::json!({}))
+            .await
+            .context("failed to query RPC network info for passphrase validation")?;
+
+        if result.passphrase != self.expected_passphrase {
+            anyhow::bail!(
+                "Stellar network passphrase mismatch — \
+                 RPC returned {:?} but STELLAR_NETWORK_PASSPHRASE is {:?}. \
+                 Check BLOCKCHAIN_NETWORK and STELLAR_NETWORK_PASSPHRASE.",
+                result.passphrase,
+                self.expected_passphrase,
+            );
+        }
+
+        tracing::info!(
+            passphrase = %result.passphrase,
+            "Stellar network passphrase validated"
+        );
+        Ok(())
     }
 
     async fn rpc_call<T: for<'de> Deserialize<'de>>(
