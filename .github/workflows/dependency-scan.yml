@@ -72,6 +72,14 @@ jobs:
           echo "✅ No critical or high vulnerabilities found"
         working-directory: frontend
 
+      - name: Install TTS dependencies
+        run: npm ci
+        working-directory: services/tts
+
+      - name: Audit TTS NPM dependencies
+        run: npm audit --audit-level=high
+        working-directory: services/tts
+
   scan-trivy:
     name: Scan with Trivy
     runs-on: ubuntu-latest

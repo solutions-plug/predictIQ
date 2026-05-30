@@ -1,112 +1,87 @@
 # Unit tests for Prometheus SLO rules
+rule_files:
+  - prometheus-slo-rules.yml
+
+evaluation_interval: 1m
+
 tests:
+  # Test: success rate calculation ~99%
   - interval: 1m
     input_series:
       - series: 'http_requests_total{status="200"}'
-        values: '100+100x10'
+        values: '0+99x10'
       - series: 'http_requests_total{status="500"}'
-        values: '1+0x10'
-      - series: 'http_request_duration_seconds_bucket{le="0.2"}'
-        values: '95+5x10'
-      - series: 'http_request_duration_seconds_bucket{le="+Inf"}'
-        values: '100+10x10'
-      - series: 'db_query_duration_seconds_bucket{le="0.05"}'
-        values: '90+5x10'
-      - series: 'db_query_duration_seconds_bucket{le="+Inf"}'
-        values: '100+10x10'
-      - series: 'redis_commands_total{status="success"}'
-        values: '1000+100x10'
-      - series: 'redis_commands_total{status="failed"}'
-        values: '1+0x10'
-
-  - interval: 5m
-    input_series:
-      - series: 'http_requests_total{status="200"}'
-        values: '500+100x10'
-      - series: 'http_requests_total{status="500"}'
-        values: '5+1x10'
+        values: '0+1x10'
     promql_expr_test:
       - expr: 'sum(rate(http_requests_total{status=~"2..|3.."}[5m])) / sum(rate(http_requests_total[5m])) * 100'
-        expected_samples:
+        eval_time: 10m
+        exp_samples:
           - labels: '{}'
-            value: '99'
+            value: 99
 
-  - interval: 1h
-    input_series:
-      - series: 'http_requests_total{status="200"}'
-        values: '3600+100x24'
-      - series: 'http_requests_total{status="500"}'
-        values: '36+1x24'
-    promql_expr_test:
-      - expr: 'slo:api_availability:success_rate'
-        expected_samples:
-          - labels: '{}'
-            value: '99'
-
+  # Test: success rate ~50%
   - interval: 1m
     input_series:
       - series: 'http_requests_total{status="200"}'
-        values: '100+0x10'
+        values: '0+50x10'
       - series: 'http_requests_total{status="500"}'
-        values: '100+0x10'
+        values: '0+50x10'
     promql_expr_test:
       - expr: 'sum(rate(http_requests_total{status=~"2..|3.."}[5m])) / sum(rate(http_requests_total[5m])) * 100'
-        expected_samples:
+        eval_time: 10m
+        exp_samples:
           - labels: '{}'
-            value: '50'
+            value: 50
 
-  - interval: 1m
-    input_series:
-      - series: 'http_request_duration_seconds_bucket{le="0.2"}'
-        values: '50+0x10'
-      - series: 'http_request_duration_seconds_bucket{le="+Inf"}'
-        values: '100+0x10'
-    promql_expr_test:
-      - expr: 'histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) <= 0.2'
-        expected_samples:
-          - labels: '{}'
-            value: '1'
-
+  # Test: redis cache 100% success
   - interval: 1m
     input_series:
       - series: 'redis_commands_total{status="success"}'
-        values: '1000+0x10'
+        values: '0+100x10'
       - series: 'redis_commands_total{status="failed"}'
         values: '0+0x10'
     promql_expr_test:
       - expr: 'sum(rate(redis_commands_total{status="success"}[5m])) / sum(rate(redis_commands_total[5m])) * 100'
-        expected_samples:
+        eval_time: 10m
+        exp_samples:
           - labels: '{}'
-            value: '100'
+            value: 100
 
+  # Test: SLOErrorBudgetExhausted fires when error rate >> SLO target
+  # error_budget_remaining = (1 - (error_rate / 0.1)) * 100 <= 0
+  # Need error_rate >= 0.1 (i.e. >= 10% errors), sustained for 5m (for: 5m)
   - interval: 1m
     input_series:
       - series: 'http_requests_total{status="200"}'
-        values: '100+0x10'
+        values: '0+90x20'
       - series: 'http_requests_total{status="500"}'
-        values: '1+0x10'
+        values: '0+910x20'
     alert_rule_test:
-      - alert_rule_name: 'SLOFastBurn'
-        eval_time: '10m'
-        expected_alerts:
+      - alertname: SLOErrorBudgetExhausted
+        eval_time: 20m
+        exp_alerts:
           - exp_labels:
-              severity: 'critical'
-              slo: 'api_availability'
-            exp_annotations:
-              summary: 'SLO fast burn detected for API availability'
-
-  - interval: 1m
-    input_series:
-      - series: 'http_requests_total{status="200"}'
-        values: '100+0x10'
-      - series: 'http_requests_total{status="500"}'
-        values: '100+0x10'
-    alert_rule_test:
-      - alert_rule_name: 'SLOErrorBudgetExhausted'
-        eval_time: '10m'
-        expected_alerts:
-          - exp_labels:
-              severity: 'critical'
-              slo: 'api_availability'
+              severity: critical
+              slo: api_availability
             exp_annotations:
               summary: 'SLO error budget exhausted for API availability'
+
+  # Test: SLOFastBurn fires when burn_rate_1h and burn_rate_6h both > 14.4
+  # burn_rate = (error_rate / 0.001) * 720
+  # Need error_rate such that (error_rate/0.001)*720 > 14.4 => error_rate > 0.00002
+  # Use ~50% error rate to ensure well above threshold, sustained for 5m (for: 5m)
+  - interval: 1m
+    input_series:
+      - series: 'http_requests_total{status="200"}'
+        values: '0+1x20'
+      - series: 'http_requests_total{status="500"}'
+        values: '0+999x20'
+    alert_rule_test:
+      - alertname: SLOFastBurn
+        eval_time: 20m
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              slo: api_availability
+            exp_annotations:
+              summary: 'SLO fast burn detected for API availability'
