@@ -444,10 +444,14 @@ jobs:
         working-directory: contracts/predict-iq
 
       - name: Scan Node.js dependencies
+        # Fails CI on high/critical npm vulnerabilities.
+        # Exception process: for known false positives, add an entry to
+        # frontend/.nsprc (npm audit ignore) with a justification comment
+        # and link to the tracking issue, then get security team approval
+        # before merging.
         run: |
           npm audit --audit-level=high
         working-directory: frontend
-        continue-on-error: true
 
   container-scanning:
     name: Container Image Scanning
