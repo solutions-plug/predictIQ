@@ -49,7 +49,11 @@ pub fn check_token_not_frozen(
         Ok(is_frozen) => {
             if is_frozen {
                 e.events().publish(
-                    (symbol_short!("token_frz"), token_address.clone(), user.clone()),
+                    (
+                        symbol_short!("token_frz"),
+                        token_address.clone(),
+                        user.clone(),
+                    ),
                     (),
                 );
                 Err(ErrorCode::TokenFrozen)

@@ -33,8 +33,7 @@ pub fn track_error(e: &Env) {
             &crate::types::CircuitBreakerState::Open,
         );
 
-        e.events()
-            .publish((symbol_short!("cb_auto"),), count);
+        e.events().publish((symbol_short!("cb_auto"),), count);
     }
 }
 
@@ -65,12 +64,12 @@ pub fn reset_monitoring(e: &Env) {
 
 /// Track and emit storage entry count as a contract event.
 /// This helps monitor Soroban rent costs for storage.
-/// 
+///
 /// Returns the current storage entry count.
 /// Emits a `storage_count` event when the count changes significantly.
 pub fn track_storage_count(e: &Env) -> u32 {
     let count = e.storage().persistent().count();
-    
+
     // Emit event periodically to track storage costs
     if count >= STORAGE_ALERT_THRESHOLD {
         e.events().publish(
@@ -78,18 +77,15 @@ pub fn track_storage_count(e: &Env) -> u32 {
             (count, STORAGE_ALERT_THRESHOLD),
         );
     }
-    
+
     count
 }
 
 /// Emit storage count event for monitoring purposes
 pub fn emit_storage_metrics(e: &Env) {
     let count = track_storage_count(e);
-    
-    e.events().publish(
-        (symbol_short!("storage"),),
-        count,
-    );
+
+    e.events().publish((symbol_short!("storage"),), count);
 }
 
 /// Clean up expired/resolved market data to reduce storage costs.
@@ -97,7 +93,7 @@ pub fn emit_storage_metrics(e: &Env) {
 pub fn cleanup_expired_market_index(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
     use crate::modules::markets::DataKey as MarketDataKey;
     use crate::types::MarketStatus;
-    
+
     // Check if market is resolved and past prune grace period
     if let Some(market) = crate::modules::markets::get_market(e, market_id) {
         if market.status == MarketStatus::Resolved {
@@ -105,19 +101,27 @@ pub fn cleanup_expired_market_index(e: &Env, market_id: u64) -> Result<(), Error
                 let current_time = e.ledger().timestamp();
                 if current_time >= resolved_at + crate::types::PRUNE_GRACE_PERIOD {
                     // Remove status index entry - main market record will be pruned separately
-                    e.storage().persistent().remove(&MarketDataKey::StatusIndex(market_id, MarketStatus::Resolved));
+                    e.storage().persistent().remove(&MarketDataKey::StatusIndex(
+                        market_id,
+                        MarketStatus::Resolved,
+                    ));
                 }
             }
         }
     }
-    
+
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{reset_monitoring, track_error, DataKey, track_storage_count, STORAGE_ALERT_THRESHOLD};
-    use soroban_sdk::{testutils::{Events, Ledger}, Env};
+    use super::{
+        reset_monitoring, track_error, track_storage_count, DataKey, STORAGE_ALERT_THRESHOLD,
+    };
+    use soroban_sdk::{
+        testutils::{Events, Ledger},
+        Env,
+    };
 
     #[test]
     fn reset_monitoring_clears_error_trackers() {
@@ -127,7 +131,11 @@ mod tests {
         track_error(&e);
         track_error(&e);
 
-        let before_count: u32 = e.storage().instance().get(&DataKey::ErrorCount).unwrap_or(0);
+        let before_count: u32 = e
+            .storage()
+            .instance()
+            .get(&DataKey::ErrorCount)
+            .unwrap_or(0);
         let before_obs: u64 = e
             .storage()
             .instance()
@@ -138,7 +146,11 @@ mod tests {
 
         reset_monitoring(&e);
 
-        let after_count: u32 = e.storage().instance().get(&DataKey::ErrorCount).unwrap_or(1);
+        let after_count: u32 = e
+            .storage()
+            .instance()
+            .get(&DataKey::ErrorCount)
+            .unwrap_or(1);
         let after_obs: u64 = e
             .storage()
             .instance()

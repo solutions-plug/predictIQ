@@ -35,7 +35,7 @@ pub fn execute_migration(
                 restore_storage_state(e, from_version)?;
                 return Err(ErrorCode::MigrationValidationError);
             }
-            
+
             // Record successful migration
             record_migration(e, from_version, to_version)?;
             Ok(())
@@ -52,18 +52,16 @@ pub fn execute_migration(
 fn backup_storage_state(e: &Env, version: u32) -> Result<(), ErrorCode> {
     let backup_key = format!("migration:backup:v{}", version);
     let timestamp = e.ledger().timestamp();
-    
-    e.storage()
-        .persistent()
-        .set(&backup_key, &timestamp);
-    
+
+    e.storage().persistent().set(&backup_key, &timestamp);
+
     Ok(())
 }
 
 /// Restore storage state from backup
 fn restore_storage_state(e: &Env, version: u32) -> Result<(), ErrorCode> {
     let backup_key = format!("migration:backup:v{}", version);
-    
+
     if !e.storage().persistent().has(&backup_key) {
         return Err(ErrorCode::NotAuthorized);
     }
@@ -76,13 +74,11 @@ fn restore_storage_state(e: &Env, version: u32) -> Result<(), ErrorCode> {
 fn record_migration(e: &Env, from_version: u32, to_version: u32) -> Result<(), ErrorCode> {
     let migration_log_key = "migration:log";
     let timestamp = e.ledger().timestamp();
-    
+
     let entry = format!("v{}->v{}@{}", from_version, to_version, timestamp);
-    
-    e.storage()
-        .persistent()
-        .set(&migration_log_key, &entry);
-    
+
+    e.storage().persistent().set(&migration_log_key, &entry);
+
     Ok(())
 }
 
@@ -91,10 +87,7 @@ fn record_migration(e: &Env, from_version: u32, to_version: u32) -> Result<(), E
 /// Returns Ok(true) if all invariants pass, Ok(false) if validation fails.
 pub fn verify_migration_integrity(e: &Env) -> Result<bool, ErrorCode> {
     // Check critical storage keys exist
-    let required_keys = vec![
-        ConfigKey::Admin,
-        ConfigKey::GuardianSet,
-    ];
+    let required_keys = vec![ConfigKey::Admin, ConfigKey::GuardianSet];
 
     for key in required_keys.iter() {
         if !e.storage().persistent().has(key) {
@@ -119,7 +112,9 @@ pub fn validate_stake_invariant(e: &Env, market_id: u64) -> Result<bool, ErrorCo
 
     while outcome_idx < market.outcome_stakes.len() {
         if let Some(stake) = market.outcome_stakes.get(outcome_idx) {
-            sum_outcome_stakes = sum_outcome_stakes.checked_add(stake).ok_or(ErrorCode::ArithmeticOverflow)?;
+            sum_outcome_stakes = sum_outcome_stakes
+                .checked_add(stake)
+                .ok_or(ErrorCode::ArithmeticOverflow)?;
         }
         outcome_idx += 1;
     }
@@ -142,11 +137,7 @@ pub fn validate_all_markets_stake_invariant(e: &Env, market_count: u64) -> Resul
 }
 
 /// Reverse a migration to previous version
-pub fn reverse_migration(
-    e: &Env,
-    from_version: u32,
-    to_version: u32,
-) -> Result<(), ErrorCode> {
+pub fn reverse_migration(e: &Env, from_version: u32, to_version: u32) -> Result<(), ErrorCode> {
     if from_version >= to_version {
         return Err(ErrorCode::NotAuthorized);
     }
@@ -174,49 +165,36 @@ mod tests {
     #[test]
     fn test_migration_version_validation() {
         // Version must progress forward
-        let result = execute_migration(
-            &soroban_sdk::Env::default(),
-            2,
-            1,
-            |_| Ok(()),
-        );
+        let result = execute_migration(&soroban_sdk::Env::default(), 2, 1, |_| Ok(()));
         assert!(result.is_err());
     }
 
     #[test]
     fn test_migration_with_rollback() {
         let env = soroban_sdk::Env::default();
-        
-        let result = execute_migration(
-            &env,
-            1,
-            2,
-            |_| Err(ErrorCode::NotAuthorized),
-        );
-        
+
+        let result = execute_migration(&env, 1, 2, |_| Err(ErrorCode::NotAuthorized));
+
         assert!(result.is_err());
     }
 
     #[test]
     fn test_migration_validation_failure_rolls_back() {
         use soroban_sdk::Address;
-        
+
         let env = soroban_sdk::Env::default();
         let admin = Address::generate(&env);
-        
+
         env.storage().persistent().set(&ConfigKey::Admin, &admin);
-        env.storage().persistent().set(&ConfigKey::GuardianSet, &admin);
+        env.storage()
+            .persistent()
+            .set(&ConfigKey::GuardianSet, &admin);
 
         // Migration that removes admin key (invalidates state)
-        let result = execute_migration(
-            &env,
-            1,
-            2,
-            |_e| {
-                _e.storage().persistent().remove(&ConfigKey::Admin);
-                Ok(())
-            },
-        );
+        let result = execute_migration(&env, 1, 2, |_e| {
+            _e.storage().persistent().remove(&ConfigKey::Admin);
+            Ok(())
+        });
 
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), ErrorCode::MigrationValidationError);

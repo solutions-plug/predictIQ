@@ -22,7 +22,10 @@ pub struct PythPrice {
 }
 
 /// Decode a 64-char hex feed_id string into a 32-byte BytesN<32>.
-fn decode_feed_id(e: &Env, feed_id: &soroban_sdk::String) -> Result<soroban_sdk::BytesN<32>, ErrorCode> {
+fn decode_feed_id(
+    e: &Env,
+    feed_id: &soroban_sdk::String,
+) -> Result<soroban_sdk::BytesN<32>, ErrorCode> {
     if feed_id.len() != 64 {
         return Err(ErrorCode::OracleFailure);
     }
@@ -50,7 +53,12 @@ pub fn fetch_pyth_price(e: &Env, config: &OracleConfig) -> Result<PythPrice, Err
     let feed_id = decode_feed_id(e, &config.feed_id)?;
     let client = crate::pyth_client::PythOracleClient::new(e, &config.oracle_address);
     let (price, conf, expo, publish_time) = client.get_price(&feed_id);
-    Ok(PythPrice { price, conf, expo, publish_time })
+    Ok(PythPrice {
+        price,
+        conf,
+        expo,
+        publish_time,
+    })
 }
 
 pub fn validate_price(e: &Env, price: &PythPrice, config: &OracleConfig) -> Result<(), ErrorCode> {
@@ -104,7 +112,12 @@ pub fn validate_oracle_staleness(
     }
 }
 
-pub fn resolve_with_pyth(e: &Env, market_id: u64, oracle_id: u32, config: &OracleConfig) -> Result<u32, ErrorCode> {
+pub fn resolve_with_pyth(
+    e: &Env,
+    market_id: u64,
+    oracle_id: u32,
+    config: &OracleConfig,
+) -> Result<u32, ErrorCode> {
     let price = fetch_pyth_price(e, config)?;
     validate_price(e, &price, config)?;
 
@@ -121,7 +134,11 @@ pub fn resolve_with_pyth(e: &Env, market_id: u64, oracle_id: u32, config: &Oracl
     );
 
     e.events().publish(
-        (symbol_short!("oracle_ok"), market_id, config.oracle_address.clone()),
+        (
+            symbol_short!("oracle_ok"),
+            market_id,
+            config.oracle_address.clone(),
+        ),
         (outcome, price.price, price.conf),
     );
 
@@ -130,7 +147,11 @@ pub fn resolve_with_pyth(e: &Env, market_id: u64, oracle_id: u32, config: &Oracl
 
 fn determine_outcome(price: &PythPrice, config: &OracleConfig) -> u32 {
     let threshold = config.strike_price.unwrap_or(0);
-    if price.price >= threshold { 0 } else { 1 }
+    if price.price >= threshold {
+        0
+    } else {
+        1
+    }
 }
 
 pub fn get_oracle_result(e: &Env, market_id: u64, oracle_id: u32) -> Option<u32> {
@@ -145,7 +166,12 @@ pub fn get_last_update(e: &Env, market_id: u64, oracle_id: u32) -> Option<u64> {
         .get(&OracleData::LastUpdate(market_id, oracle_id as u64))
 }
 
-pub fn set_oracle_result(e: &Env, market_id: u64, oracle_id: u32, outcome: u32) -> Result<(), ErrorCode> {
+pub fn set_oracle_result(
+    e: &Env,
+    market_id: u64,
+    oracle_id: u32,
+    outcome: u32,
+) -> Result<(), ErrorCode> {
     e.storage()
         .persistent()
         .set(&OracleData::Result(market_id, oracle_id), &outcome);

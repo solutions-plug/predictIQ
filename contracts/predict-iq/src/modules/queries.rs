@@ -1,5 +1,5 @@
-use crate::types::{Market, MarketStatus, Guardian};
-use crate::modules::{markets, governance};
+use crate::modules::{governance, markets};
+use crate::types::{Guardian, Market, MarketStatus};
 use soroban_sdk::{Env, Vec};
 
 /// Hard cap on the number of records returned by any single paginated query.
@@ -43,7 +43,12 @@ pub fn get_markets(e: &Env, offset: u32, limit: u32) -> Vec<Market> {
 /// * `status` - The status to filter by (e.g., Active, Resolved)
 /// * `offset` - Starting element in the filtered list
 /// * `limit` - Maximum number of markets to return; clamped to [`MAX_PAGE_LIMIT`]
-pub fn get_markets_by_status(e: &Env, status: MarketStatus, offset: u32, limit: u32) -> Vec<Market> {
+pub fn get_markets_by_status(
+    e: &Env,
+    status: MarketStatus,
+    offset: u32,
+    limit: u32,
+) -> Vec<Market> {
     let limit = limit.min(MAX_PAGE_LIMIT);
     let count: u64 = e
         .storage()
@@ -96,8 +101,8 @@ pub fn get_guardians_paginated(e: &Env, offset: u32, limit: u32) -> Vec<Guardian
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{MarketTier, OracleConfig};
     use crate::{PredictIQ, PredictIQClient};
-    use crate::types::{OracleConfig, MarketTier};
     use soroban_sdk::{testutils::Address as _, Address, Env, String, Vec as SdkVec};
 
     fn setup() -> (Env, PredictIQClient<'static>, Address, Address) {
@@ -112,7 +117,8 @@ mod tests {
     }
 
     fn make_market(e: &Env, client: &PredictIQClient, creator: &Address) -> u64 {
-        let options = SdkVec::from_array(e, [String::from_str(e, "Yes"), String::from_str(e, "No")]);
+        let options =
+            SdkVec::from_array(e, [String::from_str(e, "Yes"), String::from_str(e, "No")]);
         let token = Address::generate(e);
         let oracle_cfg = OracleConfig {
             oracle_address: Address::generate(e),
@@ -120,9 +126,20 @@ mod tests {
             min_responses: None,
             max_staleness_seconds: 3600,
             max_confidence_bps: 100,
-        strike_price: None,
+            strike_price: None,
         };
-        client.create_market(creator, &String::from_str(e, "M"), &options, &1000, &2000, &oracle_cfg, &MarketTier::Basic, &token, &0, &0)
+        client.create_market(
+            creator,
+            &String::from_str(e, "M"),
+            &options,
+            &1000,
+            &2000,
+            &oracle_cfg,
+            &MarketTier::Basic,
+            &token,
+            &0,
+            &0,
+        )
     }
 
     #[test]
@@ -143,7 +160,8 @@ mod tests {
         for _ in 0..(MAX_PAGE_LIMIT + 10) {
             make_market(&e, &client, &creator);
         }
-        let result = client.get_markets_by_status(&MarketStatus::Active, &0, &(MAX_PAGE_LIMIT + 50));
+        let result =
+            client.get_markets_by_status(&MarketStatus::Active, &0, &(MAX_PAGE_LIMIT + 50));
         assert_eq!(result.len(), MAX_PAGE_LIMIT);
     }
 

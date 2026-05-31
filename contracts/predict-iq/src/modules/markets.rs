@@ -1,5 +1,8 @@
 use crate::errors::ErrorCode;
-use crate::types::{ConfigKey, CreatorReputation, Market, MarketStatus, MarketTier, OracleConfig, TTL_LOW_THRESHOLD, TTL_HIGH_THRESHOLD, PRUNE_GRACE_PERIOD};
+use crate::types::{
+    ConfigKey, CreatorReputation, Market, MarketStatus, MarketTier, OracleConfig,
+    PRUNE_GRACE_PERIOD, TTL_HIGH_THRESHOLD, TTL_LOW_THRESHOLD,
+};
 use soroban_sdk::{contracttype, token, Address, Env, String, Vec};
 
 #[contracttype]
@@ -192,7 +195,7 @@ pub fn create_market_with_dispute_window(
     if creation_fee > 0 {
         let treasury = get_protocol_treasury(e);
         token_client.transfer(&creator, &treasury, &creation_fee);
-        
+
         // Emit fee collection event
         crate::modules::events::emit_fee_collected(e, 0, treasury, creation_fee);
     }
@@ -210,10 +213,8 @@ pub fn create_market_with_dispute_window(
     count += 1;
 
     let num_outcomes = options.len() as u32;
-    let dispute_window = crate::modules::resolution::resolve_market_dispute_window(
-        e,
-        dispute_window_seconds,
-    )?;
+    let dispute_window =
+        crate::modules::resolution::resolve_market_dispute_window(e, dispute_window_seconds)?;
 
     let market = Market {
         id: count,
@@ -248,14 +249,18 @@ pub fn create_market_with_dispute_window(
     e.storage()
         .persistent()
         .set(&DataKey::MarketDisputeWindow(count), &dispute_window);
-    
+
     // Set initial TTL for the market data
-    e.storage()
-        .persistent()
-        .extend_ttl(&DataKey::Market(count), TTL_LOW_THRESHOLD, TTL_HIGH_THRESHOLD);
-    e.storage()
-        .persistent()
-        .extend_ttl(&DataKey::MarketDisputeWindow(count), TTL_LOW_THRESHOLD, TTL_HIGH_THRESHOLD);
+    e.storage().persistent().extend_ttl(
+        &DataKey::Market(count),
+        TTL_LOW_THRESHOLD,
+        TTL_HIGH_THRESHOLD,
+    );
+    e.storage().persistent().extend_ttl(
+        &DataKey::MarketDisputeWindow(count),
+        TTL_LOW_THRESHOLD,
+        TTL_HIGH_THRESHOLD,
+    );
 
     // Maintain status index so get_markets_by_status can probe O(limit) keys.
     e.storage()
@@ -422,9 +427,11 @@ pub fn release_creation_deposit(
 
 /// Bump TTL for market data to prevent state expiration
 pub fn bump_market_ttl(e: &Env, market_id: u64) {
-    e.storage()
-        .persistent()
-        .extend_ttl(&DataKey::Market(market_id), TTL_LOW_THRESHOLD, TTL_HIGH_THRESHOLD);
+    e.storage().persistent().extend_ttl(
+        &DataKey::Market(market_id),
+        TTL_LOW_THRESHOLD,
+        TTL_HIGH_THRESHOLD,
+    );
 }
 
 /// Maximum number of markets returned per paginated query
@@ -449,7 +456,7 @@ pub fn prune_market(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
     // Check if 30 days have passed since resolution
     let resolved_at = market.resolved_at.ok_or(ErrorCode::MarketNotActive)?;
     let current_time = e.ledger().timestamp();
-    
+
     if current_time < resolved_at + PRUNE_GRACE_PERIOD {
         return Err(ErrorCode::MarketNotActive);
     }

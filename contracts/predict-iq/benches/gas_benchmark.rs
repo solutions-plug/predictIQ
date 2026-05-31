@@ -8,10 +8,7 @@
 
 #![cfg(test)]
 
-use soroban_sdk::{
-    testutils::Address as _,
-    token, Address, Env, String, Vec,
-};
+use soroban_sdk::{testutils::Address as _, token, Address, Env, String, Vec};
 
 extern crate predict_iq;
 use predict_iq::{PredictIQ, PredictIQClient};
@@ -147,7 +144,10 @@ fn bench_create_market_max_outcomes() {
         &0u64,
         &0u32,
     );
-    assert!(result.is_ok(), "MAX_OUTCOMES_PER_MARKET market creation must succeed");
+    assert!(
+        result.is_ok(),
+        "MAX_OUTCOMES_PER_MARKET market creation must succeed"
+    );
 }
 
 #[test]
@@ -165,7 +165,10 @@ fn bench_reject_excessive_outcomes() {
         &0u64,
         &0u32,
     );
-    assert!(result.is_err(), "exceeding MAX_OUTCOMES_PER_MARKET must be rejected");
+    assert!(
+        result.is_err(),
+        "exceeding MAX_OUTCOMES_PER_MARKET must be rejected"
+    );
 }
 
 // ── Gas threshold assertions for dispute/payout flows ─────────────────────────
@@ -377,7 +380,11 @@ fn bench_dispute_vote_single_participant() {
     gov_stellar.mint(&voter, &5_000);
 
     let result = client.try_cast_vote(&voter, &market_id, &0, &5_000);
-    assert!(result.is_ok(), "single-participant vote must succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "single-participant vote must succeed: {:?}",
+        result
+    );
 }
 
 // ── Benchmark 3: vote on dispute (multiple participants) ─────────────────────
@@ -406,12 +413,7 @@ fn bench_dispute_vote_multiple_participants() {
         // Split votes: even-indexed voters choose outcome 0, odd choose outcome 1.
         let outcome: u32 = if i % 2 == 0 { 0 } else { 1 };
         let result = client.try_cast_vote(&voter, &market_id, &outcome, &1_000);
-        assert!(
-            result.is_ok(),
-            "vote {} must succeed: {:?}",
-            i,
-            result
-        );
+        assert!(result.is_ok(), "vote {} must succeed: {:?}", i, result);
     }
 }
 
@@ -444,7 +446,8 @@ fn bench_dispute_resolve() {
     client.cast_vote(&voter_b, &market_id, &1, &3_000);
 
     // Advance past the 72-hour voting period (dispute filed at timestamp 2_100).
-    env.ledger().with_mut(|li| li.timestamp = 2_100 + 259_200 + 1);
+    env.ledger()
+        .with_mut(|li| li.timestamp = 2_100 + 259_200 + 1);
 
     let result = client.try_finalize_resolution(&market_id);
     assert!(

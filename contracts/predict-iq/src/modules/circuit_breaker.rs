@@ -31,7 +31,9 @@ pub fn set_state(e: &Env, state: CircuitBreakerState) -> Result<(), ErrorCode> {
 fn _set_state_internal(e: &Env, state: CircuitBreakerState) -> Result<(), ErrorCode> {
     match state {
         CircuitBreakerState::Open => {
-            e.storage().instance().set(&DataKey::OpenedAt, &e.ledger().timestamp());
+            e.storage()
+                .instance()
+                .set(&DataKey::OpenedAt, &e.ledger().timestamp());
         }
         CircuitBreakerState::HalfOpen => {
             e.storage().instance().set(&DataKey::HalfOpenOps, &0u32);
@@ -71,11 +73,7 @@ pub fn maybe_recover(e: &Env) {
         return;
     }
 
-    let opened_at: u64 = e
-        .storage()
-        .instance()
-        .get(&DataKey::OpenedAt)
-        .unwrap_or(0);
+    let opened_at: u64 = e.storage().instance().get(&DataKey::OpenedAt).unwrap_or(0);
 
     if e.ledger().timestamp() >= opened_at + COOLDOWN_SECONDS {
         let _ = _set_state_internal(e, CircuitBreakerState::HalfOpen);
@@ -86,17 +84,21 @@ pub fn require_closed(e: &Env) -> Result<(), ErrorCode> {
     maybe_recover(e);
     let state = get_state(e);
     match state {
-        CircuitBreakerState::Open | CircuitBreakerState::Paused => {
-            Err(ErrorCode::ContractPaused)
-        }
+        CircuitBreakerState::Open | CircuitBreakerState::Paused => Err(ErrorCode::ContractPaused),
         CircuitBreakerState::HalfOpen => {
-            let ops: u32 = e.storage().instance().get(&DataKey::HalfOpenOps).unwrap_or(0);
+            let ops: u32 = e
+                .storage()
+                .instance()
+                .get(&DataKey::HalfOpenOps)
+                .unwrap_or(0);
             if ops >= HALF_OPEN_MAX_OPS {
                 // Probe limit exceeded — trip back to Open
                 let _ = _set_state_internal(e, CircuitBreakerState::Open);
                 return Err(ErrorCode::ContractPaused);
             }
-            e.storage().instance().set(&DataKey::HalfOpenOps, &(ops + 1));
+            e.storage()
+                .instance()
+                .set(&DataKey::HalfOpenOps, &(ops + 1));
             Ok(())
         }
         CircuitBreakerState::Closed => Ok(()),
@@ -182,7 +184,10 @@ mod threshold_tests {
         e.mock_all_auths();
         setup_admin(&e);
         set_threshold(&e, 42).unwrap();
-        let stored: Option<i128> = e.storage().instance().get(&ConfigKey::CircuitBreakerThreshold);
+        let stored: Option<i128> = e
+            .storage()
+            .instance()
+            .get(&ConfigKey::CircuitBreakerThreshold);
         assert_eq!(stored, Some(42));
     }
 }

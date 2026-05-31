@@ -10,17 +10,14 @@
 ///   - Snapshot ledger is set at dispute-filing time and is immutable
 ///   - Fallback tokens are locked so the same tokens cannot be double-voted
 ///   - Per-user LockedBalance tracking prevents pool drain
-
 use crate::errors::ErrorCode;
 use crate::modules::{markets, voting};
-use crate::types::{
-    ConfigKey, MarketStatus, MarketTier, OracleConfig,
-};
+use crate::types::{ConfigKey, MarketStatus, MarketTier, OracleConfig};
+use crate::{PredictIQ, PredictIQClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger as _},
     Address, Env, String, Vec,
 };
-use crate::{PredictIQ, PredictIQClient};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -182,7 +179,7 @@ fn test_vote_revision_decrements_old_tally() {
 
     // Revision: subtract from outcome 1, add to outcome 0
     inject_tally(&env, &contract_addr, market_id, 1, -1000); // decrement
-    inject_tally(&env, &contract_addr, market_id, 0, 1000);  // increment
+    inject_tally(&env, &contract_addr, market_id, 0, 1000); // increment
 
     env.as_contract(&contract_addr, || {
         let tally_0 = voting::get_tally(&env, market_id, 0);

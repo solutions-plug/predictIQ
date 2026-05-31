@@ -81,11 +81,19 @@ impl MockPythContract {
 /// A 64-char hex string that decodes to a valid 32-byte Pyth feed ID.
 /// Matches the BTC/USD feed ID on Pyth mainnet.
 fn btc_usd_feed_id(e: &Env) -> String {
-    String::from_str(e, "e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43")
+    String::from_str(
+        e,
+        "e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43",
+    )
 }
 
 /// Build an [`OracleConfig`] pointing at the mock Pyth contract.
-fn oracle_config(e: &Env, pyth_addr: Address, max_staleness: u64, max_conf_bps: u64) -> OracleConfig {
+fn oracle_config(
+    e: &Env,
+    pyth_addr: Address,
+    max_staleness: u64,
+    max_conf_bps: u64,
+) -> OracleConfig {
     OracleConfig {
         oracle_address: pyth_addr,
         feed_id: btc_usd_feed_id(e),
@@ -178,12 +186,28 @@ fn test_different_markets_can_have_different_feed_ids() {
     opts.push_back(String::from_str(&e, "No"));
 
     let btc_market = client.create_market(
-        &admin, &String::from_str(&e, "BTC market"), &opts,
-        &1000, &2000, &btc_config, &MarketTier::Basic, &token, &0, &0,
+        &admin,
+        &String::from_str(&e, "BTC market"),
+        &opts,
+        &1000,
+        &2000,
+        &btc_config,
+        &MarketTier::Basic,
+        &token,
+        &0,
+        &0,
     );
     let eth_market = client.create_market(
-        &admin, &String::from_str(&e, "ETH market"), &opts,
-        &1000, &2000, &eth_config, &MarketTier::Basic, &token, &0, &0,
+        &admin,
+        &String::from_str(&e, "ETH market"),
+        &opts,
+        &1000,
+        &2000,
+        &eth_config,
+        &MarketTier::Basic,
+        &token,
+        &0,
+        &0,
     );
 
     let btc = client.get_market(&btc_market).unwrap();
@@ -206,7 +230,11 @@ fn test_fetch_pyth_price_returns_correct_fields() {
     let config = oracle_config(&e, pyth_addr, u64::MAX, 500);
 
     let result = fetch_pyth_price(&e, &config);
-    assert!(result.is_ok(), "fetch_pyth_price should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "fetch_pyth_price should succeed: {:?}",
+        result
+    );
 
     let price = result.unwrap();
     assert_eq!(price.price, 5_000_000);
@@ -247,7 +275,10 @@ fn test_fetch_pyth_price_no_older_than_succeeds_when_fresh() {
     let config = oracle_config(&e, pyth_addr, 3600, 500);
 
     let result = fetch_pyth_price(&e, &config);
-    assert!(result.is_ok(), "price should be accepted when within staleness window");
+    assert!(
+        result.is_ok(),
+        "price should be accepted when within staleness window"
+    );
     assert_eq!(result.unwrap().price, 5_000_000);
 }
 
@@ -302,7 +333,10 @@ fn test_validate_price_rejects_stale_price() {
         publish_time: 1_700_000_000,
     };
 
-    assert_eq!(validate_price(&e, &price, &config), Err(ErrorCode::StalePrice));
+    assert_eq!(
+        validate_price(&e, &price, &config),
+        Err(ErrorCode::StalePrice)
+    );
 }
 
 #[test]
@@ -321,7 +355,10 @@ fn test_validate_price_rejects_low_confidence() {
         publish_time: 1_700_000_000,
     };
 
-    assert_eq!(validate_price(&e, &price, &config), Err(ErrorCode::ConfidenceTooLow));
+    assert_eq!(
+        validate_price(&e, &price, &config),
+        Err(ErrorCode::ConfidenceTooLow)
+    );
 }
 
 #[test]
@@ -337,7 +374,10 @@ fn test_validate_price_rejects_negative_publish_time() {
         publish_time: -1,
     };
 
-    assert_eq!(validate_price(&e, &price, &config), Err(ErrorCode::InvalidTimestamp));
+    assert_eq!(
+        validate_price(&e, &price, &config),
+        Err(ErrorCode::InvalidTimestamp)
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -355,8 +395,16 @@ fn test_resolve_with_pyth_stores_outcome_and_timestamp() {
     let config = oracle_config(&e, pyth_addr, u64::MAX, 500);
 
     let result = resolve_with_pyth(&e, 1u64, 0u32, &config);
-    assert!(result.is_ok(), "resolve_with_pyth should succeed: {:?}", result);
-    assert_eq!(result.unwrap(), 0u32, "outcome should be 0 (price >= strike)");
+    assert!(
+        result.is_ok(),
+        "resolve_with_pyth should succeed: {:?}",
+        result
+    );
+    assert_eq!(
+        result.unwrap(),
+        0u32,
+        "outcome should be 0 (price >= strike)"
+    );
 
     assert_eq!(get_oracle_result(&e, 1u64, 0u32), Some(0u32));
     assert!(get_last_update(&e, 1u64, 0u32).is_some());
@@ -405,8 +453,14 @@ fn test_resolve_with_pyth_stale_price_leaves_no_storage() {
     let result = resolve_with_pyth(&e, 3u64, 0u32, &config);
     assert_eq!(result, Err(ErrorCode::StalePrice));
 
-    assert!(get_oracle_result(&e, 3u64, 0u32).is_none(), "no result should be stored");
-    assert!(get_last_update(&e, 3u64, 0u32).is_none(), "no timestamp should be stored");
+    assert!(
+        get_oracle_result(&e, 3u64, 0u32).is_none(),
+        "no result should be stored"
+    );
+    assert!(
+        get_last_update(&e, 3u64, 0u32).is_none(),
+        "no timestamp should be stored"
+    );
 }
 
 #[test]
@@ -451,7 +505,11 @@ fn test_contract_attempt_oracle_resolution_with_mock_pyth() {
     client.set_oracle_result(&market_id, &0, &0);
 
     let result = client.try_attempt_oracle_resolution(&market_id);
-    assert!(result.is_ok(), "oracle resolution should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "oracle resolution should succeed: {:?}",
+        result
+    );
 
     let market = client.get_market(&market_id).unwrap();
     assert_eq!(market.status, MarketStatus::PendingResolution);

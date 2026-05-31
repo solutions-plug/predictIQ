@@ -61,8 +61,14 @@ fn test_full_bet_place_resolve_claim_flow() {
     let winnings2 = client.claim_winnings(&bettor2, &market_id, &token);
 
     // Verify winnings are greater than original bets (includes pool share)
-    assert!(winnings1 > bet1_amount, "Winnings should exceed original bet");
-    assert!(winnings2 > bet2_amount, "Winnings should exceed original bet");
+    assert!(
+        winnings1 > bet1_amount,
+        "Winnings should exceed original bet"
+    );
+    assert!(
+        winnings2 > bet2_amount,
+        "Winnings should exceed original bet"
+    );
 
     // 8. Verify balances after claiming
     let balance1_after_claim = token_client.balance(&bettor1);
@@ -149,8 +155,14 @@ fn test_full_flow_fee_deduction_verification() {
     // Verify fee was deducted: winnings should be less than total pool
     // Total pool = 20_000, minus 5% fee = 19_000
     // Bettor1 gets share of remaining pool
-    assert!(winnings < 20_000, "Winnings should be less than total pool due to fees");
-    assert!(winnings > bet_amount, "Winnings should still exceed original bet");
+    assert!(
+        winnings < 20_000,
+        "Winnings should be less than total pool due to fees"
+    );
+    assert!(
+        winnings > bet_amount,
+        "Winnings should still exceed original bet"
+    );
 
     // Verify revenue was collected
     let revenue = client.get_revenue(&token);
@@ -267,5 +279,8 @@ fn test_full_flow_payout_distribution_accuracy() {
     // Bettor2 bet 20_000 out of 30_000 total winning bets (2/3)
     // So winnings2 should be approximately 2x winnings1
     let ratio = winnings2 as f64 / winnings1 as f64;
-    assert!(ratio > 1.8 && ratio < 2.2, "Payout ratio should be approximately 2:1");
+    assert!(
+        ratio > 1.8 && ratio < 2.2,
+        "Payout ratio should be approximately 2:1"
+    );
 }

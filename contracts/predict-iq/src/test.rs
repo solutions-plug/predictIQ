@@ -62,7 +62,9 @@ fn test_config_setters_reject_non_admin() {
     expect_not_authorized!(client.try_set_minimum_bet_amount(&1000));
 
     // set_creator_reputation
-    expect_not_authorized!(client.try_set_creator_reputation(&non_admin, &types::CreatorReputation::Pro));
+    expect_not_authorized!(
+        client.try_set_creator_reputation(&non_admin, &types::CreatorReputation::Pro)
+    );
 
     // set_guardian
     expect_not_authorized!(client.try_set_guardian(&guardian));
@@ -130,7 +132,7 @@ fn make_stored_market(e: &Env, id: u64) -> types::Market {
             min_responses: Some(1),
             max_staleness_seconds: 3600,
             max_confidence_bps: 200,
-        strike_price: None,
+            strike_price: None,
         },
         total_staked: 0,
         payout_mode: types::PayoutMode::Pull,
@@ -178,16 +180,16 @@ fn test_market_creation_fails_without_deposit() {
             min_responses: 1,
             max_staleness_seconds: 300,
             max_confidence_bps: 200,
-        strike_price: None,
+            strike_price: None,
             min_responses: Some(1),
             max_staleness_seconds: 3600,
             max_confidence_bps: 200,
-        strike_price: None,
-        max_staleness_seconds: 3600,
-        max_confidence_bps: 200,
-        strike_price: None,
-        max_confidence_bps: 100,
-        strike_price: None,
+            strike_price: None,
+            max_staleness_seconds: 3600,
+            max_confidence_bps: 200,
+            strike_price: None,
+            max_confidence_bps: 100,
+            strike_price: None,
         },
         &types::MarketTier::Basic,
         &native_token,
@@ -784,7 +786,10 @@ fn test_add_admin_as_guardian_rejected() {
 
     let guardian = Address::generate(&e);
     let mut guardians = Vec::new(&e);
-    guardians.push_back(types::Guardian { address: guardian.clone(), voting_power: 1 });
+    guardians.push_back(types::Guardian {
+        address: guardian.clone(),
+        voting_power: 1,
+    });
     client.initialize_guardians(&guardians);
 
     // Attempt to add the admin address as a guardian — must be rejected
@@ -800,7 +805,10 @@ fn test_initialize_guardians_with_admin_rejected() {
     let (e, admin, _contract_id, client) = setup_test_env();
 
     let mut guardians = Vec::new(&e);
-    guardians.push_back(types::Guardian { address: admin.clone(), voting_power: 1 });
+    guardians.push_back(types::Guardian {
+        address: admin.clone(),
+        voting_power: 1,
+    });
 
     let result = client.try_initialize_guardians(&guardians);
     assert_eq!(result, Err(Ok(ErrorCode::NotAuthorized)));
@@ -880,7 +888,10 @@ fn test_execute_upgrade_timelock_starts_when_vote_passes() {
     e.ledger().set_timestamp(1000 + 24 * 3600 + 1);
     client.vote_for_upgrade(&guardian, &true);
 
-    assert_eq!(client.try_execute_upgrade(), Err(Ok(ErrorCode::TimelockActive)));
+    assert_eq!(
+        client.try_execute_upgrade(),
+        Err(Ok(ErrorCode::TimelockActive))
+    );
 
     e.ledger().set_timestamp(1000 + (2 * 24 * 3600) + 1);
     assert!(client.try_execute_upgrade().is_ok());
@@ -984,7 +995,10 @@ fn test_set_timelock_duration_and_early_execution() {
 
     // Still blocked before 24 hours
     e.ledger().set_timestamp(1000 + one_day - 1);
-    assert_eq!(client.try_execute_upgrade(), Err(Ok(ErrorCode::TimelockActive)));
+    assert_eq!(
+        client.try_execute_upgrade(),
+        Err(Ok(ErrorCode::TimelockActive))
+    );
 
     // Succeeds exactly at 24 hours
     e.ledger().set_timestamp(1000 + one_day);
@@ -2020,7 +2034,10 @@ fn test_vote_on_upgrade_refreshes_ttl() {
     });
 
     let pending = client.get_pending_upgrade();
-    assert!(pending.is_some(), "PendingUpgrade expired after vote + 3 months inactivity");
+    assert!(
+        pending.is_some(),
+        "PendingUpgrade expired after vote + 3 months inactivity"
+    );
     let votes_for = client.get_upgrade_votes().votes_for;
     assert_eq!(votes_for, 1);
 }
@@ -2153,8 +2170,6 @@ fn test_double_vote_still_rejected_with_optimized_struct() {
     assert_eq!(result, Err(Ok(crate::errors::ErrorCode::AlreadyVoted)));
 }
 
-
-
 // ===================== Dispute Deadline Idempotency Test =====================
 
 #[test]
@@ -2188,7 +2203,7 @@ fn test_dispute_deadline_extension_is_one_time_and_idempotent() {
             min_responses: Some(1),
             max_staleness_seconds: 3600,
             max_confidence_bps: 200,
-        strike_price: None,
+            strike_price: None,
         },
         &types::MarketTier::Basic,
         &native_token,
@@ -2203,7 +2218,8 @@ fn test_dispute_deadline_extension_is_one_time_and_idempotent() {
 
     // First dispute — must succeed and extend deadline by one dispute window (72h)
     let disputer = Address::generate(&e);
-    e.ledger().with_mut(|li| li.timestamp = resolution_deadline + 1000);
+    e.ledger()
+        .with_mut(|li| li.timestamp = resolution_deadline + 1000);
     client.file_dispute(&disputer, &market_id);
 
     let market_after_first = client.get_market(&market_id).unwrap();
@@ -2222,7 +2238,10 @@ fn test_dispute_deadline_extension_is_one_time_and_idempotent() {
 
     // Deadline must be unchanged after the rejected second attempt
     let market_after_second = client.get_market(&market_id).unwrap();
-    assert_eq!(market_after_second.resolution_deadline, deadline_after_first);
+    assert_eq!(
+        market_after_second.resolution_deadline,
+        deadline_after_first
+    );
     assert_eq!(market_after_second.status, types::MarketStatus::Disputed);
 }
 
@@ -2245,7 +2264,6 @@ fn test_initialize_rejects_non_deployer() {
     let result = client.try_initialize(&attacker, &100, &guardians);
     assert!(result.is_err());
 }
-
 
 // ─── Fee Calculation Unit Tests ───────────────────────────────────────────────
 
@@ -2411,7 +2429,10 @@ mod fee_calculation_tests {
         let referrer = Address::generate(&env);
         // No reward seeded — claim must fail
         let result = client.try_claim_referral_rewards(&referrer, &token);
-        assert_eq!(result, Err(Ok(crate::errors::ErrorCode::InsufficientBalance)));
+        assert_eq!(
+            result,
+            Err(Ok(crate::errors::ErrorCode::InsufficientBalance))
+        );
     }
 
     #[test]
@@ -2442,7 +2463,10 @@ mod fee_calculation_tests {
 
         // Second claim must fail — balance is zero
         let result = client.try_claim_referral_rewards(&referrer, &token);
-        assert_eq!(result, Err(Ok(crate::errors::ErrorCode::InsufficientBalance)));
+        assert_eq!(
+            result,
+            Err(Ok(crate::errors::ErrorCode::InsufficientBalance))
+        );
     }
 
     // ── Fee distribution / edge cases ─────────────────────────────────────────
@@ -2503,7 +2527,10 @@ mod dispute_resolution_tests {
     use crate::modules::{markets, voting};
     use crate::types::{MarketStatus, MarketTier, OracleConfig};
     use crate::{PredictIQ, PredictIQClient};
-    use soroban_sdk::{testutils::{Address as _, Ledger as _}, token, Address, Env, String, Vec};
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger as _},
+        token, Address, Env, String, Vec,
+    };
 
     const DISPUTE_WINDOW: u64 = 86_400; // 24h — matches resolution::DISPUTE_WINDOW_SECONDS
 
@@ -2542,7 +2569,7 @@ mod dispute_resolution_tests {
                 min_responses: Some(1),
                 max_staleness_seconds: 3600,
                 max_confidence_bps: 200,
-        strike_price: None,
+                strike_price: None,
             },
             &MarketTier::Basic,
             &token,
@@ -2578,7 +2605,10 @@ mod dispute_resolution_tests {
 
         let disputer = Address::generate(&env);
         let result = client.try_file_dispute(&disputer, &market_id);
-        assert_eq!(result, Err(Ok(crate::errors::ErrorCode::MarketNotPendingResolution)));
+        assert_eq!(
+            result,
+            Err(Ok(crate::errors::ErrorCode::MarketNotPendingResolution))
+        );
     }
 
     #[test]
@@ -2625,7 +2655,10 @@ mod dispute_resolution_tests {
         env.ledger().set_timestamp(pending_ts + DISPUTE_WINDOW);
         let disputer = Address::generate(&env);
         let result = client.try_file_dispute(&disputer, &market_id);
-        assert_eq!(result, Err(Ok(crate::errors::ErrorCode::DisputeWindowClosed)));
+        assert_eq!(
+            result,
+            Err(Ok(crate::errors::ErrorCode::DisputeWindowClosed))
+        );
     }
 
     #[test]
@@ -2644,7 +2677,10 @@ mod dispute_resolution_tests {
 
         let disputer = Address::generate(&env);
         let result = client.try_file_dispute(&disputer, &market_id);
-        assert_eq!(result, Err(Ok(crate::errors::ErrorCode::MarketNotPendingResolution)));
+        assert_eq!(
+            result,
+            Err(Ok(crate::errors::ErrorCode::MarketNotPendingResolution))
+        );
     }
 
     #[test]
@@ -2652,11 +2688,21 @@ mod dispute_resolution_tests {
         let (env, client, _admin, contract_id) = setup();
         let market_id = create_market(&env, &client, &contract_id);
 
-        seed_market_status(&env, &contract_id, market_id, MarketStatus::Resolved, None, None);
+        seed_market_status(
+            &env,
+            &contract_id,
+            market_id,
+            MarketStatus::Resolved,
+            None,
+            None,
+        );
 
         let disputer = Address::generate(&env);
         let result = client.try_file_dispute(&disputer, &market_id);
-        assert_eq!(result, Err(Ok(crate::errors::ErrorCode::MarketNotPendingResolution)));
+        assert_eq!(
+            result,
+            Err(Ok(crate::errors::ErrorCode::MarketNotPendingResolution))
+        );
     }
 
     #[test]
@@ -2777,7 +2823,10 @@ mod dispute_resolution_tests {
 
         let voter = Address::generate(&env);
         let result = client.try_cast_vote(&voter, &market_id, &0, &100);
-        assert_eq!(result, Err(Ok(crate::errors::ErrorCode::GovernanceTokenNotSet)));
+        assert_eq!(
+            result,
+            Err(Ok(crate::errors::ErrorCode::GovernanceTokenNotSet))
+        );
     }
 
     #[test]
@@ -2950,6 +2999,9 @@ mod dispute_resolution_tests {
 
         let metrics_0 = client.get_resolution_metrics(&market_id, &0);
         // gas_estimate = 100_000 + winner_count * 50_000
-        assert_eq!(metrics_0.gas_estimate, 100_000 + metrics_0.winner_count as u64 * 50_000);
+        assert_eq!(
+            metrics_0.gas_estimate,
+            100_000 + metrics_0.winner_count as u64 * 50_000
+        );
     }
 }

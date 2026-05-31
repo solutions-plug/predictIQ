@@ -1,11 +1,11 @@
 // End-to-end integration test for the full disputed market lifecycle
 // Active -> PendingResolution -> Disputed -> Resolved -> Claim
 
-use predict_iq::types::{MarketStatus, OracleConfig, MarketTier, Guardian};
+use predict_iq::types::{Guardian, MarketStatus, MarketTier, OracleConfig};
 use predict_iq::{PredictIQ, PredictIQClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
-    token, Address, Env, String, Vec, Symbol,
+    token, Address, Env, String, Symbol, Vec,
 };
 
 mod common;
@@ -23,7 +23,7 @@ fn test_full_disputed_lifecycle() {
     let gov_token_admin = Address::generate(&env);
     let gov_token_id = env.register_stellar_asset_contract_v2(gov_token_admin.clone());
     let gov_token = gov_token_id.address();
-    
+
     let native_token_admin = Address::generate(&env);
     let native_token_id = env.register_stellar_asset_contract_v2(native_token_admin.clone());
     let native_token = native_token_id.address();
@@ -44,7 +44,10 @@ fn test_full_disputed_lifecycle() {
     let creator = Address::generate(&env);
     let options = Vec::from_array(
         &env,
-        [String::from_str(&env, "Outcome 0"), String::from_str(&env, "Outcome 1")],
+        [
+            String::from_str(&env, "Outcome 0"),
+            String::from_str(&env, "Outcome 1"),
+        ],
     );
 
     let oracle_config = OracleConfig {
@@ -87,11 +90,11 @@ fn test_full_disputed_lifecycle() {
 
     // 4. Resolve via Oracle (Proposed Outcome: 1)
     env.ledger().with_mut(|li| li.timestamp = 3001); // Past resolution deadline
-    
+
     // Set oracle result as admin
     client.set_oracle_result(&market_id, &0, &1);
     client.attempt_oracle_resolution(&market_id);
-    
+
     assert_market_status(&client, market_id, MarketStatus::PendingResolution);
     let market = client.get_market(&market_id).unwrap();
     assert_eq!(market.winning_outcome, Some(1));
@@ -99,7 +102,7 @@ fn test_full_disputed_lifecycle() {
     // 5. File Dispute (User A disagrees)
     env.ledger().with_mut(|li| li.timestamp = 3100); // Within 48h dispute window
     client.file_dispute(&user_a, &market_id);
-    
+
     assert_market_status(&client, market_id, MarketStatus::Disputed);
 
     // 6. Community Voting (Majority decides Outcome 0)
@@ -116,9 +119,10 @@ fn test_full_disputed_lifecycle() {
     client.cast_vote(&voter_2, &market_id, &1, &400);
 
     // 7. Finalize Resolution after voting period (72h after dispute)
-    env.ledger().with_mut(|li| li.timestamp = 3100 + (72 * 3601)); // Past 72h
+    env.ledger()
+        .with_mut(|li| li.timestamp = 3100 + (72 * 3601)); // Past 72h
     client.finalize_resolution(&market_id);
-    
+
     assert_market_status(&client, market_id, MarketStatus::Resolved);
     let market = client.get_market(&market_id).unwrap();
     assert_eq!(market.winning_outcome, Some(0)); // Majority won
@@ -127,7 +131,7 @@ fn test_full_disputed_lifecycle() {
     let balance_before = token::Client::new(&env, &native_token).balance(&user_a);
     let claimed = client.claim_winnings(&user_a, &market_id);
     assert!(claimed > 1000); // Original 1000 + share of user B's bet - fees
-    
+
     let balance_after = token::Client::new(&env, &native_token).balance(&user_a);
     assert_eq!(balance_after, balance_before + claimed);
 

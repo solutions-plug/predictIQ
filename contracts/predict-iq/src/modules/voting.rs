@@ -37,7 +37,7 @@ pub fn cast_vote(
     }
 
     let vote_key = DataKey::Vote(market_id, voter.clone());
-    
+
     // Issue #175: Allow vote revision - voters can change their vote before resolution deadline
     // This enables more flexible governance where voters can respond to new information
     let old_vote: Option<Vote> = e.storage().persistent().get(&vote_key);
@@ -143,7 +143,11 @@ pub fn cast_vote(
 
     if old_vote.is_none() {
         let reg_key = DataKey::DisputeVoters(market_id);
-        let mut voters: Vec<Address> = e.storage().persistent().get(&reg_key).unwrap_or(Vec::new(e));
+        let mut voters: Vec<Address> = e
+            .storage()
+            .persistent()
+            .get(&reg_key)
+            .unwrap_or(Vec::new(e));
         voters.push_back(voter.clone());
         e.storage().persistent().set(&reg_key, &voters);
     }
@@ -207,11 +211,7 @@ pub fn unlock_tokens(e: &Env, voter: Address, market_id: u64) -> Result<(), Erro
     // Issue #37: Use LockedBalance as the authoritative per-user amount to
     // prevent a user from withdrawing more than they individually locked.
     let balance_key = DataKey::LockedBalance(market_id, voter.clone());
-    let amount: i128 = e
-        .storage()
-        .persistent()
-        .get(&balance_key)
-        .unwrap_or(0);
+    let amount: i128 = e.storage().persistent().get(&balance_key).unwrap_or(0);
 
     if amount <= 0 {
         return Err(ErrorCode::BetNotFound);
@@ -247,7 +247,9 @@ pub fn prune_market_voting_state(e: &Env, market_id: u64, num_outcomes: u32) {
     if let Some(voters) = e.storage().persistent().get::<_, Vec<Address>>(&reg_key) {
         for i in 0..voters.len() {
             let v = voters.get(i).unwrap();
-            e.storage().persistent().remove(&DataKey::Vote(market_id, v.clone()));
+            e.storage()
+                .persistent()
+                .remove(&DataKey::Vote(market_id, v.clone()));
             e.storage()
                 .persistent()
                 .remove(&DataKey::LockedTokens(market_id, v.clone()));
@@ -275,7 +277,9 @@ mod import_tests {
     fn governance_token_config_key_round_trips() {
         let e = Env::default();
         let token = Address::generate(&e);
-        e.storage().instance().set(&ConfigKey::GovernanceToken, &token);
+        e.storage()
+            .instance()
+            .set(&ConfigKey::GovernanceToken, &token);
         let stored: Option<Address> = e.storage().instance().get(&ConfigKey::GovernanceToken);
         assert_eq!(stored, Some(token));
     }
@@ -286,7 +290,10 @@ mod import_tests {
         let e = Env::default();
         // GovernanceToken not set in storage — get returns None
         let stored: Option<Address> = e.storage().instance().get(&ConfigKey::GovernanceToken);
-        assert!(stored.is_none(), "GovernanceToken must be absent to trigger the error");
+        assert!(
+            stored.is_none(),
+            "GovernanceToken must be absent to trigger the error"
+        );
     }
 }
 
@@ -321,8 +328,12 @@ mod prune_tests {
                 weight: 200,
             },
         );
-        e.storage().persistent().set(&DataKey::VoteTally(market_id, 0), &100_i128);
-        e.storage().persistent().set(&DataKey::VoteTally(market_id, 1), &200_i128);
+        e.storage()
+            .persistent()
+            .set(&DataKey::VoteTally(market_id, 0), &100_i128);
+        e.storage()
+            .persistent()
+            .set(&DataKey::VoteTally(market_id, 1), &200_i128);
         e.storage().persistent().set(
             &DataKey::LockedTokens(market_id, v1.clone()),
             &LockedTokens {
@@ -332,10 +343,9 @@ mod prune_tests {
                 unlock_time: 0,
             },
         );
-        e.storage().persistent().set(
-            &DataKey::LockedBalance(market_id, v1.clone()),
-            &50_i128,
-        );
+        e.storage()
+            .persistent()
+            .set(&DataKey::LockedBalance(market_id, v1.clone()), &50_i128);
 
         let mut reg = soroban_sdk::Vec::new(&e);
         reg.push_back(v1.clone());
@@ -421,7 +431,7 @@ mod decimal_normalization_tests {
     #[test]
     fn equal_weights_after_normalization() {
         // 1 token regardless of decimal precision should normalize to the same value
-        let one_7dec = normalize(10_000_000, 7);       // 1 token at 7 decimals
+        let one_7dec = normalize(10_000_000, 7); // 1 token at 7 decimals
         let one_18dec = normalize(1_000_000_000_000_000_000, 18); // 1 token at 18 decimals
         assert_eq!(one_7dec, one_18dec);
     }

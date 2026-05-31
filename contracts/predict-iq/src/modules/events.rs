@@ -144,28 +144,38 @@ pub fn emit_dispute_resolved(e: &Env, market_id: u64, resolver: Address, winning
 }
 
 pub fn emit_market_cancelled(e: &Env, market_id: u64, admin: Address) {
-    e.events()
-        .publish((symbol_short!("mkt_cncl"), market_id, admin), (EVENT_VERSION,));
+    e.events().publish(
+        (symbol_short!("mkt_cncl"), market_id, admin),
+        (EVENT_VERSION,),
+    );
 }
 
 pub fn emit_market_cancelled_vote(e: &Env, market_id: u64, resolver: Address) {
-    e.events()
-        .publish((symbol_short!("mk_cn_vt"), market_id, resolver), (EVENT_VERSION,));
+    e.events().publish(
+        (symbol_short!("mk_cn_vt"), market_id, resolver),
+        (EVENT_VERSION,),
+    );
 }
 
 pub fn emit_referral_reward(e: &Env, market_id: u64, referrer: Address, amount: i128) {
-    e.events()
-        .publish((symbol_short!("ref_rwrd"), market_id, referrer), (EVENT_VERSION, amount));
+    e.events().publish(
+        (symbol_short!("ref_rwrd"), market_id, referrer),
+        (EVENT_VERSION, amount),
+    );
 }
 
 pub fn emit_referral_claimed(e: &Env, market_id: u64, claimer: Address, amount: i128) {
-    e.events()
-        .publish((symbol_short!("ref_claim"), market_id, claimer), (EVENT_VERSION, amount));
+    e.events().publish(
+        (symbol_short!("ref_claim"), market_id, claimer),
+        (EVENT_VERSION, amount),
+    );
 }
 
 pub fn emit_referral_distribution(e: &Env, market_id: u64, token: Address) {
-    e.events()
-        .publish((symbol_short!("ref_dist"), market_id, token), (EVENT_VERSION,));
+    e.events().publish(
+        (symbol_short!("ref_dist"), market_id, token),
+        (EVENT_VERSION,),
+    );
 }
 
 pub fn emit_circuit_breaker_auto(e: &Env, contract_address: Address, error_count: u32) {
@@ -176,8 +186,10 @@ pub fn emit_circuit_breaker_auto(e: &Env, contract_address: Address, error_count
 }
 
 pub fn emit_fee_collected(e: &Env, _market_id: u64, contract_address: Address, amount: i128) {
-    e.events()
-        .publish((symbol_short!("fee_colct"), 0u64, contract_address), (EVENT_VERSION, amount));
+    e.events().publish(
+        (symbol_short!("fee_colct"), 0u64, contract_address),
+        (EVENT_VERSION, amount),
+    );
 }
 
 /// Issue #63: Emit AdminFallbackResolution event
@@ -215,7 +227,11 @@ pub fn emit_monitoring_state_reset(
 ) {
     e.events().publish(
         (symbol_short!("mon_reset"), resetter),
-        (EVENT_VERSION, previous_error_count, previous_last_observation),
+        (
+            EVENT_VERSION,
+            previous_error_count,
+            previous_last_observation,
+        ),
     );
 }
 
@@ -248,10 +264,8 @@ pub fn emit_upgrade_executed(e: &Env, executor: Address, wasm_hash: soroban_sdk:
 }
 
 pub fn emit_upgrade_rejected(e: &Env, wasm_hash: soroban_sdk::BytesN<32>) {
-    e.events().publish(
-        (symbol_short!("upg_rej"),),
-        (EVENT_VERSION, wasm_hash),
-    );
+    e.events()
+        .publish((symbol_short!("upg_rej"),), (EVENT_VERSION, wasm_hash));
 }
 
 /// Issue #506: Emit MarketStateChanged event for indexing

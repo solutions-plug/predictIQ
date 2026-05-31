@@ -3,10 +3,10 @@ use soroban_sdk::{contract, contractimpl, Address, Env, String, Vec};
 
 mod errors;
 mod modules;
-mod test;
 pub mod pyth_client;
-pub mod types;
+mod test;
 mod test_pyth_integration;
+pub mod types;
 
 use crate::errors::ErrorCode;
 use crate::modules::admin;
@@ -231,7 +231,12 @@ impl PredictIQ {
         crate::modules::fees::claim_referral_rewards(&e, &address, &token)
     }
 
-    pub fn set_oracle_result(e: Env, market_id: u64, oracle_id: u32, outcome: u32) -> Result<(), ErrorCode> {
+    pub fn set_oracle_result(
+        e: Env,
+        market_id: u64,
+        oracle_id: u32,
+        outcome: u32,
+    ) -> Result<(), ErrorCode> {
         crate::modules::admin::require_admin(&e)?;
         crate::modules::oracles::set_oracle_result(&e, market_id, oracle_id, outcome)
     }
@@ -246,8 +251,8 @@ impl PredictIQ {
 
     /// Issue #508: Validate oracle staleness for a market
     pub fn validate_oracle_staleness(e: Env, market_id: u64) -> Result<(), ErrorCode> {
-        let market = crate::modules::markets::get_market(&e, market_id)
-            .ok_or(ErrorCode::MarketNotFound)?;
+        let market =
+            crate::modules::markets::get_market(&e, market_id).ok_or(ErrorCode::MarketNotFound)?;
         crate::modules::oracles::validate_oracle_staleness(&e, market_id, &market.oracle_config)
     }
 
@@ -369,7 +374,11 @@ impl PredictIQ {
         crate::modules::governance::remove_guardian(&e, address)
     }
 
-    pub fn vote_on_guardian_removal(e: Env, voter: Address, approve: bool) -> Result<(), ErrorCode> {
+    pub fn vote_on_guardian_removal(
+        e: Env,
+        voter: Address,
+        approve: bool,
+    ) -> Result<(), ErrorCode> {
         crate::modules::governance::vote_on_guardian_removal(&e, voter, approve)
     }
 

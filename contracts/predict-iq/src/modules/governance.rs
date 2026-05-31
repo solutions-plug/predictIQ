@@ -1,7 +1,7 @@
 use crate::errors::ErrorCode;
 use crate::types::{
-    ConfigKey, Guardian, PendingUpgrade, TTL_HIGH_THRESHOLD, TTL_LOW_THRESHOLD,
-    MAJORITY_THRESHOLD_PERCENT, TIMELOCK_DURATION, TIMELOCK_MIN_SECONDS, TIMELOCK_MAX_SECONDS,
+    ConfigKey, Guardian, PendingUpgrade, MAJORITY_THRESHOLD_PERCENT, TIMELOCK_DURATION,
+    TIMELOCK_MAX_SECONDS, TIMELOCK_MIN_SECONDS, TTL_HIGH_THRESHOLD, TTL_LOW_THRESHOLD,
     UPGRADE_COOLDOWN_DURATION,
 };
 use soroban_sdk::{Address, BytesN, Env, Vec};
@@ -82,7 +82,7 @@ pub fn remove_guardian(e: &Env, address: Address) -> Result<(), ErrorCode> {
     crate::modules::admin::require_admin(e)?;
 
     let guardians = get_guardians(e);
-    
+
     // Check if guardian exists
     let mut found = false;
     for g in guardians.iter() {
@@ -91,7 +91,7 @@ pub fn remove_guardian(e: &Env, address: Address) -> Result<(), ErrorCode> {
             break;
         }
     }
-    
+
     if !found {
         return Err(ErrorCode::GuardianNotSet);
     }
@@ -116,7 +116,7 @@ pub fn remove_guardian(e: &Env, address: Address) -> Result<(), ErrorCode> {
 /// Vote on a pending guardian removal. Requires majority of other guardians.
 pub fn vote_on_guardian_removal(e: &Env, voter: Address, approve: bool) -> Result<(), ErrorCode> {
     let guardians = get_guardians(e);
-    
+
     // Verify voter is a guardian
     let mut voter_is_guardian = false;
     for g in guardians.iter() {
@@ -125,12 +125,13 @@ pub fn vote_on_guardian_removal(e: &Env, voter: Address, approve: bool) -> Resul
             break;
         }
     }
-    
+
     if !voter_is_guardian {
         return Err(ErrorCode::NotAuthorized);
     }
 
-    let mut pending_removal = e.storage()
+    let mut pending_removal = e
+        .storage()
         .persistent()
         .get::<_, crate::types::PendingGuardianRemoval>(&ConfigKey::PendingGuardianRemoval)
         .ok_or(ErrorCode::GuardianNotSet)?;
@@ -149,7 +150,7 @@ pub fn vote_on_guardian_removal(e: &Env, voter: Address, approve: bool) -> Resul
     // Calculate if majority reached (excluding target guardian)
     let other_guardians_count = guardians.len() as u32 - 1;
     let votes_needed = (other_guardians_count * MAJORITY_THRESHOLD_PERCENT) / 100 + 1;
-    
+
     if pending_removal.votes_for.len() as u32 >= votes_needed
         && get_guardian_removal_passed_at(e).is_none()
     {
@@ -168,7 +169,8 @@ pub fn vote_on_guardian_removal(e: &Env, voter: Address, approve: bool) -> Resul
 pub fn execute_guardian_removal(e: &Env) -> Result<(), ErrorCode> {
     crate::modules::admin::require_admin(e)?;
 
-    let pending_removal = e.storage()
+    let pending_removal = e
+        .storage()
         .persistent()
         .get::<_, crate::types::PendingGuardianRemoval>(&ConfigKey::PendingGuardianRemoval)
         .ok_or(ErrorCode::GuardianNotSet)?;
@@ -217,9 +219,10 @@ fn get_guardian_removal_passed_at(e: &Env) -> Option<u64> {
 }
 
 fn set_guardian_removal_passed_at(e: &Env) {
-    e.storage()
-        .persistent()
-        .set(&ConfigKey::PendingGuardianRemovalPassedAt, &e.ledger().timestamp());
+    e.storage().persistent().set(
+        &ConfigKey::PendingGuardianRemovalPassedAt,
+        &e.ledger().timestamp(),
+    );
     bump_gov_ttl(e, &ConfigKey::PendingGuardianRemovalPassedAt);
 }
 
