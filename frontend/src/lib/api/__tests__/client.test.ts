@@ -367,6 +367,69 @@ describe('API Client', () => {
     });
   });
 
+  describe('Unknown error body type narrowing', () => {
+    it('should extract message from a well-formed error object', async () => {
+      (global.fetch as jest.Mock).mockResolvedValueOnce({
+        ok: false,
+        status: 422,
+        statusText: 'Unprocessable Entity',
+        json: async () => ({ message: 'Validation failed', code: 'VALIDATION_ERROR' }),
+      });
+
+      await expect(api.newsletterSubscribe({ email: 'x' })).rejects.toMatchObject({
+        message: 'Validation failed',
+        code: 'VALIDATION_ERROR',
+        status: 422,
+      });
+    });
+
+    it('should fall back to statusText when error body is a non-object primitive', async () => {
+      (global.fetch as jest.Mock).mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        json: async () => 'plain string error',
+      });
+
+      await expect(api.health()).rejects.toMatchObject({
+        message: 'Internal Server Error',
+        status: 500,
+      });
+    });
+
+    it('should fall back to statusText when error body is null', async () => {
+      (global.fetch as jest.Mock).mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        json: async () => null,
+      });
+
+      await expect(api.health()).rejects.toMatchObject({
+        message: 'Internal Server Error',
+      });
+    });
+
+    it('should extract details from a well-formed error object', async () => {
+      (global.fetch as jest.Mock).mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        json: async () => ({
+          message: 'Bad input',
+          code: 'BAD_REQUEST',
+          details: { field: 'email', reason: 'invalid' },
+        }),
+      });
+
+      try {
+        await api.newsletterSubscribe({ email: 'bad' });
+      } catch (e) {
+        expect((e as { details?: unknown }).details).toEqual({ field: 'email', reason: 'invalid' });
+      }
+    });
+  });
+
   describe('ApiError', () => {
     it('should throw ApiError with status code on non-2xx response', async () => {
       (global.fetch as jest.Mock).mockResolvedValueOnce({
