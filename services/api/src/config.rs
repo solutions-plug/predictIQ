@@ -739,6 +739,7 @@ mod tests {
                 oracle_result: "oracle_result:{id}".to_string(),
                 health_check: "platform:stats".to_string(),
             },
+            network_passphrase: "Test SDF Network ; September 2015".to_string(),
         };
         assert!(config.validate().is_ok());
     }
@@ -812,6 +813,7 @@ mod tests {
                 oracle_result: "oracle_result:{id}".to_string(),
                 health_check: "platform:stats".to_string(),
             },
+            network_passphrase: "Test SDF Network ; September 2015".to_string(),
         };
         assert!(config.validate().is_err());
     }
@@ -885,6 +887,7 @@ mod tests {
                 oracle_result: "oracle_result:{id}".to_string(),
                 health_check: "platform:stats".to_string(),
             },
+            network_passphrase: "Test SDF Network ; September 2015".to_string(),
         };
         assert!(config.validate().is_err());
     }
@@ -958,6 +961,7 @@ mod tests {
                 oracle_result: "oracle_result:{id}".to_string(),
                 health_check: "platform:stats".to_string(),
             },
+            network_passphrase: "Test SDF Network ; September 2015".to_string(),
         };
         assert!(config.validate().is_err());
     }
