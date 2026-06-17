@@ -94,6 +94,11 @@ async fn main() -> anyhow::Result<()> {
     // Validate required configuration before proceeding
     config.validate()?;
 
+    // Warn about optional-but-critical variables that cause silent runtime failures.
+    for warning in config.optional_config_warnings() {
+        tracing::warn!("Configuration warning: {warning}");
+    }
+
     let metrics = Metrics::new()?;
     let cache = RedisCache::new(&config.redis_url).await?;
     let db = Database::new(&config.database_url, cache.clone(), metrics.clone(), &config.db_pool).await?;
