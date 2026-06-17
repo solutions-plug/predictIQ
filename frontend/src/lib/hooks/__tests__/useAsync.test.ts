@@ -111,6 +111,26 @@ describe('useAsync', () => {
     expect(mockFn).toHaveBeenCalled();
   });
 
+  it('wraps a non-Error rejection in an Error object', async () => {
+    const mockFn = jest.fn().mockRejectedValue('string rejection');
+    const { result } = renderHook(() => useAsync(mockFn, { immediate: true }));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.error).toBeInstanceOf(Error);
+    expect(result.current.error?.message).toContain('string rejection');
+  });
+
+  it('preserves an Error instance directly without wrapping', async () => {
+    const original = new TypeError('original type error');
+    const mockFn = jest.fn().mockRejectedValue(original);
+    const { result } = renderHook(() => useAsync(mockFn, { immediate: true }));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.error).toBe(original);
+  });
+
   it('aborts previous request when execute is called again', async () => {
     let abortSignal1: AbortSignal | null = null;
     let abortSignal2: AbortSignal | null = null;
