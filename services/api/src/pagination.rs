@@ -214,6 +214,20 @@ mod tests {
         assert!(!resp.has_more);
     }
 
+    // ── PaginationQuery negative limit clamping ───────────────────────────────
+
+    #[test]
+    fn pagination_query_clamps_negative_to_one() {
+        let q = PaginationQuery { limit: Some(-5), cursor: None };
+        assert_eq!(q.limit(), 1);
+    }
+
+    #[test]
+    fn pagination_query_exact_max_accepted() {
+        let q = PaginationQuery { limit: Some(MAX_PAGE_LIMIT as i64), cursor: None };
+        assert_eq!(q.limit(), MAX_PAGE_LIMIT as i64);
+    }
+
     // ── ValidatedPagination tests ─────────────────────────────────────────────
 
     #[test]
