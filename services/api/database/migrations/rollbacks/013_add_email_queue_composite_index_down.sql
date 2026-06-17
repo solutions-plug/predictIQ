@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_email_jobs_status_priority_scheduled;
