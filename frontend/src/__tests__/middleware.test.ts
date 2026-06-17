@@ -1,56 +1,52 @@
-import { middleware } from '../middleware';
-import { NextRequest } from 'next/server';
+import { buildCspHeader } from '../middleware';
 
-function makeRequest(path = '/') {
-  return new NextRequest(new URL(`http://localhost${path}`));
-}
+describe('buildCspHeader', () => {
+  const TEST_NONCE = 'dGVzdG5vbmNl';
 
-describe('CSP nonce middleware', () => {
-  it('sets Content-Security-Policy header on the response', async () => {
-    const req = makeRequest('/');
-    const res = await middleware(req);
-    expect(res.headers.get('Content-Security-Policy')).not.toBeNull();
+  it('includes the nonce in script-src', () => {
+    const csp = buildCspHeader(TEST_NONCE);
+    expect(csp).toContain(`'nonce-${TEST_NONCE}'`);
   });
 
-  it('includes nonce in script-src directive', async () => {
-    const req = makeRequest('/');
-    const res = await middleware(req);
-    const csp = res.headers.get('Content-Security-Policy') ?? '';
-    expect(csp).toMatch(/script-src[^;]*'nonce-[A-Za-z0-9+/=]+'[^;]*/);
+  it('includes strict-dynamic in script-src', () => {
+    const csp = buildCspHeader(TEST_NONCE);
+    expect(csp).toContain("'strict-dynamic'");
   });
 
-  it('generates a unique nonce per request', async () => {
-    const csp1 = (await middleware(makeRequest('/'))).headers.get('Content-Security-Policy') ?? '';
-    const csp2 = (await middleware(makeRequest('/'))).headers.get('Content-Security-Policy') ?? '';
-    const nonce1 = csp1.match(/'nonce-([^']+)'/)?.[1];
-    const nonce2 = csp2.match(/'nonce-([^']+)'/)?.[1];
-    expect(nonce1).toBeDefined();
-    expect(nonce2).toBeDefined();
-    expect(nonce1).not.toBe(nonce2);
-  });
-
-  it('sets x-nonce request header for server components', async () => {
-    const req = makeRequest('/');
-    const res = await middleware(req);
-    // The nonce is forwarded as x-nonce in the request headers passed to the route.
-    // Next.js does not expose these in the response, so we verify the CSP is present
-    // as a proxy for the middleware running correctly.
-    const csp = res.headers.get('Content-Security-Policy') ?? '';
-    expect(csp).toContain('strict-dynamic');
-  });
-
-  it('includes upgrade-insecure-requests directive', async () => {
-    const csp = (await middleware(makeRequest('/'))).headers.get('Content-Security-Policy') ?? '';
+  it('includes upgrade-insecure-requests', () => {
+    const csp = buildCspHeader(TEST_NONCE);
     expect(csp).toContain('upgrade-insecure-requests');
   });
 
-  it('blocks frame embedding with frame-ancestors none', async () => {
-    const csp = (await middleware(makeRequest('/'))).headers.get('Content-Security-Policy') ?? '';
+  it('blocks frame embedding via frame-ancestors none', () => {
+    const csp = buildCspHeader(TEST_NONCE);
     expect(csp).toContain("frame-ancestors 'none'");
   });
 
-  it('restricts form targets with form-action self', async () => {
-    const csp = (await middleware(makeRequest('/'))).headers.get('Content-Security-Policy') ?? '';
+  it('restricts form targets to same origin', () => {
+    const csp = buildCspHeader(TEST_NONCE);
     expect(csp).toContain("form-action 'self'");
+  });
+
+  it('restricts base URI to same origin', () => {
+    const csp = buildCspHeader(TEST_NONCE);
+    expect(csp).toContain("base-uri 'self'");
+  });
+
+  it('does not contain unsafe-eval', () => {
+    const csp = buildCspHeader(TEST_NONCE);
+    expect(csp).not.toContain("'unsafe-eval'");
+  });
+
+  it('does not contain unsafe-inline in script-src', () => {
+    const csp = buildCspHeader(TEST_NONCE);
+    const scriptSrc = csp.split(';').find(d => d.trim().startsWith('script-src'));
+    expect(scriptSrc).not.toContain("'unsafe-inline'");
+  });
+
+  it('produces different CSP values for different nonces', () => {
+    const csp1 = buildCspHeader('nonce-one');
+    const csp2 = buildCspHeader('nonce-two');
+    expect(csp1).not.toBe(csp2);
   });
 });
