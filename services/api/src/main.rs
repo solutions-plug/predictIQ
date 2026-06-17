@@ -158,7 +158,8 @@ async fn main() -> anyhow::Result<()> {
         loop {
             interval.tick().await;
             let ttl = db_cleanup.config.newsletter_token_ttl_secs;
-            match db_cleanup.db.newsletter_delete_expired_pending(ttl).await {
+            let batch = db_cleanup.config.newsletter_cleanup_batch_size;
+            match db_cleanup.db.newsletter_delete_expired_pending(ttl, batch).await {
                 Ok(n) if n > 0 => tracing::info!("[newsletter] cleaned up {n} expired pending subscriptions"),
                 Err(e) => tracing::warn!("[newsletter] cleanup error: {e}"),
                 _ => {}
