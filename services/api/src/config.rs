@@ -1127,4 +1127,19 @@ mod tests {
         config.unsubscribe_signing_secret = None;
         assert_eq!(config.optional_config_warnings().len(), 3);
     }
+
+    #[test]
+    fn warns_when_newsletter_cleanup_batch_size_is_zero() {
+        let mut config = base_config();
+        config.newsletter_cleanup_batch_size = 0;
+        let warnings = config.optional_config_warnings();
+        assert!(warnings.iter().any(|w| w.contains("NEWSLETTER_CLEANUP_BATCH_SIZE")));
+    }
+
+    #[test]
+    fn no_warning_for_nonzero_newsletter_cleanup_batch_size() {
+        let mut config = base_config();
+        config.newsletter_cleanup_batch_size = 1;
+        assert!(!config.optional_config_warnings().iter().any(|w| w.contains("NEWSLETTER_CLEANUP_BATCH_SIZE")));
+    }
 }
