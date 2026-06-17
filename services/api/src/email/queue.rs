@@ -98,8 +98,10 @@ impl EmailQueue {
         Ok(None)
     }
 
-    /// Mark a job as completed
     /// Mark a job as completed and create a sent event record.
+    ///
+    /// `recipient_email` is supplied by the caller (process_job already has the
+    /// full job struct) to avoid a second DB round-trip per completion.
     ///
     /// ## PII Handling
     ///
@@ -109,45 +111,31 @@ impl EmailQueue {
     /// - Events should only be read by authorized analytics users
     /// - Retention policy must comply with your privacy regulations (GDPR, etc)
     /// - Email analytics queries should filter or anonymize recipient data for reports
-    pub async fn mark_completed(&self, job_id: Uuid, message_id: Option<String>) -> Result<()> {
+    pub async fn mark_completed(
+        &self,
+        job_id: Uuid,
+        message_id: Option<String>,
+        recipient_email: &str,
+    ) -> Result<()> {
         self.db
             .email_update_job_status(job_id, EmailJobStatus::Completed.as_str(), None)
             .await?;
 
-        // Remove from processing set (now a sorted set with timestamps)
+        // Remove from processing set (sorted set with timestamps as scores).
         let mut conn = self.cache.get_connection().await?;
         let _: () = conn.zrem(EMAIL_PROCESSING_KEY, job_id.to_string())
             .await
             .context("Failed to remove from processing set")?;
 
-        // Track sent event with real recipient email (for analytics)
+        // Record a sent event using the recipient passed by the caller —
+        // no extra DB fetch required.
         if let Some(msg_id) = message_id {
-            // Look up recipient from DB to ensure we store the actual recipient address,
-            // not an empty string. This makes email analytics reliable and queryable.
-            let recipient = match self.db.email_get_job(job_id).await {
-                Ok(Some(job)) => job.recipient_email,
-                Ok(None) => {
-                    tracing::warn!(
-                        "Could not find job {} for completed email event — recipient will be empty",
-                        job_id
-                    );
-                    String::new()
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Error looking up job {} for completed email event: {} — recipient will be empty",
-                        job_id, e
-                    );
-                    String::new()
-                }
-            };
-
             self.db
                 .email_create_event(
                     Some(job_id),
                     Some(&msg_id),
                     "sent",
-                    &recipient,
+                    recipient_email,
                     serde_json::json!({}),
                 )
                 .await?;
