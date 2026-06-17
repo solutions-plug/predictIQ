@@ -1,4 +1,4 @@
-import { api, ApiError } from '../client';
+import { api, ApiError, getContractErrorMessage, CONTRACT_ERROR_MESSAGES } from '../client';
 
 describe('API Client', () => {
   const originalFetch = global.fetch;
@@ -328,6 +328,24 @@ describe('API Client', () => {
           headers: { 'Content-Type': 'application/json' },
         })
       );
+    });
+  });
+
+  describe('getContractErrorMessage', () => {
+    it('returns a message for a known error code', () => {
+      expect(getContractErrorMessage(101)).toContain('authorized');
+    });
+
+    it('returns a generic fallback for an unknown error code', () => {
+      const msg = getContractErrorMessage(99999);
+      expect(msg).toContain('99999');
+      expect(msg).toContain('unexpected');
+    });
+
+    it('maps all defined CONTRACT_ERROR_MESSAGES codes correctly', () => {
+      for (const [codeStr, expected] of Object.entries(CONTRACT_ERROR_MESSAGES)) {
+        expect(getContractErrorMessage(Number(codeStr))).toBe(expected);
+      }
     });
   });
 
