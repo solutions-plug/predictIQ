@@ -519,6 +519,47 @@ impl Config {
 
         Ok(())
     }
+
+    /// Return startup warnings for optional-but-critical variables.
+    ///
+    /// Unlike [`validate`], these do not abort startup — they allow the process
+    /// to start so health checks are reachable, but they surface clear
+    /// log lines that should trigger operator attention before going to
+    /// production.
+    ///
+    /// Variables checked:
+    /// - `UNSUBSCRIBE_SIGNING_SECRET` — without this, unsubscribe links return 500
+    /// - `SENDGRID_API_KEY` — without this, emails cannot be sent
+    /// - `FROM_EMAIL` — without this, emails cannot be sent
+    pub fn optional_config_warnings(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+
+        if self.unsubscribe_signing_secret.is_none() {
+            warnings.push(
+                "UNSUBSCRIBE_SIGNING_SECRET is not set: unsubscribe links will return 500 \
+                 until this is configured"
+                    .to_string(),
+            );
+        }
+
+        if self.sendgrid_api_key.is_none() {
+            warnings.push(
+                "SENDGRID_API_KEY is not set: email sending is disabled — newsletter \
+                 confirmation and transactional emails will fail"
+                    .to_string(),
+            );
+        }
+
+        if self.from_email.is_none() {
+            warnings.push(
+                "FROM_EMAIL is not set: email sending is disabled — newsletter \
+                 confirmation and transactional emails will fail"
+                    .to_string(),
+            );
+        }
+
+        warnings
+    }
 }
 
 /// Versioned contract storage key schema.
