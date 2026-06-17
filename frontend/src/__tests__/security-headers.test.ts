@@ -45,6 +45,27 @@ describe('Security Headers', () => {
     expect(header.value).toContain("frame-ancestors 'none'");
   });
 
+  it('CSP script-src should not contain unsafe-eval', () => {
+    const header = headers.find((h: any) => h.key === 'Content-Security-Policy');
+    expect(header?.value).not.toContain("'unsafe-eval'");
+  });
+
+  it('CSP script-src should not contain unsafe-inline', () => {
+    const header = headers.find((h: any) => h.key === 'Content-Security-Policy');
+    const scriptSrc = header?.value?.split(';').find((d: string) => d.trim().startsWith('script-src'));
+    expect(scriptSrc).not.toContain("'unsafe-inline'");
+  });
+
+  it('CSP should include strict-dynamic for Next.js chunk loading', () => {
+    const header = headers.find((h: any) => h.key === 'Content-Security-Policy');
+    expect(header?.value).toContain("'strict-dynamic'");
+  });
+
+  it('CSP should include upgrade-insecure-requests', () => {
+    const header = headers.find((h: any) => h.key === 'Content-Security-Policy');
+    expect(header?.value).toContain('upgrade-insecure-requests');
+  });
+
   it('should have all required security headers', () => {
     const requiredHeaders = [
       'X-Content-Type-Options',
