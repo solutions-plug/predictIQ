@@ -13,6 +13,56 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
+// ── Simple query types used by API handlers ───────────────────────────────────
+
+/// Minimal pagination query parameters used directly by API route handlers.
+/// Applies soft clamping rather than returning 400, so it composes well
+/// with cached endpoints that accept any limit.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct PaginationQuery {
+    pub limit: Option<i64>,
+    pub cursor: Option<String>,
+}
+
+impl PaginationQuery {
+    /// Returns the requested limit clamped to [1, MAX_PAGE_LIMIT].
+    pub fn limit(&self) -> i64 {
+        self.limit
+            .unwrap_or(DEFAULT_LIMIT as i64)
+            .clamp(1, MAX_PAGE_LIMIT as i64)
+    }
+
+    /// Returns the opaque pagination cursor, if provided by the client.
+    pub fn cursor(&self) -> Option<String> {
+        self.cursor.clone()
+    }
+}
+
+/// A single page of results with cursor-based navigation metadata.
+#[derive(Debug, Clone, Serialize)]
+pub struct PaginatedResponse<T: Serialize> {
+    pub items: Vec<T>,
+    pub next_cursor: Option<String>,
+    pub limit: i64,
+    pub has_more: bool,
+}
+
+impl<T: Serialize> PaginatedResponse<T> {
+    pub fn new(
+        items: Vec<T>,
+        next_cursor: Option<String>,
+        limit: i64,
+        has_more: bool,
+    ) -> Self {
+        Self {
+            items,
+            next_cursor,
+            limit,
+            has_more,
+        }
+    }
+}
+
 /// Hard cap on the number of rows a client may request in a single page.
 pub const MAX_PAGE_LIMIT: u32 = 100;
 /// Default rows returned when the client omits `limit`.
