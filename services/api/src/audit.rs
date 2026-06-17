@@ -221,6 +221,70 @@ pub struct AuditStatistics {
     pub failed: i64,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_entry(actor: &str, action: &str, status: AuditStatus) -> AuditLogEntry {
+        AuditLogEntry {
+            id: None,
+            timestamp: Utc::now(),
+            actor: actor.to_string(),
+            actor_ip: None,
+            action: action.to_string(),
+            resource_type: "market".to_string(),
+            resource_id: None,
+            details: None,
+            status,
+            error_message: None,
+            request_id: None,
+            user_agent: None,
+        }
+    }
+
+    #[test]
+    fn audit_status_display_success() {
+        assert_eq!(AuditStatus::Success.to_string(), "success");
+    }
+
+    #[test]
+    fn audit_status_display_failure() {
+        assert_eq!(AuditStatus::Failure.to_string(), "failure");
+    }
+
+    #[test]
+    fn audit_status_display_partial() {
+        assert_eq!(AuditStatus::Partial.to_string(), "partial");
+    }
+
+    #[test]
+    fn create_audit_entry_sets_expected_fields() {
+        let entry = create_audit_entry(
+            "api_key_123".to_string(),
+            None,
+            "resolve_market".to_string(),
+            "market".to_string(),
+            Some("42".to_string()),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(entry.actor, "api_key_123");
+        assert_eq!(entry.action, "resolve_market");
+        assert_eq!(entry.resource_type, "market");
+        assert_eq!(entry.resource_id, Some("42".to_string()));
+        assert!(matches!(entry.status, AuditStatus::Success));
+        assert!(entry.id.is_none());
+    }
+
+    #[test]
+    fn make_entry_helper_sets_status() {
+        let e = make_entry("admin", "delete", AuditStatus::Failure);
+        assert!(matches!(e.status, AuditStatus::Failure));
+        assert_eq!(e.actor, "admin");
+    }
+}
+
 /// Helper to create audit log entry from request context
 pub fn create_audit_entry(
     actor: String,
