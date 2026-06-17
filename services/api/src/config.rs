@@ -1006,4 +1006,117 @@ mod tests {
         };
         assert!(config.validate().is_err());
     }
+
+    // ── optional_config_warnings tests ────────────────────────────────────────
+
+    fn base_config() -> Config {
+        Config {
+            bind_addr: "127.0.0.1:8080".parse().unwrap(),
+            redis_url: "redis://127.0.0.1:6379".to_string(),
+            database_url: "postgres://postgres@localhost/predictiq".to_string(),
+            hmac_key: "secret".to_string(),
+            hmac_key_previous: None,
+            hmac_key_rotation_grace_seconds: 3600,
+            db_pool: DbPoolConfig {
+                min_connections: 5,
+                max_connections: 25,
+                acquire_timeout: Duration::from_secs(5),
+                idle_timeout: None,
+                max_lifetime: None,
+                query_timeout: Duration::from_secs(30),
+                statement_timeout_ms: 30_000,
+                lock_timeout_ms: 10_000,
+            },
+            blockchain_rpc_url: "https://testnet.soroban.org".to_string(),
+            blockchain_network: BlockchainNetwork::Testnet,
+            contract_id: "contract_id".to_string(),
+            retry_attempts: 3,
+            retry_base_delay_ms: 200,
+            event_poll_interval: Duration::from_secs(5),
+            tx_poll_interval: Duration::from_secs(4),
+            confirmation_ledger_lag: 3,
+            sync_market_ids: vec![],
+            featured_limit: 10,
+            content_default_page_size: 20,
+            sendgrid_api_key: Some("SG.test".to_string()),
+            from_email: Some("test@example.com".to_string()),
+            base_url: "http://localhost:8080".to_string(),
+            api_keys: vec![],
+            admin_whitelist_ips: vec![],
+            trust_proxy: true,
+            request_signing_secret: None,
+            sendgrid_webhook_secret: None,
+            webhook_replay_window_secs: 300,
+            trusted_proxy_cidrs: vec![],
+            metrics_public: false,
+            metrics_allowlist_ips: vec![],
+            otlp_endpoint: None,
+            trace_sample_rate: 0.1,
+            idempotency_window_secs: 86400,
+            newsletter_token_ttl_secs: 86400,
+            gdpr_export_rate_limit: 3,
+            gdpr_export_rate_window_secs: 3600,
+            newsletter_rate_limit_max: 5,
+            newsletter_rate_limit_window_secs: 3600,
+            email_stale_job_threshold_secs: 3600,
+            newsletter_cleanup_batch_size: 500,
+            unsubscribe_signing_secret: Some("secret".to_string()),
+            cors: CorsConfig {
+                dev_mode: false,
+                allowed_origins: vec![],
+                allowed_methods: vec!["GET".to_string()],
+                allowed_headers: vec!["content-type".to_string()],
+                allow_credentials: false,
+                max_age_secs: 3600,
+            },
+            contract_key_schema: ContractKeySchema {
+                version: "1.0.0".to_string(),
+                market: "market:{id}".to_string(),
+                platform_stats: "platform:stats".to_string(),
+                user_bets: "user_bets:{id}".to_string(),
+                oracle_result: "oracle_result:{id}".to_string(),
+                health_check: "platform:stats".to_string(),
+            },
+            network_passphrase: "Test SDF Network ; September 2015".to_string(),
+        }
+    }
+
+    #[test]
+    fn no_warnings_when_all_optional_vars_set() {
+        let config = base_config();
+        assert!(config.optional_config_warnings().is_empty());
+    }
+
+    #[test]
+    fn warns_when_unsubscribe_secret_missing() {
+        let mut config = base_config();
+        config.unsubscribe_signing_secret = None;
+        let warnings = config.optional_config_warnings();
+        assert!(warnings.iter().any(|w| w.contains("UNSUBSCRIBE_SIGNING_SECRET")));
+    }
+
+    #[test]
+    fn warns_when_sendgrid_api_key_missing() {
+        let mut config = base_config();
+        config.sendgrid_api_key = None;
+        let warnings = config.optional_config_warnings();
+        assert!(warnings.iter().any(|w| w.contains("SENDGRID_API_KEY")));
+    }
+
+    #[test]
+    fn warns_when_from_email_missing() {
+        let mut config = base_config();
+        config.from_email = None;
+        let warnings = config.optional_config_warnings();
+        assert!(warnings.iter().any(|w| w.contains("FROM_EMAIL")));
+    }
+
+    #[test]
+    fn three_warnings_when_all_optional_email_vars_missing() {
+        let mut config = base_config();
+        config.sendgrid_api_key = None;
+        config.from_email = None;
+        config.unsubscribe_signing_secret = None;
+        assert_eq!(config.optional_config_warnings().len(), 3);
+    }
 }
