@@ -748,3 +748,40 @@ impl Database {
         Ok(count > 0)
     }
 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn db_error_timeout_display() {
+        let e = DbError::Timeout;
+        assert_eq!(e.to_string(), "database query timed out");
+    }
+
+    #[test]
+    fn db_error_pool_exhausted_display() {
+        let e = DbError::PoolExhausted;
+        assert_eq!(e.to_string(), "database connection pool exhausted");
+    }
+
+    #[test]
+    fn db_error_constraint_violation_display() {
+        let e = DbError::ConstraintViolation("duplicate key value".to_string());
+        assert!(e.to_string().contains("constraint violation"));
+        assert!(e.to_string().contains("duplicate key value"));
+    }
+
+    #[test]
+    fn from_sqlx_pool_timed_out_maps_to_pool_exhausted() {
+        let e = DbError::from(sqlx::Error::PoolTimedOut);
+        assert!(matches!(e, DbError::PoolExhausted));
+    }
+
+    #[test]
+    fn from_sqlx_other_maps_to_other() {
+        let e = DbError::from(sqlx::Error::RowNotFound);
+        assert!(matches!(e, DbError::Other(_)));
+    }
+}
