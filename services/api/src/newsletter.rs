@@ -39,6 +39,11 @@ pub fn validate_unsubscribe_token(token: &str, secret: &str) -> Option<String> {
     }
 }
 
+/// Version prefix for rate limit Redis keys.
+/// Bump this when the rate-limit key schema changes so old counters are
+/// automatically abandoned without requiring a Redis flush.
+const RATE_LIMIT_KEY_VERSION: &str = "v1";
+
 #[derive(Clone)]
 pub struct IpRateLimiter {
     pub cache: RedisCache,
@@ -53,7 +58,7 @@ impl IpRateLimiter {
     /// Uses an atomic Redis Lua script so the counter is consistent across
     /// all instances. Fails open (returns `true`) if Redis is unavailable.
     pub async fn allow(&self, key: &str, max_requests: usize, window: Duration) -> bool {
-        let redis_key = format!("newsletter:ratelimit:v1:{key}");
+        let redis_key = format!("newsletter:ratelimit:{RATE_LIMIT_KEY_VERSION}:{key}");
         match self.cache.incr_with_ttl(&redis_key, window).await {
             Ok(count) => count as usize <= max_requests,
             Err(e) => {
