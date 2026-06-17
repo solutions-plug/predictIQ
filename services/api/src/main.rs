@@ -124,13 +124,29 @@ async fn main() -> anyhow::Result<()> {
     let email_coordinator = ShutdownCoordinator::new(1);
     let coordinator = ShutdownCoordinator::new(2);
 
-    // ── Rate-limiter cleanup (fire-and-forget) ────────────────────────────────
+    // ── Rate-limiter cleanup ──────────────────────────────────────────────────
+    // Stored in a variable so we can detect if the task exits unexpectedly.
     let rate_limiter_cleanup = rate_limiter.clone();
-    tokio::spawn(async move {
+    let cleanup_handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(300));
+        let mut run_count: u64 = 0;
         loop {
             interval.tick().await;
+            run_count += 1;
+            tracing::debug!(run = run_count, "rate limiter cleanup tick");
             rate_limiter_cleanup.cleanup().await;
+            tracing::debug!(run = run_count, "rate limiter cleanup done");
+        }
+    });
+
+    // Spawn a watchdog that logs if the cleanup task exits (panic or unexpected stop).
+    tokio::spawn(async move {
+        if let Err(e) = cleanup_handle.await {
+            if e.is_panic() {
+                tracing::error!("rate limiter cleanup task panicked; in-memory rate limits will leak until restart");
+            } else {
+                tracing::warn!("rate limiter cleanup task stopped unexpectedly");
+            }
         }
     });
 
