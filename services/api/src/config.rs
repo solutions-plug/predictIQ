@@ -558,6 +558,14 @@ impl Config {
             );
         }
 
+        if self.newsletter_cleanup_batch_size == 0 {
+            warnings.push(
+                "NEWSLETTER_CLEANUP_BATCH_SIZE is 0: cleanup will delete no rows per run; \
+                 set to a positive value (default: 500)"
+                    .to_string(),
+            );
+        }
+
         warnings
     }
 }
