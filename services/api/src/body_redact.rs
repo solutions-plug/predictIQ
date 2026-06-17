@@ -2,7 +2,6 @@
 //! for failed request/response logging.
 
 use serde_json::{Map, Value};
-use tracing;
 
 /// Maximum bytes captured from request/response body before truncation.
 pub const MAX_BODY_BYTES: usize = 4 * 1024; // 4 KB
