@@ -74,6 +74,86 @@ describe('apiCache', () => {
     });
   });
 
+  describe('markStale', () => {
+    it('should mark an existing entry as stale', () => {
+      apiCache.set('key', { value: 1 }, CACHE_TTL.LONG);
+      apiCache.markStale('key');
+      const result = apiCache.getWithMeta('key');
+      expect(result).not.toBeNull();
+      expect(result?.stale).toBe(true);
+    });
+
+    it('should keep the data accessible after marking stale', () => {
+      apiCache.set('key', { value: 42 }, CACHE_TTL.LONG);
+      apiCache.markStale('key');
+      expect(apiCache.get('key')).toEqual({ value: 42 });
+    });
+
+    it('should be a no-op for non-existent keys', () => {
+      expect(() => apiCache.markStale('does-not-exist')).not.toThrow();
+    });
+  });
+
+  describe('markStaleByPattern', () => {
+    it('should mark all matching entries stale', () => {
+      apiCache.set('api/users/1', { id: 1 }, CACHE_TTL.LONG);
+      apiCache.set('api/users/2', { id: 2 }, CACHE_TTL.LONG);
+      apiCache.set('api/posts/1', { id: 1 }, CACHE_TTL.LONG);
+      apiCache.markStaleByPattern('api/users');
+      expect(apiCache.getWithMeta('api/users/1')?.stale).toBe(true);
+      expect(apiCache.getWithMeta('api/users/2')?.stale).toBe(true);
+      expect(apiCache.getWithMeta('api/posts/1')?.stale).toBe(false);
+    });
+  });
+
+  describe('getWithMeta', () => {
+    it('should return data with stale=false for a fresh entry', () => {
+      apiCache.set('key', { value: 1 }, CACHE_TTL.LONG);
+      const result = apiCache.getWithMeta('key');
+      expect(result).not.toBeNull();
+      expect(result?.stale).toBe(false);
+      expect(result?.data).toEqual({ value: 1 });
+    });
+
+    it('should return null for non-existent key', () => {
+      expect(apiCache.getWithMeta('missing')).toBeNull();
+    });
+
+    it('should return stale=true for an expired entry still held in memory', () => {
+      apiCache.set('key', { value: 1 }, 1); // 1 ms TTL
+      apiCache.markStale('key'); // force stale so it is retained past TTL
+      return new Promise<void>(resolve => {
+        setTimeout(() => {
+          const result = apiCache.getWithMeta('key');
+          expect(result).not.toBeNull();
+          expect(result?.stale).toBe(true);
+          resolve();
+        }, 10);
+      });
+    });
+
+    it('should include the original set timestamp', () => {
+      const before = Date.now();
+      apiCache.set('key', {}, CACHE_TTL.LONG);
+      const result = apiCache.getWithMeta('key');
+      const after = Date.now();
+      expect(result?.timestamp).toBeGreaterThanOrEqual(before);
+      expect(result?.timestamp).toBeLessThanOrEqual(after);
+    });
+  });
+
+  describe('invalidate', () => {
+    it('should remove a single entry', () => {
+      apiCache.set('key', { value: 1 }, CACHE_TTL.SHORT);
+      apiCache.invalidate('key');
+      expect(apiCache.get('key')).toBeNull();
+    });
+
+    it('should be a no-op for non-existent keys', () => {
+      expect(() => apiCache.invalidate('missing')).not.toThrow();
+    });
+  });
+
   describe('TTL constants', () => {
     it('should have correct TTL values', () => {
       expect(CACHE_TTL.SHORT).toBe(60 * 1000);
