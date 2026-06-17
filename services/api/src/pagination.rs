@@ -157,6 +157,65 @@ mod tests {
         PaginationParams { limit, cursor: None, offset: None }
     }
 
+    // ── PaginationQuery tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn pagination_query_default_limit() {
+        let q = PaginationQuery::default();
+        assert_eq!(q.limit(), DEFAULT_LIMIT as i64);
+    }
+
+    #[test]
+    fn pagination_query_clamps_zero_to_one() {
+        let q = PaginationQuery { limit: Some(0), cursor: None };
+        assert_eq!(q.limit(), 1);
+    }
+
+    #[test]
+    fn pagination_query_clamps_over_max() {
+        let q = PaginationQuery { limit: Some(9999), cursor: None };
+        assert_eq!(q.limit(), MAX_PAGE_LIMIT as i64);
+    }
+
+    #[test]
+    fn pagination_query_returns_cursor() {
+        let q = PaginationQuery { limit: None, cursor: Some("abc".to_string()) };
+        assert_eq!(q.cursor(), Some("abc".to_string()));
+    }
+
+    #[test]
+    fn pagination_query_returns_none_cursor_when_absent() {
+        let q = PaginationQuery::default();
+        assert_eq!(q.cursor(), None);
+    }
+
+    // ── PaginatedResponse tests ───────────────────────────────────────────────
+
+    #[test]
+    fn paginated_response_stores_all_fields() {
+        let resp = PaginatedResponse::new(
+            vec![1u32, 2, 3],
+            Some("cursor-xyz".to_string()),
+            10,
+            true,
+        );
+        assert_eq!(resp.items, vec![1, 2, 3]);
+        assert_eq!(resp.next_cursor, Some("cursor-xyz".to_string()));
+        assert_eq!(resp.limit, 10);
+        assert!(resp.has_more);
+    }
+
+    #[test]
+    fn paginated_response_empty_last_page() {
+        let resp: PaginatedResponse<u32> =
+            PaginatedResponse::new(vec![], None, 20, false);
+        assert!(resp.items.is_empty());
+        assert_eq!(resp.next_cursor, None);
+        assert!(!resp.has_more);
+    }
+
+    // ── ValidatedPagination tests ─────────────────────────────────────────────
+
     #[test]
     fn default_limit_applied_when_omitted() {
         let v = validate_pagination(params(None)).unwrap();
