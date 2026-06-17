@@ -453,7 +453,7 @@ impl EmailQueue {
                 "Skipping email to suppressed address: {}",
                 job.recipient_email
             );
-            return self.mark_completed(job_id, None).await;
+            return self.mark_completed(job_id, None, &job.recipient_email).await;
         }
 
         // Update status to processing
@@ -488,7 +488,7 @@ impl EmailQueue {
         }
 
         // Mark as completed regardless (dedup counts as success)
-        self.mark_completed(job_id, Some(message_id)).await?;
+        self.mark_completed(job_id, Some(message_id), &job.recipient_email).await?;
 
         Ok(())
     }
