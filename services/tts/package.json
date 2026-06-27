@@ -5,6 +5,9 @@
   "private": true,
   "main": "dist/TTSService.js",
   "types": "dist/TTSService.d.ts",
+  "engines": {
+    "node": ">=20.0.0 <21.0.0"
+  },
   "scripts": {
     "build": "tsc",
     "dev": "ts-node src/server.ts",
