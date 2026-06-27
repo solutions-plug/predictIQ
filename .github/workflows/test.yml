@@ -563,6 +563,12 @@ jobs:
         run: cargo build --target wasm32-unknown-unknown --release
         working-directory: contracts/predict-iq
 
+      - name: Print unoptimized WASM size
+        run: |
+          size=$(wc -c < target/wasm32-unknown-unknown/release/predict_iq.wasm)
+          echo "Unoptimized WASM size: $size bytes (budget: ${{ env.WASM_SIZE_LIMIT_BYTES }} bytes)"
+        working-directory: contracts/predict-iq
+
       - name: Optimize WASM
         run: |
           soroban contract optimize \
