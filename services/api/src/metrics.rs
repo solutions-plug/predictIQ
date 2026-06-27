@@ -14,6 +14,7 @@ pub struct Metrics {
     rpc_fallbacks: IntCounterVec,
     db_timeouts: IntCounterVec,
     email_dlq_size: IntGauge,
+    email_queue_depth: IntGauge,
     db_pool_connections_active: IntGaugeVec,
     db_pool_connections_idle: IntGaugeVec,
     db_pool_acquire_duration: HistogramVec,
@@ -81,6 +82,12 @@ impl Metrics {
         )
         .context("email_dlq_size metric")?;
 
+        let email_queue_depth = IntGauge::new(
+            "email_queue_depth",
+            "Number of email jobs currently in the main queue",
+        )
+        .context("email_queue_depth metric")?;
+
         let db_pool_connections_active = IntGaugeVec::new(
             prometheus::Opts::new(
                 "db_pool_connections_active",
@@ -128,6 +135,7 @@ impl Metrics {
         registry.register(Box::new(rpc_fallbacks.clone()))?;
         registry.register(Box::new(db_timeouts.clone()))?;
         registry.register(Box::new(email_dlq_size.clone()))?;
+        registry.register(Box::new(email_queue_depth.clone()))?;
         registry.register(Box::new(db_pool_connections_active.clone()))?;
         registry.register(Box::new(db_pool_connections_idle.clone()))?;
         registry.register(Box::new(db_pool_acquire_duration.clone()))?;
@@ -143,6 +151,7 @@ impl Metrics {
             rpc_fallbacks,
             db_timeouts,
             email_dlq_size,
+            email_queue_depth,
             db_pool_connections_active,
             db_pool_connections_idle,
             db_pool_acquire_duration,
@@ -189,6 +198,10 @@ impl Metrics {
 
     pub fn set_dlq_size(&self, n: i64) {
         self.email_dlq_size.set(n);
+    }
+
+    pub fn set_email_queue_depth(&self, n: i64) {
+        self.email_queue_depth.set(n);
     }
 
     pub fn observe_tx_eviction(&self, count: u64) {

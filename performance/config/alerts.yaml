@@ -259,3 +259,17 @@ groups:
           summary: "Performance degradation alert threshold reached"
           description: "Response time has degraded by more than 5% compared to 24h ago (alert threshold)"
           runbook_url: "https://docs.predictiq.com/runbooks/significant-performance-degradation"
+
+  - name: email_queue
+    interval: 30s
+    rules:
+      - alert: EmailQueueDepthHigh
+        expr: email_queue_depth > 100
+        for: 5m
+        labels:
+          severity: warning
+          component: email
+        annotations:
+          summary: "Email queue depth is high"
+          description: "Email queue depth is {{ $value }}, exceeding 100 for more than 5 minutes"
+          runbook_url: "https://docs.predictiq.com/runbooks/email-queue-depth-high"

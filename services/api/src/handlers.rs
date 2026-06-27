@@ -987,6 +987,7 @@ pub async fn email_queue_stats(
         .map_err(into_api_error)?;
 
     state.metrics.set_dlq_size(stats.dead_letter as i64);
+    state.metrics.set_email_queue_depth(stats.pending as i64);
 
     Ok((StatusCode::OK, Json(stats)))
 }
