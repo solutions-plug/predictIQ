@@ -134,6 +134,7 @@ export class HealthChecker {
    *   1. TTS provider reachability (lightweight API / credential validation)
    *   2. Output directory writability
    *   3. Job queue depth (guards against unbounded memory growth)
+   *   4. Circuit breaker states (open breakers → service not ready)
    *
    * Returns 503 with a structured JSON body if any check fails.
    */
@@ -141,6 +142,7 @@ export class HealthChecker {
     status: "ok" | "error";
     message: string;
     checks: Record<string, HealthCheckStatus>;
+    circuitBreakers?: Record<string, { state: string; failures: number; successes: number }>;
   }> {
     const checks: Record<string, HealthCheckStatus> = {};
 
@@ -158,6 +160,23 @@ export class HealthChecker {
     // 3. Job queue depth
     checks.jobQueueDepth = this.checkJobQueueDepth();
 
+    // 4. Circuit breaker states — open breakers make the service effectively
+    //    unable to process new jobs, so mark as error to fail the readiness probe.
+    const cbStates = this.service.getCircuitBreakerStates();
+    for (const [provider, state] of Object.entries(cbStates)) {
+      if (state.state === "open") {
+        checks[`circuitBreaker_${provider}`] = {
+          status: "error",
+          message: `${provider} circuit breaker is OPEN (${state.failures} failures) — fast-failing`,
+        };
+      } else if (state.state === "halfOpen") {
+        checks[`circuitBreaker_${provider}`] = {
+          status: "warning",
+          message: `${provider} circuit breaker is HALF-OPEN — probing for recovery`,
+        };
+      }
+    }
+
     const hasError = Object.values(checks).some((c) => c.status === "error");
 
     if (hasError) {
@@ -169,6 +188,7 @@ export class HealthChecker {
         status: "error",
         message: `Service not ready — failing checks: ${failingChecks}`,
         checks,
+        circuitBreakers: cbStates,
       };
     }
 
@@ -176,6 +196,7 @@ export class HealthChecker {
       status: "ok",
       message: "Service is ready to accept requests",
       checks,
+      circuitBreakers: cbStates,
     };
   }
 
@@ -508,6 +529,7 @@ export function createReadinessHandler(healthChecker: HealthChecker) {
         status: result.status === "ok" ? "ready" : "not_ready",
         message: result.message,
         checks: result.checks,
+        circuitBreakers: result.circuitBreakers,
         timestamp: new Date().toISOString(),
       });
     } catch (error) {
