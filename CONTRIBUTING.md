@@ -223,6 +223,35 @@ make test
 
 ---
 
+## Minimum Supported Rust Version (MSRV)
+
+The `services/api` crate declares a `rust-version` field in its `Cargo.toml`.
+This is the **oldest** Rust toolchain version the crate is guaranteed to compile on.
+
+### Current MSRV
+
+| Crate | MSRV |
+|-------|------|
+| `predictiq-api` (`services/api`) | **1.75.0** |
+
+### Policy
+
+- The MSRV is set to the version required by the most-restrictive direct dependency
+  (currently `axum 0.7`, `sqlx 0.8`, and `tower-http 0.6`, all of which require ≥ 1.75).
+- Bumping the MSRV is a **semver-minor** change and must be documented in `CHANGELOG.md`
+  via a `chore(api): bump MSRV to X.Y.Z` commit.
+- A dedicated CI job (`.github/workflows/msrv.yml`) installs the declared MSRV toolchain
+  using `rustup` and runs `cargo check` + `cargo build --release` against it on every PR
+  that touches `services/api/`.
+- To verify the MSRV locally:
+
+  ```bash
+  rustup toolchain install 1.75
+  rustup run 1.75 cargo check --manifest-path services/api/Cargo.toml
+  ```
+
+---
+
 ## Code Style
 
 ### Rust
