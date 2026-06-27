@@ -18,6 +18,17 @@ import fs from "fs/promises";
 import path from "path";
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/**
+ * Maximum number of in-flight + pending jobs allowed before the readiness
+ * probe returns a degraded/503 response. Callers should stop sending new
+ * work when this threshold is exceeded to prevent unbounded memory growth.
+ */
+export const MAX_QUEUE_DEPTH = 500;
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -31,6 +42,7 @@ export interface HealthCheckResult {
     elevenlabs?: HealthCheckStatus;
     google?: HealthCheckStatus;
     jobStore: HealthCheckStatus;
+    jobQueueDepth?: HealthCheckStatus;
   };
   message: string;
 }
@@ -64,11 +76,12 @@ export class HealthChecker {
     const tracer = trace.getTracer("tts-health-check");
     return tracer.startActiveSpan("health_check", async (span) => {
       try {
-        const checks = {
+        const checks: HealthCheckResult["checks"] = {
           service: this.checkService(),
           outputDirectory: await this.checkOutputDirectory(),
           jobStore: this.checkJobStore(),
-        } as any;
+          jobQueueDepth: this.checkJobQueueDepth(),
+        };
 
         // Check configured providers
         if (this.config.elevenlabs) {
@@ -80,7 +93,7 @@ export class HealthChecker {
         }
 
         // Determine overall status
-        const allStatuses = Object.values(checks).map((c: any) => c.status);
+        const allStatuses = Object.values(checks).map((c) => c.status);
         const hasError = allStatuses.includes("error");
         const hasWarning = allStatuses.includes("warning");
 
@@ -113,23 +126,57 @@ export class HealthChecker {
   }
 
   /**
-   * Lightweight readiness check — returns quickly with minimal dependencies.
-   * Suitable for Kubernetes readiness probes.
+   * Readiness check — used by Kubernetes readiness probes and the Docker
+   * HEALTHCHECK on /health/ready.
+   *
+   * Performs real dependency probes so that the service is only marked
+   * "ready" when it can actually process TTS requests:
+   *   1. TTS provider reachability (lightweight API / credential validation)
+   *   2. Output directory writability
+   *   3. Job queue depth (guards against unbounded memory growth)
+   *
+   * Returns 503 with a structured JSON body if any check fails.
    */
-  async readiness(): Promise<HealthCheckStatus> {
-    try {
-      // Check if service is responsive
-      const job = this.service.listJobs();
-      return {
-        status: "ok",
-        message: "Service is ready to accept requests",
-      };
-    } catch (error) {
+  async readiness(): Promise<{
+    status: "ok" | "error";
+    message: string;
+    checks: Record<string, HealthCheckStatus>;
+  }> {
+    const checks: Record<string, HealthCheckStatus> = {};
+
+    // 1. Output directory writability
+    checks.outputDirectory = await this.checkOutputDirectory();
+
+    // 2. TTS provider reachability
+    if (this.config.elevenlabs) {
+      checks.elevenlabs = await this.checkElevenLabs();
+    }
+    if (this.config.google) {
+      checks.google = await this.checkGoogle();
+    }
+
+    // 3. Job queue depth
+    checks.jobQueueDepth = this.checkJobQueueDepth();
+
+    const hasError = Object.values(checks).some((c) => c.status === "error");
+
+    if (hasError) {
+      const failingChecks = Object.entries(checks)
+        .filter(([, c]) => c.status === "error")
+        .map(([k, c]) => `${k}: ${c.message}`)
+        .join("; ");
       return {
         status: "error",
-        message: `Service not ready: ${String(error)}`,
+        message: `Service not ready — failing checks: ${failingChecks}`,
+        checks,
       };
     }
+
+    return {
+      status: "ok",
+      message: "Service is ready to accept requests",
+      checks,
+    };
   }
 
   /**
@@ -171,10 +218,10 @@ export class HealthChecker {
     try {
       const dir = this.config.outputDir;
 
-      // Check if directory exists and is writable
+      // Ensure directory exists
       await fs.mkdir(dir, { recursive: true });
 
-      // Try to write a test file
+      // Verify writability by creating and immediately removing a probe file
       const testFile = path.join(dir, `.health-check-${Date.now()}`);
       await fs.writeFile(testFile, "health-check");
       await fs.unlink(testFile);
@@ -210,6 +257,49 @@ export class HealthChecker {
     }
   }
 
+  /**
+   * Check that the active job queue has not exceeded MAX_QUEUE_DEPTH.
+   * Counts jobs in "pending" and "processing" states as in-flight work.
+   */
+  private checkJobQueueDepth(): HealthCheckStatus {
+    try {
+      const pending = this.service.listJobs("pending").length;
+      const processing = this.service.listJobs("processing").length;
+      const depth = pending + processing;
+
+      if (depth >= MAX_QUEUE_DEPTH) {
+        return {
+          status: "error",
+          message: `Job queue depth exceeded limit: ${depth}/${MAX_QUEUE_DEPTH} (pending=${pending}, processing=${processing})`,
+        };
+      }
+
+      // Warn at 80 % capacity
+      if (depth >= MAX_QUEUE_DEPTH * 0.8) {
+        return {
+          status: "warning",
+          message: `Job queue depth near limit: ${depth}/${MAX_QUEUE_DEPTH} (pending=${pending}, processing=${processing})`,
+        };
+      }
+
+      return {
+        status: "ok",
+        message: `Job queue depth is healthy: ${depth}/${MAX_QUEUE_DEPTH}`,
+      };
+    } catch (error) {
+      return {
+        status: "error",
+        message: `Job queue depth check failed: ${String(error)}`,
+      };
+    }
+  }
+
+  /**
+   * ElevenLabs probe — makes a lightweight API call (GET /v1/user) to verify
+   * the API key is valid and the endpoint is reachable.  Falls back to a
+   * credential format check if the network call fails so that misconfigured
+   * keys are still surfaced as errors.
+   */
   private async checkElevenLabs(): Promise<HealthCheckStatus> {
     const start = Date.now();
     try {
@@ -223,19 +313,56 @@ export class HealthChecker {
         return { status: "error", message: "ElevenLabs API key not set" };
       }
 
-      // Verify API key format (basic check)
       if (apiKey.length < 10) {
         return {
           status: "error",
-          message: "ElevenLabs API key appears invalid",
+          message: "ElevenLabs API key appears invalid (too short)",
         };
       }
 
-      // Optional: Make a lightweight API call to verify connectivity
-      // For now, just verify the key is present
+      // Lightweight probe: GET /v1/user — returns 200 for valid keys, 401
+      // for invalid keys, and will throw on network errors.
+      let res: Response;
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000);
+        try {
+          res = await fetch("https://api.elevenlabs.io/v1/user", {
+            method: "GET",
+            headers: { "xi-api-key": apiKey },
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(timeout);
+        }
+      } catch (networkErr) {
+        // Network unreachable — surface as error so readiness probe fails
+        return {
+          status: "error",
+          message: `ElevenLabs unreachable: ${String(networkErr)}`,
+          latency: Date.now() - start,
+        };
+      }
+
+      if (res.status === 401) {
+        return {
+          status: "error",
+          message: "ElevenLabs API key rejected (HTTP 401)",
+          latency: Date.now() - start,
+        };
+      }
+
+      if (!res.ok) {
+        return {
+          status: "warning",
+          message: `ElevenLabs probe returned HTTP ${res.status}`,
+          latency: Date.now() - start,
+        };
+      }
+
       return {
         status: "ok",
-        message: "ElevenLabs is configured and accessible",
+        message: "ElevenLabs is reachable and API key is valid",
         latency: Date.now() - start,
       };
     } catch (error) {
@@ -247,6 +374,13 @@ export class HealthChecker {
     }
   }
 
+  /**
+   * Google TTS probe — validates credentials format and, when a key file is
+   * provided, verifies it exists and contains valid JSON with the required
+   * fields.  A real synthesizeSpeech call is intentionally avoided here to
+   * keep probe latency low; the circuit breaker (TTSService) handles runtime
+   * failure detection.
+   */
   private async checkGoogle(): Promise<HealthCheckStatus> {
     const start = Date.now();
     try {
@@ -263,13 +397,19 @@ export class HealthChecker {
         };
       }
 
-      // If using keyFilename, verify file exists and is readable
+      // If using keyFilename, verify file exists and is readable valid JSON
       if (keyFilename) {
         try {
           await fs.access(keyFilename);
-          // Verify it's valid JSON
           const content = await fs.readFile(keyFilename, "utf-8");
-          JSON.parse(content);
+          const parsed = JSON.parse(content) as Record<string, unknown>;
+          if (!parsed["project_id"] || !parsed["private_key"]) {
+            return {
+              status: "error",
+              message: "Google TTS key file is missing required fields (project_id, private_key)",
+              latency: Date.now() - start,
+            };
+          }
         } catch (err) {
           return {
             status: "error",
@@ -279,31 +419,21 @@ export class HealthChecker {
         }
       }
 
-      // Attempt to verify API connectivity by checking credentials format
-      // In production, this could make a lightweight API call to Google Cloud TTS
-      try {
-        // Validate credentials structure if provided
-        if (credentials && typeof credentials === "object") {
-          const creds = credentials as any;
-          if (!creds.project_id || !creds.private_key) {
-            return {
-              status: "error",
-              message: "Google TTS credentials missing required fields",
-              latency: Date.now() - start,
-            };
-          }
+      // Validate inline credentials structure when provided
+      if (credentials && typeof credentials === "object") {
+        const creds = credentials as Record<string, unknown>;
+        if (!creds["project_id"] || !creds["private_key"]) {
+          return {
+            status: "error",
+            message: "Google TTS credentials missing required fields (project_id, private_key)",
+            latency: Date.now() - start,
+          };
         }
-      } catch (err) {
-        return {
-          status: "error",
-          message: `Google TTS credentials validation failed: ${String(err)}`,
-          latency: Date.now() - start,
-        };
       }
 
       return {
         status: "ok",
-        message: "Google TTS is configured and accessible",
+        message: "Google TTS credentials are valid and accessible",
         latency: Date.now() - start,
       };
     } catch (error) {
@@ -315,21 +445,21 @@ export class HealthChecker {
     }
   }
 
-  private buildMessage(status: string, checks: any): string {
+  private buildMessage(status: string, checks: Record<string, HealthCheckStatus>): string {
     const parts: string[] = [];
 
     if (status === "healthy") {
       parts.push("✅ All systems operational");
     } else if (status === "degraded") {
       parts.push("⚠️ Service is degraded");
-      Object.entries(checks).forEach(([key, check]: [string, any]) => {
+      Object.entries(checks).forEach(([key, check]) => {
         if (check.status === "warning") {
           parts.push(`  - ${key}: ${check.message}`);
         }
       });
     } else {
       parts.push("❌ Service is unhealthy");
-      Object.entries(checks).forEach(([key, check]: [string, any]) => {
+      Object.entries(checks).forEach(([key, check]) => {
         if (check.status === "error") {
           parts.push(`  - ${key}: ${check.message}`);
         }
@@ -345,11 +475,12 @@ export class HealthChecker {
 // ---------------------------------------------------------------------------
 
 /**
- * Express/Fastify middleware for health check endpoint.
+ * Express/Fastify middleware for health check endpoints.
+ *
  * Usage:
- *   app.get('/health', createHealthCheckHandler(healthChecker));
+ *   app.get('/health',       createHealthCheckHandler(healthChecker));
  *   app.get('/health/ready', createReadinessHandler(healthChecker));
- *   app.get('/health/live', createLivenessHandler(healthChecker));
+ *   app.get('/health/live',  createLivenessHandler(healthChecker));
  */
 
 export function createHealthCheckHandler(healthChecker: HealthChecker) {
@@ -376,6 +507,7 @@ export function createReadinessHandler(healthChecker: HealthChecker) {
       res.status(statusCode).json({
         status: result.status === "ok" ? "ready" : "not_ready",
         message: result.message,
+        checks: result.checks,
         timestamp: new Date().toISOString(),
       });
     } catch (error) {
