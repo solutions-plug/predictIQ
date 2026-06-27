@@ -103,3 +103,76 @@ rules:
     languages: [rust, typescript, javascript]
     metadata:
       category: best-practice
+
+  # Soroban-specific vulnerability patterns
+  - id: unchecked-arithmetic-overflow
+    patterns:
+      - pattern-either:
+          - pattern: $A + $B
+          - pattern: $A - $B
+          - pattern: $A * $B
+      - pattern-inside: |
+          fn $FUNC(...) -> ... {
+            ...
+            $PAYOUT = ...
+            ...
+          }
+      - metavariable-regex:
+          metavariable: $FUNC
+          regex: (calculate_payout|resolve_.*|settle_.*)
+    message: Unchecked arithmetic in payout calculation - use checked_* methods
+    severity: ERROR
+    languages: [rust]
+    metadata:
+      category: security
+      cwe: "CWE-190: Integer Overflow or Wraparound"
+
+  - id: missing-require-auth
+    patterns:
+      - pattern: |
+          pub fn $FUNC($ENV:Env, ...) -> ... {
+            ...
+          }
+      - pattern-not-inside: |
+          pub fn $FUNC($ENV:Env, ...) -> ... {
+            ...
+            $ENV.current_contract_address().require_auth()
+            ...
+          }
+      - metavariable-regex:
+          metavariable: $FUNC
+          regex: (place_bet|resolve_market|settle_.*|admin_.*)
+    message: Missing require_auth() call - contract function may be callable by anyone
+    severity: ERROR
+    languages: [rust]
+    metadata:
+      category: security
+      cwe: "CWE-306: Missing Authentication"
+
+  - id: storage-key-collision
+    patterns:
+      - pattern-either:
+          - pattern: |
+              DataKey::$KEY1(...)
+              ...
+              DataKey::$KEY1(...)
+          - pattern: |
+              Symbol::new(&$ENV, $STR1)
+              ...
+              Symbol::new(&$ENV, $STR1)
+    message: Potential storage key collision - ensure unique keys for different data types
+    severity: WARNING
+    languages: [rust]
+    metadata:
+      category: security
+      cwe: "CWE-1025: Comparison Using Wrong Factors"
+
+  - id: unvalidated-contract-invocation
+    pattern: |
+      $CONTRACT.invoke(...)
+    message: Validate contract address before invocation to prevent unauthorized calls
+    severity: WARNING
+    languages: [rust]
+    metadata:
+      category: security
+      cwe: "CWE-95: Improper Neutralization of Directives in Dynamically Evaluated Code"

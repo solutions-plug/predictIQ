@@ -37,6 +37,7 @@ fn oracle_config(env: &Env, max_confidence_bps: u64) -> OracleConfig {
         min_responses: 1,
         max_staleness_seconds: u64::MAX, // never stale in these tests
         max_confidence_bps,
+        strike_price: None,
     }
 }
 

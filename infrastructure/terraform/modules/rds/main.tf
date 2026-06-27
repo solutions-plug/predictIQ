@@ -36,13 +36,25 @@ variable "backup_retention" {
   type = number
 }
 
+locals {
+  common_tags = {
+    Project   = "predictiq"
+    Environment = var.environment
+    Owner     = "infrastructure-team"
+    ManagedBy = "terraform"
+  }
+}
+
 resource "aws_db_subnet_group" "main" {
   name       = "predictiq-${var.environment}-db-subnet"
   subnet_ids = var.private_subnet_ids
 
-  tags = {
-    Name = "predictiq-${var.environment}-db-subnet-group"
-  }
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-db-subnet-group"
+    }
+  )
 }
 
 resource "aws_security_group" "rds" {
@@ -63,9 +75,12 @@ resource "aws_security_group" "rds" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = {
-    Name = "predictiq-${var.environment}-rds-sg"
-  }
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-rds-sg"
+    }
+  )
 }
 
 resource "aws_db_instance" "main" {
@@ -90,9 +105,12 @@ resource "aws_db_instance" "main" {
   skip_final_snapshot    = var.environment != "prod"
   final_snapshot_identifier = var.environment == "prod" ? "predictiq-${var.environment}-final-snapshot-${formatdate("YYYY-MM-DD-hhmm", timestamp())}" : null
 
-  tags = {
-    Name = "predictiq-${var.environment}-db"
-  }
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-db"
+    }
+  )
 }
 
 output "endpoint" {

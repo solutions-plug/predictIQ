@@ -14,6 +14,7 @@ groups:
         annotations:
           summary: "High API response time detected"
           description: "API p95 response time is {{ $value }}s, exceeding 200ms threshold"
+          runbook_url: "https://docs.predictiq.com/runbooks/high-api-response-time"
 
       - alert: CriticalAPIResponseTime
         expr: histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m])) > 0.5
@@ -24,6 +25,7 @@ groups:
         annotations:
           summary: "Critical API response time detected"
           description: "API p99 response time is {{ $value }}s, exceeding 500ms critical threshold"
+          runbook_url: "https://docs.predictiq.com/runbooks/critical-api-response-time"
 
       - alert: HighErrorRate
         expr: rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m]) > 0.001
@@ -34,6 +36,7 @@ groups:
         annotations:
           summary: "High error rate detected"
           description: "Error rate is {{ $value | humanizePercentage }}, exceeding 0.1% threshold"
+          runbook_url: "https://docs.predictiq.com/runbooks/high-error-rate"
 
       - alert: LowThroughput
         expr: rate(http_requests_total[5m]) < 1000
@@ -44,6 +47,7 @@ groups:
         annotations:
           summary: "Low request throughput"
           description: "Request throughput is {{ $value }} req/s, below 1000 req/s minimum"
+          runbook_url: "https://docs.predictiq.com/runbooks/low-throughput"
 
   - name: cache_performance
     interval: 30s
@@ -57,6 +61,7 @@ groups:
         annotations:
           summary: "Low cache hit rate"
           description: "Cache hit rate is {{ $value | humanizePercentage }}, below 80% threshold"
+          runbook_url: "https://docs.predictiq.com/runbooks/low-cache-hit-rate"
 
   - name: database_performance
     interval: 30s
@@ -70,6 +75,7 @@ groups:
         annotations:
           summary: "Slow database queries detected"
           description: "Database p95 query time is {{ $value }}s, exceeding 50ms threshold"
+          runbook_url: "https://docs.predictiq.com/runbooks/slow-database-queries"
 
       - alert: CriticalDatabaseQueries
         expr: histogram_quantile(0.99, rate(db_query_duration_seconds_bucket[5m])) > 0.1
@@ -80,6 +86,7 @@ groups:
         annotations:
           summary: "Critical database query performance"
           description: "Database p99 query time is {{ $value }}s, exceeding 100ms critical threshold"
+          runbook_url: "https://docs.predictiq.com/runbooks/critical-database-queries"
 
       - alert: HighDBConnectionPoolUtilization
         expr: db_connections_active / db_connections_max > 0.8
@@ -90,6 +97,7 @@ groups:
         annotations:
           summary: "High database connection pool utilization"
           description: "Connection pool utilization is {{ $value | humanizePercentage }}, exceeding 80% threshold"
+          runbook_url: "https://docs.predictiq.com/runbooks/high-db-connection-pool-utilization"
 
       - alert: CriticalDBConnectionPoolUtilization
         expr: db_connections_active / db_connections_max > 0.95
@@ -100,6 +108,7 @@ groups:
         annotations:
           summary: "Critical database connection pool utilization"
           description: "Connection pool utilization is {{ $value | humanizePercentage }}, exceeding 95% critical threshold"
+          runbook_url: "https://docs.predictiq.com/runbooks/critical-db-connection-pool-utilization"
 
   - name: contract_performance
     interval: 1m
@@ -113,6 +122,7 @@ groups:
         annotations:
           summary: "High gas costs for market creation"
           description: "Create market gas cost is {{ $value }}, exceeding 500000 threshold"
+          runbook_url: "https://docs.predictiq.com/runbooks/high-contract-gas-costs"
 
       - alert: HighBetGasCosts
         expr: contract_gas_used{operation="place_bet"} > 200000
@@ -123,6 +133,7 @@ groups:
         annotations:
           summary: "High gas costs for placing bets"
           description: "Place bet gas cost is {{ $value }}, exceeding 200000 threshold"
+          runbook_url: "https://docs.predictiq.com/runbooks/high-bet-gas-costs"
 
       - alert: HighResolutionGasCosts
         expr: contract_gas_used{operation="resolve_market"} > 300000
@@ -133,6 +144,7 @@ groups:
         annotations:
           summary: "High gas costs for market resolution"
           description: "Resolve market gas cost is {{ $value }}, exceeding 300000 threshold"
+          runbook_url: "https://docs.predictiq.com/runbooks/high-resolution-gas-costs"
 
   - name: system_health
     interval: 30s
@@ -146,6 +158,7 @@ groups:
         annotations:
           summary: "Service is down"
           description: "{{ $labels.job }} has been down for more than 1 minute"
+          runbook_url: "https://docs.predictiq.com/runbooks/service-down"
 
       - alert: HighMemoryUsage
         expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes > 0.9
@@ -156,6 +169,7 @@ groups:
         annotations:
           summary: "High memory usage"
           description: "Memory usage is {{ $value | humanizePercentage }}, exceeding 90% threshold"
+          runbook_url: "https://docs.predictiq.com/runbooks/high-memory-usage"
 
       - alert: HighCPUUsage
         expr: 100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
@@ -166,6 +180,50 @@ groups:
         annotations:
           summary: "High CPU usage"
           description: "CPU usage is {{ $value }}%, exceeding 80% threshold"
+          runbook_url: "https://docs.predictiq.com/runbooks/high-cpu-usage"
+
+  - name: tts_quota
+    interval: 1m
+    rules:
+      - alert: TTSHighRequestRate
+        expr: rate(tts_requests_total[1m]) > 800
+        for: 2m
+        labels:
+          severity: warning
+          component: tts
+        annotations:
+          summary: "TTS request rate approaching Google Cloud quota"
+          description: "TTS request rate is {{ $value }} req/min, approaching the 1000 req/min soft quota limit"
+
+      - alert: TTSQuotaNearExhaustion
+        expr: rate(tts_requests_total[1m]) > 950
+        for: 1m
+        labels:
+          severity: critical
+          component: tts
+        annotations:
+          summary: "TTS request rate critical — quota exhaustion imminent"
+          description: "TTS request rate is {{ $value }} req/min, Google Cloud quota limit is 1000 req/min"
+
+      - alert: TTSHighErrorRate
+        expr: rate(tts_requests_total{status=~"4..|5.."}[5m]) / rate(tts_requests_total[5m]) > 0.05
+        for: 3m
+        labels:
+          severity: warning
+          component: tts
+        annotations:
+          summary: "TTS service elevated error rate"
+          description: "TTS error rate is {{ $value | humanizePercentage }}, possibly caused by quota exhaustion or provider outage"
+
+      - alert: TTSHighLatency
+        expr: histogram_quantile(0.95, rate(tts_request_duration_seconds_bucket[5m])) > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: tts
+        annotations:
+          summary: "TTS p95 latency exceeds 10 s"
+          description: "TTS p95 response time is {{ $value }}s — check Google Cloud TTS API status and quota"
 
   - name: performance_regression
     interval: 1h
@@ -184,6 +242,7 @@ groups:
         annotations:
           summary: "Performance degradation detected"
           description: "Response time has degraded by more than 10% compared to 24h ago"
+          runbook_url: "https://docs.predictiq.com/runbooks/performance-degradation"
 
       - alert: SignificantPerformanceDegradation
         expr: |
@@ -199,3 +258,4 @@ groups:
         annotations:
           summary: "Performance degradation alert threshold reached"
           description: "Response time has degraded by more than 5% compared to 24h ago (alert threshold)"
+          runbook_url: "https://docs.predictiq.com/runbooks/significant-performance-degradation"

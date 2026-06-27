@@ -53,7 +53,7 @@ jobs:
           override: true
 
       - name: Cache Rust dependencies
-        uses: actions/cache@v3
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/bin/
@@ -145,7 +145,7 @@ jobs:
 
       - name: Upload performance reports
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v7
         with:
           name: performance-reports
           path: performance/backend/reports/
@@ -181,7 +181,7 @@ jobs:
 
       - name: Comment PR with results
         if: github.event_name == 'pull_request' && always()
-        uses: actions/github-script@v6
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
@@ -234,7 +234,7 @@ jobs:
           override: true
 
       - name: Cache Rust dependencies
-        uses: actions/cache@v3
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/bin/
@@ -253,7 +253,7 @@ jobs:
           cargo bench --bench gas_benchmark -- --save-baseline main
 
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v7
         with:
           name: contract-benchmarks
           path: contracts/predict-iq/target/criterion/
@@ -294,7 +294,7 @@ jobs:
             echo "No baselines found on main branch"
 
       - name: Setup Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v6
         with:
           node-version: "18"
 
@@ -305,7 +305,7 @@ jobs:
 
       - name: Upload regression report
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v7
         with:
           name: regression-report
           path: performance/backend/reports/regression-report.md
@@ -313,7 +313,7 @@ jobs:
 
       - name: Comment PR with regression report
         if: always()
-        uses: actions/github-script@v6
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
@@ -353,7 +353,7 @@ jobs:
           path: performance/backend/reports/
 
       - name: Setup Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v6
         with:
           node-version: "18"
 

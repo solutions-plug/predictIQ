@@ -44,6 +44,7 @@ fn test_referral_reward_calculation() {
             min_responses: 1,
             max_staleness_seconds: 300,
             max_confidence_bps: 200,
+        strike_price: None,
         },
         &token_address,
     );
@@ -82,6 +83,7 @@ fn test_multiple_referral_claims() {
             min_responses: 1,
             max_staleness_seconds: 300,
             max_confidence_bps: 200,
+        strike_price: None,
         },
         &token_address,
     );
@@ -126,6 +128,7 @@ fn test_no_referrer_no_crash() {
             min_responses: 1,
             max_staleness_seconds: 300,
             max_confidence_bps: 200,
+        strike_price: None,
         },
         &token_address,
     );
@@ -159,6 +162,7 @@ fn test_nonexistent_referrer_no_crash() {
             min_responses: 1,
             max_staleness_seconds: 300,
             max_confidence_bps: 200,
+        strike_price: None,
         },
         &token_address,
     );
@@ -203,6 +207,7 @@ fn test_multi_token_referral_rewards_separation() {
             min_responses: 1,
             max_staleness_seconds: 300,
             max_confidence_bps: 200,
+        strike_price: None,
         },
         &token_address,
     );
@@ -220,6 +225,7 @@ fn test_multi_token_referral_rewards_separation() {
             min_responses: 1,
             max_staleness_seconds: 300,
             max_confidence_bps: 200,
+        strike_price: None,
         },
         &token_address2,
     );

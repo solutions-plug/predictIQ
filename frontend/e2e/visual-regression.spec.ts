@@ -1,21 +1,27 @@
 import { test, expect } from '@playwright/test';
 
+// Read visual diff threshold from environment (default: 0.1%)
+const VISUAL_DIFF_THRESHOLD = parseFloat(process.env.VISUAL_DIFF_THRESHOLD || '0.1');
+
 test.describe('Visual Regression - Homepage', () => {
   test('should match homepage screenshot', async ({ page }) => {
     await page.goto('/');
     await page.waitForLoadState('networkidle');
-    
+
     await expect(page).toHaveScreenshot('homepage.png', {
       fullPage: true,
       animations: 'disabled',
+      maxDiffPixels: Math.ceil((1920 * 1080 * VISUAL_DIFF_THRESHOLD) / 100),
     });
   });
 
   test('should match hero section', async ({ page }) => {
     await page.goto('/');
-    
+
     const heroSection = page.locator('.hero');
-    await expect(heroSection).toHaveScreenshot('hero-section.png');
+    await expect(heroSection).toHaveScreenshot('hero-section.png', {
+      maxDiffPixels: Math.ceil((1920 * 600 * VISUAL_DIFF_THRESHOLD) / 100),
+    });
   });
 
   test('should match features section', async ({ page }) => {

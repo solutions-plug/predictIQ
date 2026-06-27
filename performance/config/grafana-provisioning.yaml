@@ -1,0 +1,27 @@
+# Grafana Dashboard Provisioning Configuration
+# 
+# This file configures Grafana to automatically load dashboards from the repository
+# on startup. Dashboards are version-controlled and changes are tracked in git.
+#
+# Usage:
+#   1. Mount this file in Grafana container at /etc/grafana/provisioning/dashboards/
+#   2. Mount dashboard JSON files at /var/lib/grafana/dashboards/
+#   3. Restart Grafana to load dashboards
+#
+# Docker Compose Example:
+#   volumes:
+#     - ./performance/config/grafana-provisioning.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml
+#     - ./performance/config/:/var/lib/grafana/dashboards/
+
+apiVersion: 1
+
+providers:
+  - name: 'PredictIQ Dashboards'
+    orgId: 1
+    folder: 'Performance'
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

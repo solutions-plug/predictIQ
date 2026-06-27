@@ -26,14 +26,16 @@ pub struct Market {
     pub payout_mode: PayoutMode, // New: determines push vs pull payouts
     pub tier: MarketTier,
     pub creation_deposit: i128,
-    pub parent_id: u64,          // 0 means no parent (independent market)
-    pub parent_outcome_idx: u32, // Required outcome of parent market
-    pub resolved_at: Option<u64>, // Timestamp when market was resolved (for TTL pruning)
-    pub token_address: Address,   // Token used for betting
+    pub parent_id: u64,                 // 0 means no parent (independent market)
+    pub parent_outcome_idx: u32,        // Required outcome of parent market
+    pub resolved_at: Option<u64>,       // Timestamp when market was resolved (for TTL pruning)
+    pub token_address: Address,         // Token used for betting
     pub outcome_stakes: Map<u32, i128>, // Stake per outcome
     pub pending_resolution_timestamp: Option<u64>, // Timestamp when resolution was initiated
     pub dispute_snapshot_ledger: Option<u32>, // Ledger sequence for snapshot voting
     pub dispute_timestamp: Option<u64>, // Timestamp when dispute was filed
+    pub winner_counts: Map<u32, u32>,   // Unique bettor count per outcome
+    pub total_claimed: i128,            // Total amount claimed by winners
 }
 
 #[contracttype]
@@ -67,6 +69,7 @@ pub struct Bet {
     pub bettor: Address,
     pub outcome: u32,
     pub amount: i128,
+    pub fee_paid: i128,
 }
 
 #[contracttype]
@@ -95,6 +98,7 @@ pub struct OracleConfig {
     pub min_responses: Option<u32>, // Optimized: None defaults to 1
     pub max_staleness_seconds: u64, // Max age of price data in seconds
     pub max_confidence_bps: u64,    // Max confidence interval as basis points of price
+    pub strike_price: Option<i64>,  // Strike price for outcome determination
 }
 
 // Gas optimization constants
@@ -115,12 +119,19 @@ pub enum ConfigKey {
     ProtocolTreasury,
     GuardianSet,
     PendingUpgrade,
+    PendingUpgradePassedAt,
     UpgradeVotes,
     TimelockDuration,
     PendingGuardianRemoval,
+    PendingGuardianRemovalPassedAt,
     UpgradeRejectedAt(soroban_sdk::BytesN<32>),
     GovernanceToken,
     MaxPushPayoutWinners,
+    DefaultDisputeWindow,
+    MinDisputeWindow,
+    MaxDisputeWindow,
+    CircuitBreakerThreshold,
+    PendingAdmin,
 }
 
 #[contracttype]
@@ -151,7 +162,7 @@ pub struct PendingUpgrade {
 
 // Constants for upgrade governance
 pub const TIMELOCK_DURATION: u64 = 48 * 60 * 60; // 48 hours in seconds
-pub const TIMELOCK_MIN_SECONDS: u64 = 3600; // 1 hour minimum
+pub const TIMELOCK_MIN_SECONDS: u64 = 24 * 60 * 60; // 24 hours minimum
 pub const TIMELOCK_MAX_SECONDS: u64 = 7 * 24 * 3600; // 7 days maximum
 pub const MAJORITY_THRESHOLD_PERCENT: u32 = 51; // 51% for majority
 pub const UPGRADE_COOLDOWN_DURATION: u64 = 7 * 24 * 3600; // 7 days cooldown for rejected upgrades
@@ -176,6 +187,10 @@ pub struct PendingGuardianRemoval {
 pub const TTL_LOW_THRESHOLD: u32 = 17_280; // ~1 day (86400 seconds / 5)
 pub const TTL_HIGH_THRESHOLD: u32 = 518_400; // ~30 days (2592000 seconds / 5)
 pub const PRUNE_GRACE_PERIOD: u64 = 2_592_000; // 30 days in seconds
+
+// Bet-specific TTL constants (longer duration for bet lifecycle)
+pub const BET_TTL_LOW_THRESHOLD: u32 = 34_560; // ~2 days (172800 seconds / 5)
+pub const BET_TTL_HIGH_THRESHOLD: u32 = 1_555_200; // ~180 days (13000000 seconds / 5)
 
 // Governance TTL constants (same values, governance-specific aliases)
 pub const GOV_TTL_LOW_THRESHOLD: u32 = TTL_LOW_THRESHOLD;

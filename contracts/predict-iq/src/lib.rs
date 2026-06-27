@@ -3,7 +3,9 @@ use soroban_sdk::{contract, contractimpl, Address, Env, String, Vec};
 
 mod errors;
 mod modules;
+pub mod pyth_client;
 mod test;
+mod test_pyth_integration;
 pub mod types;
 
 use crate::errors::ErrorCode;
@@ -33,6 +35,21 @@ impl PredictIQ {
         admin::get_admin(&e)
     }
 
+    /// Step 1: propose a new admin (current admin only). New admin must call accept_admin.
+    pub fn propose_admin(e: Env, new_admin: Address) -> Result<(), ErrorCode> {
+        admin::propose_admin(&e, new_admin)
+    }
+
+    /// Step 2: accept a pending admin transfer (pending admin only).
+    pub fn accept_admin(e: Env, caller: Address) -> Result<(), ErrorCode> {
+        admin::accept_admin(&e, caller)
+    }
+
+    /// Cancel a pending admin transfer (current admin only).
+    pub fn cancel_admin_transfer(e: Env) -> Result<(), ErrorCode> {
+        admin::cancel_admin_transfer(&e)
+    }
+
     pub fn create_market(
         e: Env,
         creator: Address,
@@ -58,6 +75,36 @@ impl PredictIQ {
             native_token,
             parent_id,
             parent_outcome_idx,
+        )
+    }
+
+    pub fn create_market_with_dispute_window(
+        e: Env,
+        creator: Address,
+        description: String,
+        options: Vec<String>,
+        deadline: u64,
+        resolution_deadline: u64,
+        oracle_config: crate::types::OracleConfig,
+        tier: crate::types::MarketTier,
+        native_token: Address,
+        parent_id: u64,
+        parent_outcome_idx: u32,
+        dispute_window_seconds: Option<u64>,
+    ) -> Result<u64, ErrorCode> {
+        crate::modules::markets::create_market_with_dispute_window(
+            &e,
+            creator,
+            description,
+            options,
+            deadline,
+            resolution_deadline,
+            oracle_config,
+            tier,
+            native_token,
+            parent_id,
+            parent_outcome_idx,
+            dispute_window_seconds,
         )
     }
 
@@ -119,11 +166,37 @@ impl PredictIQ {
         crate::modules::disputes::file_dispute(&e, disciplinarian, market_id)
     }
 
+    pub fn set_dispute_window(e: Env, seconds: u64) -> Result<(), ErrorCode> {
+        crate::modules::resolution::set_dispute_window(&e, seconds)
+    }
+
+    pub fn set_dispute_window_bounds(
+        e: Env,
+        min_seconds: u64,
+        max_seconds: u64,
+    ) -> Result<(), ErrorCode> {
+        crate::modules::resolution::set_dispute_window_bounds(&e, min_seconds, max_seconds)
+    }
+
+    pub fn get_market_dispute_window(e: Env, market_id: u64) -> u64 {
+        crate::modules::markets::get_market_dispute_window(&e, market_id)
+    }
+
     pub fn set_circuit_breaker(
         e: Env,
         state: crate::types::CircuitBreakerState,
     ) -> Result<(), ErrorCode> {
         crate::modules::circuit_breaker::set_state(&e, state)
+    }
+
+    /// Governance: update the circuit breaker threshold (admin only).
+    pub fn set_circuit_breaker_threshold(e: Env, threshold: i128) -> Result<(), ErrorCode> {
+        crate::modules::circuit_breaker::set_threshold(&e, threshold)
+    }
+
+    /// Query the current circuit breaker threshold.
+    pub fn get_circuit_breaker_threshold(e: Env) -> i128 {
+        crate::modules::circuit_breaker::get_threshold(&e)
     }
 
     pub fn set_base_fee(e: Env, amount: i128) -> Result<(), ErrorCode> {
@@ -158,21 +231,52 @@ impl PredictIQ {
         crate::modules::fees::claim_referral_rewards(&e, &address, &token)
     }
 
-    pub fn set_oracle_result(e: Env, market_id: u64, outcome: u32) -> Result<(), ErrorCode> {
+    pub fn set_oracle_result(
+        e: Env,
+        market_id: u64,
+        oracle_id: u32,
+        outcome: u32,
+    ) -> Result<(), ErrorCode> {
         crate::modules::admin::require_admin(&e)?;
-        crate::modules::oracles::set_oracle_result(&e, market_id, outcome)
+        crate::modules::oracles::set_oracle_result(&e, market_id, oracle_id, outcome)
+    }
+
+    pub fn get_oracle_result(e: Env, market_id: u64, oracle_id: u32) -> Option<u32> {
+        crate::modules::oracles::get_oracle_result(&e, market_id, oracle_id)
+    }
+
+    pub fn get_oracle_last_update(e: Env, market_id: u64, oracle_id: u32) -> Option<u64> {
+        crate::modules::oracles::get_last_update(&e, market_id, oracle_id)
     }
 
     /// Issue #508: Validate oracle staleness for a market
     pub fn validate_oracle_staleness(e: Env, market_id: u64) -> Result<(), ErrorCode> {
-        let market = crate::modules::markets::get_market(&e, market_id)
-            .ok_or(ErrorCode::MarketNotFound)?;
+        let market =
+            crate::modules::markets::get_market(&e, market_id).ok_or(ErrorCode::MarketNotFound)?;
         crate::modules::oracles::validate_oracle_staleness(&e, market_id, &market.oracle_config)
     }
 
     pub fn resolve_market(e: Env, market_id: u64, winning_outcome: u32) -> Result<(), ErrorCode> {
         crate::modules::admin::require_admin(&e)?;
         crate::modules::disputes::resolve_market(&e, market_id, winning_outcome)
+    }
+
+    /// Set the governance token used for dispute voting weights.
+    pub fn set_governance_token(e: Env, token: Address) -> Result<(), ErrorCode> {
+        crate::modules::admin::set_governance_token(&e, token)
+    }
+
+    /// Attempt to resolve a market via the oracle after the resolution deadline.
+    /// Transitions status: Active → PendingResolution.
+    pub fn attempt_oracle_resolution(e: Env, market_id: u64) -> Result<(), ErrorCode> {
+        crate::modules::resolution::attempt_oracle_resolution(&e, market_id)
+    }
+
+    /// Finalize resolution after the dispute window has closed.
+    /// Handles both the no-dispute path (PendingResolution → Resolved) and
+    /// the post-vote path (Disputed → Resolved).
+    pub fn finalize_resolution(e: Env, market_id: u64) -> Result<(), ErrorCode> {
+        crate::modules::resolution::finalize_resolution(&e, market_id)
     }
 
     pub fn reset_monitoring(e: Env) -> Result<(), ErrorCode> {
@@ -270,8 +374,16 @@ impl PredictIQ {
         crate::modules::governance::remove_guardian(&e, address)
     }
 
-    pub fn vote_on_guardian_removal(e: Env, voter: Address, approve: bool) -> Result<(), ErrorCode> {
+    pub fn vote_on_guardian_removal(
+        e: Env,
+        voter: Address,
+        approve: bool,
+    ) -> Result<(), ErrorCode> {
         crate::modules::governance::vote_on_guardian_removal(&e, voter, approve)
+    }
+
+    pub fn execute_guardian_removal(e: Env) -> Result<(), ErrorCode> {
+        crate::modules::governance::execute_guardian_removal(&e)
     }
 
     pub fn get_guardians(e: Env) -> Vec<crate::types::Guardian> {

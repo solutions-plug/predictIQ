@@ -13,6 +13,16 @@ services:
     environment:
       - COLLECTOR_OTLP_ENABLED=true
       - LOG_LEVEL=info
+    # Resource limits: Jaeger can consume significant memory with high trace volume
+    # CPU: 1 core, Memory: 1GB (adjust based on trace volume)
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
     networks:
       - predictiq-tracing
 
@@ -21,6 +31,16 @@ services:
     container_name: predictiq-zipkin
     ports:
       - "9411:9411"    # Zipkin UI and API
+    # Resource limits: Zipkin is lightweight but should be bounded
+    # CPU: 0.5 core, Memory: 512MB
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
     networks:
       - predictiq-tracing
 
@@ -35,6 +55,19 @@ services:
       - "4318:4318"    # OTLP HTTP receiver
       - "8888:8888"    # Prometheus metrics
       - "13133:13133"  # Health check
+    environment:
+      - JAEGER_ENDPOINT=${JAEGER_ENDPOINT:-jaeger:14250}
+      - ZIPKIN_ENDPOINT=${ZIPKIN_ENDPOINT:-http://zipkin:9411/api/v2/spans}
+    # Resource limits: OTEL collector processes and exports traces
+    # CPU: 0.5 core, Memory: 512MB (adjust based on throughput)
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
     depends_on:
       - jaeger
       - zipkin

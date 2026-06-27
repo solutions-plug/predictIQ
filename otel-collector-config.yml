@@ -23,12 +23,12 @@ processors:
 
 exporters:
   jaeger:
-    endpoint: jaeger:14250
+    endpoint: ${JAEGER_ENDPOINT:-jaeger:14250}
     tls:
       insecure: true
   
   zipkin:
-    endpoint: http://zipkin:9411/api/v2/spans
+    endpoint: ${ZIPKIN_ENDPOINT:-http://zipkin:9411/api/v2/spans}
   
   logging:
     loglevel: info

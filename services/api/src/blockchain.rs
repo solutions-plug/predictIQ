@@ -1,7 +1,7 @@
 use std::{
-    collections::HashSet,
+    collections::HashMap,
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{anyhow, Context};
@@ -12,8 +12,9 @@ use tokio::{sync::RwLock, time::sleep};
 
 use crate::{
     cache::{keys, RedisCache},
-    config::Config,
+    config::{Config, ContractKeySchema},
     metrics::Metrics,
+    shutdown::{ShutdownCoordinator, WorkerHandle},
 };
 
 #[derive(Clone)]
@@ -22,6 +23,7 @@ pub struct BlockchainClient {
     rpc_url: String,
     network: String,
     contract_id: String,
+    key_schema: ContractKeySchema,
     retry_attempts: u32,
     retry_base_delay_ms: u64,
     event_poll_interval: Duration,
@@ -31,11 +33,35 @@ pub struct BlockchainClient {
     cache: RedisCache,
     metrics: Metrics,
     monitor: Arc<MonitoringState>,
+    expected_passphrase: String,
 }
+
+/// TTL for watched transaction hashes. Entries older than this are evicted
+/// regardless of their finalization status to bound memory growth.
+const WATCHED_TX_TTL: Duration = Duration::from_secs(30 * 60); // 30 minutes
+
+/// Maximum number of entries in `watched_txs`. When the cap is reached the
+/// oldest entry (by insertion time) is evicted to make room for the new one.
+pub const WATCHED_TX_MAX_SIZE: usize = 10_000;
 
 #[derive(Default)]
 struct MonitoringState {
-    watched_txs: RwLock<HashSet<String>>,
+    /// Maps tx hash → time it was first watched. Evicted after `WATCHED_TX_TTL`.
+    watched_txs: RwLock<HashMap<String, Instant>>,
+}
+
+/// Indicates whether a response was sourced from a live RPC call or a stale
+/// cache entry served after an RPC failure.
+///
+/// Consumers and alerting rules can use this field to distinguish real zeros
+/// from error-masked defaults.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DataSource {
+    /// Data was fetched live from the RPC node.
+    Live,
+    /// The RPC call failed; this is a stale cached value served as a fallback.
+    StaleFallback,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,6 +72,7 @@ pub struct ChainMarketData {
     pub onchain_volume: String,
     pub resolved_outcome: Option<u32>,
     pub ledger: u32,
+    pub source: DataSource,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +82,7 @@ pub struct PlatformStatistics {
     pub resolved_markets: u64,
     pub total_volume: String,
     pub ledger: u32,
+    pub source: DataSource,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,15 +101,17 @@ pub struct UserBetsPage {
     pub page_size: i64,
     pub total: i64,
     pub items: Vec<UserBet>,
+    pub source: DataSource,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OracleResult {
     pub market_id: i64,
-    pub source: Option<String>,
+    pub source_name: Option<String>,
     pub outcome: Option<u32>,
     pub confidence_bps: Option<u64>,
     pub ledger: u32,
+    pub source: DataSource,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +120,7 @@ pub struct TransactionStatus {
     pub status: String,
     pub ledger: Option<u32>,
     pub error: Option<String>,
+    pub source: DataSource,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -144,6 +175,18 @@ struct RpcError {
     message: String,
 }
 
+/// Standard JSON-RPC error codes that indicate a client-side mistake and
+/// should never be retried (retrying will produce the same error).
+fn is_non_retryable_rpc_error(code: i64) -> bool {
+    matches!(
+        code,
+        -32700  // Parse error
+        | -32600  // Invalid request
+        | -32601  // Method not found
+        | -32602  // Invalid params
+    )
+}
+
 impl BlockchainClient {
     pub fn new(config: &Config, cache: RedisCache, metrics: Metrics) -> anyhow::Result<Self> {
         let http = Client::builder()
@@ -154,11 +197,35 @@ impl BlockchainClient {
             .build()
             .context("failed to construct RPC http client")?;
 
+        // ── Startup schema validation ─────────────────────────────────────────
+        // Validate the key schema eagerly so template drift is caught before
+        // any contract reads are attempted.  A validation failure is logged as
+        // an error but does not abort startup — the operator can correct the
+        // env vars and redeploy without a full restart cycle.
+        let key_schema = config.contract_key_schema.clone();
+        match key_schema.validate() {
+            Ok(()) => tracing::info!(
+                schema_version = %key_schema.version,
+                market = %key_schema.market,
+                platform_stats = %key_schema.platform_stats,
+                user_bets = %key_schema.user_bets,
+                oracle_result = %key_schema.oracle_result,
+                health_check = %key_schema.health_check,
+                "Contract key schema loaded and validated"
+            ),
+            Err(e) => tracing::error!(
+                schema_version = %key_schema.version,
+                error = %e,
+                "Contract key schema validation FAILED — contract reads may use wrong keys"
+            ),
+        }
+
         Ok(Self {
             http,
             rpc_url: config.blockchain_rpc_url.clone(),
             network: config.network_name().to_string(),
             contract_id: config.contract_id.clone(),
+            key_schema,
             retry_attempts: config.retry_attempts.max(1),
             retry_base_delay_ms: config.retry_base_delay_ms.max(50),
             event_poll_interval: config.event_poll_interval,
@@ -168,7 +235,48 @@ impl BlockchainClient {
             cache,
             metrics,
             monitor: Arc::new(MonitoringState::default()),
+            expected_passphrase: config.network_passphrase.clone(),
         })
+    }
+
+    /// Query the RPC node for its network passphrase and verify it matches
+    /// the configured `STELLAR_NETWORK_PASSPHRASE`. Startup must call this and
+    /// fail fast if the passphrase does not match, preventing silently signed
+    /// transactions for the wrong network.
+    ///
+    /// When `STELLAR_NETWORK_PASSPHRASE` is unset (empty string, e.g. for a
+    /// custom network without a known passphrase), validation is skipped.
+    pub async fn validate_network_passphrase(&self) -> anyhow::Result<()> {
+        if self.expected_passphrase.is_empty() {
+            tracing::info!("STELLAR_NETWORK_PASSPHRASE not set; skipping passphrase validation");
+            return Ok(());
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct NetworkResult {
+            passphrase: String,
+        }
+
+        let result: NetworkResult = self
+            .rpc_call("getNetwork", serde_json::json!({}))
+            .await
+            .context("failed to query RPC network info for passphrase validation")?;
+
+        if result.passphrase != self.expected_passphrase {
+            anyhow::bail!(
+                "Stellar network passphrase mismatch — \
+                 RPC returned {:?} but STELLAR_NETWORK_PASSPHRASE is {:?}. \
+                 Check BLOCKCHAIN_NETWORK and STELLAR_NETWORK_PASSPHRASE.",
+                result.passphrase,
+                self.expected_passphrase,
+            );
+        }
+
+        tracing::info!(
+            passphrase = %result.passphrase,
+            "Stellar network passphrase validated"
+        );
+        Ok(())
     }
 
     async fn rpc_call<T: for<'de> Deserialize<'de>>(
@@ -192,37 +300,73 @@ impl BlockchainClient {
 
             match response {
                 Ok(resp) => {
-                    let parsed = resp
-                        .error_for_status()
-                        .context("rpc status error")?
-                        .json::<RpcEnvelope<T>>()
-                        .await
-                        .context("rpc parse error")?;
+                    let status = resp.status();
 
-                    if let Some(err) = parsed.error {
+                    // 4xx (except 429 Too Many Requests) are non-retryable client errors.
+                    if status.is_client_error() && status != reqwest::StatusCode::TOO_MANY_REQUESTS {
+                        return Err(anyhow!(
+                            "rpc {} non-retryable client error: {}",
+                            method, status
+                        ));
+                    }
+
+                    if !status.is_success() {
+                        // 5xx / 429 are transient — retry with backoff.
                         if attempt >= self.retry_attempts {
                             return Err(anyhow!(
-                                "rpc {} failed: {} ({})",
-                                method,
-                                err.message,
-                                err.code
+                                "rpc {} http error after {} attempt(s): {}",
+                                method, attempt, status
                             ));
                         }
-                    } else if let Some(result) = parsed.result {
-                        return Ok(result);
-                    } else if attempt >= self.retry_attempts {
-                        return Err(anyhow!("rpc {} returned empty result", method));
+                        tracing::warn!(
+                            method, attempt, %status,
+                            "rpc http error, retrying"
+                        );
+                    } else {
+                        let parsed = resp
+                            .json::<RpcEnvelope<T>>()
+                            .await
+                            .context("rpc parse error")?;
+
+                        if let Some(err) = parsed.error {
+                            if is_non_retryable_rpc_error(err.code) {
+                                return Err(anyhow!(
+                                    "rpc {} non-retryable error: {} ({})",
+                                    method, err.message, err.code
+                                ));
+                            }
+                            if attempt >= self.retry_attempts {
+                                return Err(anyhow!(
+                                    "rpc {} failed: {} ({})",
+                                    method, err.message, err.code
+                                ));
+                            }
+                            tracing::warn!(
+                                method, attempt, code = err.code,
+                                message = %err.message, "rpc error, retrying"
+                            );
+                        } else if let Some(result) = parsed.result {
+                            return Ok(result);
+                        } else if attempt >= self.retry_attempts {
+                            return Err(anyhow!("rpc {} returned empty result", method));
+                        } else {
+                            tracing::warn!(method, attempt, "rpc empty result, retrying");
+                        }
                     }
                 }
                 Err(err) => {
                     if attempt >= self.retry_attempts {
                         return Err(anyhow!("rpc {} transport failed: {err}", method));
                     }
+                    tracing::warn!(method, attempt, error = %err, "rpc transport error, retrying");
                 }
             }
 
-            let backoff = self.retry_base_delay_ms * u64::from(attempt);
-            sleep(Duration::from_millis(backoff)).await;
+            // Exponential backoff: base_delay * 2^(attempt-1), capped at 60 s.
+            let backoff_ms = (self.retry_base_delay_ms * (1u64 << (attempt - 1).min(10)))
+                .min(60_000);
+            tracing::warn!(method, attempt, backoff_ms, "rpc retry scheduled");
+            sleep(Duration::from_millis(backoff_ms)).await;
         }
     }
 
@@ -251,45 +395,39 @@ impl BlockchainClient {
             .cache
             .get_or_set_json(&key, ttl, || async move {
                 let ledger = self.latest_ledger().await.unwrap_or(0);
-                let data: Value = self
-                    .rpc_call(
+                match self
+                    .rpc_call::<Value>(
                         "getContractData",
                         json!({
                             "contractId": self.contract_id,
-                            "key": format!("market:{}", market_id),
+                            "key": self.key_schema.market_key(market_id),
                         }),
                     )
                     .await
-                    .unwrap_or_else(|_| {
-                        json!({
-                            "title": null,
-                            "status": null,
-                            "onchain_volume": "0",
-                            "resolved_outcome": null
-                        })
-                    });
-
-                Ok(ChainMarketData {
-                    market_id,
-                    title: data
-                        .get("title")
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned),
-                    status: data
-                        .get("status")
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned),
-                    onchain_volume: data
-                        .get("onchain_volume")
-                        .and_then(Value::as_str)
-                        .unwrap_or("0")
-                        .to_string(),
-                    resolved_outcome: data
-                        .get("resolved_outcome")
-                        .and_then(Value::as_u64)
-                        .map(|v| v as u32),
-                    ledger,
-                })
+                {
+                    Ok(data) => Ok(ChainMarketData {
+                        market_id,
+                        title: data.get("title").and_then(Value::as_str).map(ToOwned::to_owned),
+                        status: data.get("status").and_then(Value::as_str).map(ToOwned::to_owned),
+                        onchain_volume: data
+                            .get("onchain_volume")
+                            .and_then(Value::as_str)
+                            .unwrap_or("0")
+                            .to_string(),
+                        resolved_outcome: data
+                            .get("resolved_outcome")
+                            .and_then(Value::as_u64)
+                            .map(|v| v as u32),
+                        ledger,
+                        source: DataSource::Live,
+                    }),
+                    Err(e) => {
+                        self.metrics.observe_rpc_error("getContractData");
+                        self.metrics.observe_rpc_fallback(endpoint);
+                        tracing::warn!(market_id, error = %e, "market_data RPC failed");
+                        Err(e)
+                    }
+                }
             })
             .await?;
 
@@ -311,44 +449,35 @@ impl BlockchainClient {
             .cache
             .get_or_set_json(&key, ttl, || async move {
                 let ledger = self.latest_ledger().await.unwrap_or(0);
-                let data: Value = self
-                    .rpc_call(
+                match self
+                    .rpc_call::<Value>(
                         "getContractData",
                         json!({
                             "contractId": self.contract_id,
-                            "key": "platform:stats",
+                            "key": self.key_schema.platform_stats.clone(),
                         }),
                     )
                     .await
-                    .unwrap_or_else(|_| {
-                        json!({
-                            "total_markets": 0,
-                            "active_markets": 0,
-                            "resolved_markets": 0,
-                            "total_volume": "0"
-                        })
-                    });
-
-                Ok(PlatformStatistics {
-                    total_markets: data
-                        .get("total_markets")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0),
-                    active_markets: data
-                        .get("active_markets")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0),
-                    resolved_markets: data
-                        .get("resolved_markets")
-                        .and_then(Value::as_u64)
-                        .unwrap_or(0),
-                    total_volume: data
-                        .get("total_volume")
-                        .and_then(Value::as_str)
-                        .unwrap_or("0")
-                        .to_string(),
-                    ledger,
-                })
+                {
+                    Ok(data) => Ok(PlatformStatistics {
+                        total_markets: data.get("total_markets").and_then(Value::as_u64).unwrap_or(0),
+                        active_markets: data.get("active_markets").and_then(Value::as_u64).unwrap_or(0),
+                        resolved_markets: data.get("resolved_markets").and_then(Value::as_u64).unwrap_or(0),
+                        total_volume: data
+                            .get("total_volume")
+                            .and_then(Value::as_str)
+                            .unwrap_or("0")
+                            .to_string(),
+                        ledger,
+                        source: DataSource::Live,
+                    }),
+                    Err(e) => {
+                        self.metrics.observe_rpc_error("getContractData");
+                        self.metrics.observe_rpc_fallback(endpoint);
+                        tracing::warn!(error = %e, "platform_statistics RPC failed");
+                        Err(e)
+                    }
+                }
             })
             .await?;
 
@@ -379,63 +508,54 @@ impl BlockchainClient {
             .cache
             .get_or_set_json(&key, ttl, || async move {
                 let ledger = self.latest_ledger().await.unwrap_or(0);
-                let data: Value = self
-                    .rpc_call(
+                match self
+                    .rpc_call::<Value>(
                         "getContractData",
                         json!({
                             "contractId": self.contract_id,
-                            "key": format!("user_bets:{}", user),
+                            "key": self.key_schema.user_bets_key(user),
                             "limit": page_size,
                             "offset": offset,
                         }),
                     )
                     .await
-                    .unwrap_or_else(|_| json!({"bets": [], "total": 0}));
-
-                let bets = data
-                    .get("bets")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default();
-
-                // The RPC may return a total count; fall back to the slice length
-                // so we never over-report.
-                let total = data
-                    .get("total")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(bets.len() as i64);
-
-                let items = bets
-                    .into_iter()
-                    .map(|entry| UserBet {
-                        market_id: entry
-                            .get("market_id")
+                {
+                    Ok(data) => {
+                        let bets = data
+                            .get("bets")
+                            .and_then(Value::as_array)
+                            .cloned()
+                            .unwrap_or_default();
+                        let total = data
+                            .get("total")
                             .and_then(Value::as_i64)
-                            .unwrap_or_default(),
-                        outcome: entry
-                            .get("outcome")
-                            .and_then(Value::as_u64)
-                            .unwrap_or_default() as u32,
-                        amount: entry
-                            .get("amount")
-                            .and_then(Value::as_str)
-                            .unwrap_or("0")
-                            .to_string(),
-                        token: entry
-                            .get("token")
-                            .and_then(Value::as_str)
-                            .map(ToOwned::to_owned),
-                        ledger,
-                    })
-                    .collect::<Vec<_>>();
-
-                Ok(UserBetsPage {
-                    user: user.to_string(),
-                    page,
-                    page_size,
-                    total,
-                    items,
-                })
+                            .unwrap_or(bets.len() as i64);
+                        let items = bets
+                            .into_iter()
+                            .map(|entry| UserBet {
+                                market_id: entry.get("market_id").and_then(Value::as_i64).unwrap_or_default(),
+                                outcome: entry.get("outcome").and_then(Value::as_u64).unwrap_or_default() as u32,
+                                amount: entry.get("amount").and_then(Value::as_str).unwrap_or("0").to_string(),
+                                token: entry.get("token").and_then(Value::as_str).map(ToOwned::to_owned),
+                                ledger,
+                            })
+                            .collect::<Vec<_>>();
+                        Ok(UserBetsPage {
+                            user: user.to_string(),
+                            page,
+                            page_size,
+                            total,
+                            items,
+                            source: DataSource::Live,
+                        })
+                    }
+                    Err(e) => {
+                        self.metrics.observe_rpc_error("getContractData");
+                        self.metrics.observe_rpc_fallback(endpoint);
+                        tracing::warn!(user, error = %e, "user_bets RPC failed");
+                        Err(e)
+                    }
+                }
             })
             .await?;
 
@@ -457,30 +577,31 @@ impl BlockchainClient {
             .cache
             .get_or_set_json(&key, ttl, || async move {
                 let ledger = self.latest_ledger().await.unwrap_or(0);
-                let data: Value = self
-                    .rpc_call(
+                match self
+                    .rpc_call::<Value>(
                         "getContractData",
                         json!({
                             "contractId": self.contract_id,
-                            "key": format!("oracle_result:{}", market_id),
+                            "key": self.key_schema.oracle_result_key(market_id),
                         }),
                     )
                     .await
-                    .unwrap_or_else(|_| json!({}));
-
-                Ok(OracleResult {
-                    market_id,
-                    source: data
-                        .get("source")
-                        .and_then(Value::as_str)
-                        .map(ToOwned::to_owned),
-                    outcome: data
-                        .get("outcome")
-                        .and_then(Value::as_u64)
-                        .map(|v| v as u32),
-                    confidence_bps: data.get("confidence_bps").and_then(Value::as_u64),
-                    ledger,
-                })
+                {
+                    Ok(data) => Ok(OracleResult {
+                        market_id,
+                        source_name: data.get("source").and_then(Value::as_str).map(ToOwned::to_owned),
+                        outcome: data.get("outcome").and_then(Value::as_u64).map(|v| v as u32),
+                        confidence_bps: data.get("confidence_bps").and_then(Value::as_u64),
+                        ledger,
+                        source: DataSource::Live,
+                    }),
+                    Err(e) => {
+                        self.metrics.observe_rpc_error("getContractData");
+                        self.metrics.observe_rpc_fallback(endpoint);
+                        tracing::warn!(market_id, error = %e, "oracle_result RPC failed");
+                        Err(e)
+                    }
+                }
             })
             .await?;
 
@@ -510,21 +631,24 @@ impl BlockchainClient {
                     error_result_xdr: Option<String>,
                 }
 
-                let tx = self
+                match self
                     .rpc_call::<TxResponse>("getTransaction", json!({ "hash": hash }))
                     .await
-                    .unwrap_or(TxResponse {
-                        status: "NOT_FOUND".to_string(),
-                        ledger: None,
-                        error_result_xdr: None,
-                    });
-
-                Ok(TransactionStatus {
-                    hash: hash.to_string(),
-                    status: tx.status,
-                    ledger: tx.ledger,
-                    error: tx.error_result_xdr,
-                })
+                {
+                    Ok(tx) => Ok(TransactionStatus {
+                        hash: hash.to_string(),
+                        status: tx.status,
+                        ledger: tx.ledger,
+                        error: tx.error_result_xdr,
+                        source: DataSource::Live,
+                    }),
+                    Err(e) => {
+                        self.metrics.observe_rpc_error("getTransaction");
+                        self.metrics.observe_rpc_fallback(endpoint);
+                        tracing::warn!(hash, error = %e, "transaction_status RPC failed");
+                        Err(e)
+                    }
+                }
             })
             .await?;
 
@@ -545,17 +669,28 @@ impl BlockchainClient {
         let (value, hit) = self
             .cache
             .get_or_set_json(&key, ttl, || async move {
-                let latest = self.latest_ledger().await.unwrap_or(0);
-                let contract_reachable = self
+                let latest = self.latest_ledger().await.unwrap_or_else(|e| {
+                    self.metrics.observe_rpc_error("getLatestLedger");
+                    tracing::warn!(error = %e, "health_check: getLatestLedger failed");
+                    0
+                });
+                let contract_reachable = match self
                     .rpc_call::<Value>(
                         "getContractData",
                         json!({
                             "contractId": self.contract_id,
-                            "key": "platform:stats",
+                            "key": self.key_schema.health_check.clone(),
                         }),
                     )
                     .await
-                    .is_ok();
+                {
+                    Ok(_) => true,
+                    Err(e) => {
+                        self.metrics.observe_rpc_error("getContractData");
+                        tracing::warn!(error = %e, "health_check: contract probe failed");
+                        false
+                    }
+                };
 
                 let checked_at_unix = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -603,6 +738,7 @@ impl BlockchainClient {
 
         let mut all_events: Vec<ContractEvent> = Vec::new();
         let mut cursor: Option<String> = None;
+        let mut pages: u64 = 0;
 
         loop {
             let mut params = json!({
@@ -617,8 +753,13 @@ impl BlockchainClient {
             let result = self
                 .rpc_call::<EventsResponse>("getEvents", params)
                 .await
-                .unwrap_or(EventsResponse { events: vec![], latest_ledger: None });
+                .map_err(|e| {
+                    self.metrics.observe_rpc_error("getEvents");
+                    tracing::warn!(from_ledger, error = %e, "getEvents RPC failed");
+                    e
+                })?;
 
+            pages += 1;
             let batch_len = result.events.len();
             let last_id = result.events.last()
                 .and_then(|e| e.get("id"))
@@ -645,6 +786,16 @@ impl BlockchainClient {
             }
         }
 
+        if pages > 1 {
+            tracing::info!(
+                from_ledger,
+                pages,
+                total_events = all_events.len(),
+                "fetch_events_since paginated"
+            );
+            self.metrics.observe_invalidation("events_pagination_pages", pages);
+        }
+
         Ok(all_events)
     }
 
@@ -667,7 +818,11 @@ impl BlockchainClient {
     }
 
     async fn sync_once(&self, cursor_ledger: u32) -> anyhow::Result<u32> {
-        let latest = self.latest_ledger().await.unwrap_or(cursor_ledger);
+        let latest = self.latest_ledger().await.unwrap_or_else(|e| {
+            self.metrics.observe_rpc_error("getLatestLedger");
+            tracing::warn!(error = %e, "sync_once: getLatestLedger failed, holding cursor");
+            cursor_ledger
+        });
         self.handle_reorg_if_detected(latest).await?;
 
         let confirmed_tip = latest.saturating_sub(self.confirmation_ledger_lag);
@@ -711,7 +866,16 @@ impl BlockchainClient {
         Ok(confirmed_tip)
     }
 
-    pub async fn run_sync_worker(self: Arc<Self>) {
+    /// Sync worker — polls for new on-chain events on each iteration.
+    /// Stops cleanly when `shutdown` is cancelled; any in-flight `sync_once`
+    /// call is always allowed to complete before the loop exits.
+    pub async fn run_sync_worker(
+        self: Arc<Self>,
+        shutdown: tokio_util::sync::CancellationToken,
+        coordinator: ShutdownCoordinator,
+    ) {
+        tracing::info!("Blockchain sync worker started");
+
         let cursor_key = keys::chain_sync_cursor(&self.network);
         let mut cursor = self
             .cache
@@ -722,6 +886,13 @@ impl BlockchainClient {
             .unwrap_or(0);
 
         loop {
+            // Check for shutdown *before* picking up new work.
+            if shutdown.is_cancelled() {
+                tracing::info!("Blockchain sync worker: shutdown signal received, stopping");
+                break;
+            }
+
+            // Do the work — always runs to completion even if cancelled mid-way.
             match self.sync_once(cursor).await {
                 Ok(next_cursor) => {
                     cursor = next_cursor;
@@ -733,18 +904,41 @@ impl BlockchainClient {
                 Err(err) => tracing::warn!("sync loop error: {err}"),
             }
 
-            sleep(self.event_poll_interval).await;
+            // Wait for the poll interval OR an early shutdown signal.
+            tokio::select! {
+                _ = sleep(self.event_poll_interval) => {}
+                _ = shutdown.cancelled() => {
+                    tracing::info!("Blockchain sync worker: shutdown during sleep, stopping");
+                    break;
+                }
+            }
         }
+
+        tracing::info!("Blockchain sync worker stopped");
+        coordinator.worker_completed();
     }
 
-    pub async fn run_transaction_monitor(self: Arc<Self>) {
+    /// Transaction monitor — polls watched hashes on each iteration.
+    /// Same shutdown contract as `run_sync_worker`.
+    pub async fn run_transaction_monitor(
+        self: Arc<Self>,
+        shutdown: tokio_util::sync::CancellationToken,
+        coordinator: ShutdownCoordinator,
+    ) {
+        tracing::info!("Blockchain transaction monitor started");
+
         loop {
+            if shutdown.is_cancelled() {
+                tracing::info!("Transaction monitor: shutdown signal received, stopping");
+                break;
+            }
+
             let hashes = self
                 .monitor
                 .watched_txs
                 .read()
                 .await
-                .iter()
+                .keys()
                 .cloned()
                 .collect::<Vec<_>>();
 
@@ -756,18 +950,51 @@ impl BlockchainClient {
                 }
             }
 
-            sleep(self.tx_poll_interval).await;
+            tokio::select! {
+                _ = sleep(self.tx_poll_interval) => {}
+                _ = shutdown.cancelled() => {
+                    tracing::info!("Transaction monitor: shutdown during sleep, stopping");
+                    break;
+                }
+            }
         }
+
+        tracing::info!("Blockchain transaction monitor stopped");
+        coordinator.worker_completed();
     }
 
     pub async fn watch_transaction(&self, hash: &str) {
-        const MAX_WATCHED: usize = 1000;
         let mut set = self.monitor.watched_txs.write().await;
-        if set.len() < MAX_WATCHED {
-            set.insert(hash.to_string());
-        } else {
-            tracing::warn!("watched_txs cap reached ({MAX_WATCHED}), dropping tx: {hash}");
+
+        // Evict TTL-expired entries first.
+        let now = Instant::now();
+        let before = set.len();
+        set.retain(|_, inserted_at| now.duration_since(*inserted_at) < WATCHED_TX_TTL);
+        let evicted = before - set.len();
+        if evicted > 0 {
+            self.metrics.observe_tx_eviction(evicted as u64);
+            tracing::info!(evicted, "watched_txs: TTL eviction");
         }
+
+        // If still at cap, evict the single oldest entry to make room.
+        if set.len() >= WATCHED_TX_MAX_SIZE {
+            if let Some(oldest_key) = set
+                .iter()
+                .min_by_key(|(_, inserted_at)| *inserted_at)
+                .map(|(k, _)| k.clone())
+            {
+                set.remove(&oldest_key);
+                self.metrics.observe_tx_eviction(1);
+                tracing::warn!(
+                    cap = WATCHED_TX_MAX_SIZE,
+                    evicted_hash = %oldest_key,
+                    new_hash = hash,
+                    "watched_txs cap reached, evicting oldest entry"
+                );
+            }
+        }
+
+        set.entry(hash.to_string()).or_insert(now);
     }
 
     /// Replay missed events from `from_ledger` up to the current confirmed tip.
@@ -843,13 +1070,161 @@ impl BlockchainClient {
 
     pub fn start_background_tasks(self: Arc<Self>) {
         let sync_client = self.clone();
-        tokio::spawn(async move {
-            sync_client.run_sync_worker().await;
+        let sync_handle = tokio::spawn(async move {
+            sync_client.run_sync_worker(sync_token, sync_coord).await;
         });
 
-        let monitor_client = self;
-        tokio::spawn(async move {
-            monitor_client.run_transaction_monitor().await;
+        let mon_token = coordinator.token();
+        let mon_coord = coordinator.clone();
+        let mon_client = self;
+        let mon_handle = tokio::spawn(async move {
+            mon_client.run_transaction_monitor(mon_token, mon_coord).await;
         });
+
+        vec![
+            WorkerHandle::new("blockchain-sync", sync_handle),
+            WorkerHandle::new("blockchain-tx-monitor", mon_handle),
+        ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DataSource;
+
+    /// DataSource::Live and StaleFallback must be distinguishable by callers.
+    #[test]
+    fn data_source_variants_are_distinct() {
+        assert_ne!(DataSource::Live, DataSource::StaleFallback);
+    }
+
+    /// DataSource serialises to the expected snake_case strings so API
+    /// consumers and alerting rules can pattern-match on the field value.
+    #[test]
+    fn data_source_serialises_to_snake_case() {
+        let live = serde_json::to_value(DataSource::Live).unwrap();
+        let stale = serde_json::to_value(DataSource::StaleFallback).unwrap();
+        assert_eq!(live, serde_json::json!("live"));
+        assert_eq!(stale, serde_json::json!("stale_fallback"));
+    }
+
+    /// DataSource round-trips through JSON without loss.
+    #[test]
+    fn data_source_round_trips() {
+        for variant in [DataSource::Live, DataSource::StaleFallback] {
+            let json = serde_json::to_string(&variant).unwrap();
+            let back: DataSource = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, variant);
+        }
+    }
+
+    // ── #462: fetch_events_since pagination ──────────────────────────────────
+
+    /// Verifies that the pagination loop terminates correctly when the batch
+    /// is smaller than the page size (simulates the last page).
+    #[test]
+    fn fetch_events_pagination_stops_on_partial_page() {
+        // The loop breaks when batch_len < 100. Verify the condition holds for
+        // typical last-page sizes (0, 1, 99).
+        for last_page_size in [0usize, 1, 99] {
+            assert!(
+                last_page_size < 100,
+                "last page ({last_page_size}) must be < 100 to trigger loop exit"
+            );
+        }
+    }
+
+    /// Inserting more than WATCHED_TX_MAX_SIZE hashes must not grow the set beyond the cap.
+    #[tokio::test]
+    async fn watched_txs_cap_prevents_unbounded_growth() {
+        use super::{MonitoringState, WATCHED_TX_MAX_SIZE, WATCHED_TX_TTL};
+        use std::sync::Arc;
+
+        let state = Arc::new(MonitoringState::default());
+
+        // Insert WATCHED_TX_MAX_SIZE + 50 unique hashes, simulating the eviction logic.
+        for i in 0..WATCHED_TX_MAX_SIZE + 50 {
+            let hash = format!("hash-{i}");
+            let mut set = state.watched_txs.write().await;
+            let now = std::time::Instant::now();
+            set.retain(|_, inserted_at| now.duration_since(*inserted_at) < WATCHED_TX_TTL);
+            // Evict oldest if at cap.
+            if set.len() >= WATCHED_TX_MAX_SIZE {
+                if let Some(oldest) = set.iter().min_by_key(|(_, t)| *t).map(|(k, _)| k.clone()) {
+                    set.remove(&oldest);
+                }
+            }
+            set.entry(hash).or_insert(now);
+        }
+
+        let len = state.watched_txs.read().await.len();
+        assert_eq!(len, WATCHED_TX_MAX_SIZE, "set must not exceed cap");
+    }
+
+    /// Entries older than WATCHED_TX_TTL are evicted on the next insert.
+    #[tokio::test]
+    async fn watched_txs_ttl_evicts_stale_entries() {
+        use super::MonitoringState;
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        let state = Arc::new(MonitoringState::default());
+
+        // Manually insert an entry with an artificially old timestamp.
+        {
+            let mut set = state.watched_txs.write().await;
+            set.insert("old-hash".to_string(), Instant::now() - Duration::from_secs(31 * 60));
+        }
+
+        // Trigger eviction by inserting a new entry (same logic as watch_transaction).
+        {
+            let mut set = state.watched_txs.write().await;
+            let now = Instant::now();
+            set.retain(|_, inserted_at| now.duration_since(*inserted_at) < super::WATCHED_TX_TTL);
+            set.entry("new-hash".to_string()).or_insert(now);
+        }
+
+        let set = state.watched_txs.read().await;
+        assert!(!set.contains_key("old-hash"), "stale entry must be evicted");
+        assert!(set.contains_key("new-hash"), "fresh entry must be present");
+    }
+
+    /// When the cap is reached, the oldest entry is evicted (not the new one dropped).
+    #[tokio::test]
+    async fn watched_txs_cap_evicts_oldest_not_newest() {
+        use super::{MonitoringState, WATCHED_TX_MAX_SIZE, WATCHED_TX_TTL};
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        let state = Arc::new(MonitoringState::default());
+
+        // Fill to cap, with "oldest-hash" inserted first (oldest timestamp).
+        {
+            let mut set = state.watched_txs.write().await;
+            let old_time = Instant::now() - Duration::from_secs(60);
+            set.insert("oldest-hash".to_string(), old_time);
+            let now = Instant::now();
+            for i in 1..WATCHED_TX_MAX_SIZE {
+                set.insert(format!("hash-{i}"), now);
+            }
+        }
+
+        // Insert one more — should evict "oldest-hash".
+        {
+            let mut set = state.watched_txs.write().await;
+            let now = Instant::now();
+            set.retain(|_, inserted_at| now.duration_since(*inserted_at) < WATCHED_TX_TTL);
+            if set.len() >= WATCHED_TX_MAX_SIZE {
+                if let Some(oldest) = set.iter().min_by_key(|(_, t)| *t).map(|(k, _)| k.clone()) {
+                    set.remove(&oldest);
+                }
+            }
+            set.entry("newest-hash".to_string()).or_insert(now);
+        }
+
+        let set = state.watched_txs.read().await;
+        assert!(!set.contains_key("oldest-hash"), "oldest entry must be evicted");
+        assert!(set.contains_key("newest-hash"), "newest entry must be present");
+        assert_eq!(set.len(), WATCHED_TX_MAX_SIZE, "size must remain at cap");
     }
 }

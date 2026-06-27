@@ -22,13 +22,25 @@ variable "engine_version" {
   type = string
 }
 
+locals {
+  common_tags = {
+    Project   = "predictiq"
+    Environment = var.environment
+    Owner     = "infrastructure-team"
+    ManagedBy = "terraform"
+  }
+}
+
 resource "aws_elasticache_subnet_group" "main" {
   name       = "predictiq-${var.environment}-redis-subnet"
   subnet_ids = var.subnet_ids
 
-  tags = {
-    Name = "predictiq-${var.environment}-redis-subnet-group"
-  }
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-redis-subnet-group"
+    }
+  )
 }
 
 resource "aws_security_group" "redis" {
@@ -49,9 +61,12 @@ resource "aws_security_group" "redis" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = {
-    Name = "predictiq-${var.environment}-redis-sg"
-  }
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-redis-sg"
+    }
+  )
 }
 
 resource "aws_elasticache_cluster" "main" {
@@ -72,9 +87,12 @@ resource "aws_elasticache_cluster" "main" {
   maintenance_window = "mon:03:00-mon:04:00"
   notification_topic_arn = null
 
-  tags = {
-    Name = "predictiq-${var.environment}-redis"
-  }
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-redis"
+    }
+  )
 }
 
 output "endpoint" {

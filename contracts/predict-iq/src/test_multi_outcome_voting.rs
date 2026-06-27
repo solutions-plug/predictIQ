@@ -37,6 +37,7 @@ fn create_multi_outcome_market(
         min_responses: Some(1),
         max_staleness_seconds: 3600,
         max_confidence_bps: 200,
+        strike_price: None,
     };
 
     let token_admin = Address::generate(e);
@@ -62,7 +63,7 @@ fn test_three_outcomes_clear_majority_outcome_0_wins() {
     let resolution_deadline = 2000;
     let market_id = create_multi_outcome_market(&client, &e, 3, resolution_deadline);
     
-    client.set_oracle_result(&market_id, &0);
+    client.set_oracle_result(&market_id, &0, &0);
     
     e.ledger().with_mut(|li| {
         li.timestamp = resolution_deadline;
@@ -120,7 +121,7 @@ fn test_three_outcomes_clear_majority_outcome_2_wins() {
     let resolution_deadline = 2000;
     let market_id = create_multi_outcome_market(&client, &e, 3, resolution_deadline);
     
-    client.set_oracle_result(&market_id, &0);
+    client.set_oracle_result(&market_id, &0, &0);
     
     e.ledger().with_mut(|li| {
         li.timestamp = resolution_deadline;
@@ -179,7 +180,7 @@ fn test_three_outcomes_no_majority_requires_admin() {
     let resolution_deadline = 2000;
     let market_id = create_multi_outcome_market(&client, &e, 3, resolution_deadline);
     
-    client.set_oracle_result(&market_id, &0);
+    client.set_oracle_result(&market_id, &0, &0);
     
     e.ledger().with_mut(|li| {
         li.timestamp = resolution_deadline;
@@ -234,7 +235,7 @@ fn test_five_outcomes_clear_majority() {
     let resolution_deadline = 2000;
     let market_id = create_multi_outcome_market(&client, &e, 5, resolution_deadline);
     
-    client.set_oracle_result(&market_id, &0);
+    client.set_oracle_result(&market_id, &0, &0);
     
     e.ledger().with_mut(|li| {
         li.timestamp = resolution_deadline;
@@ -299,7 +300,7 @@ fn test_five_outcomes_no_majority() {
     let resolution_deadline = 2000;
     let market_id = create_multi_outcome_market(&client, &e, 5, resolution_deadline);
     
-    client.set_oracle_result(&market_id, &0);
+    client.set_oracle_result(&market_id, &0, &0);
     
     e.ledger().with_mut(|li| {
         li.timestamp = resolution_deadline;
@@ -356,7 +357,7 @@ fn test_three_outcomes_exactly_60_percent_threshold() {
     let resolution_deadline = 2000;
     let market_id = create_multi_outcome_market(&client, &e, 3, resolution_deadline);
     
-    client.set_oracle_result(&market_id, &0);
+    client.set_oracle_result(&market_id, &0, &0);
     
     e.ledger().with_mut(|li| {
         li.timestamp = resolution_deadline;
@@ -412,7 +413,7 @@ fn test_three_outcomes_just_below_60_percent_threshold() {
     let resolution_deadline = 2000;
     let market_id = create_multi_outcome_market(&client, &e, 3, resolution_deadline);
     
-    client.set_oracle_result(&market_id, &0);
+    client.set_oracle_result(&market_id, &0, &0);
     
     e.ledger().with_mut(|li| {
         li.timestamp = resolution_deadline;
@@ -487,7 +488,7 @@ fn test_majority_threshold_boundary_behavior() {
         let resolution_deadline = 2000;
         let market_id = create_multi_outcome_market(&client, &e, 2, resolution_deadline);
         
-        client.set_oracle_result(&market_id, &0);
+        client.set_oracle_result(&market_id, &0, &0);
         
         e.ledger().with_mut(|li| {
             li.timestamp = resolution_deadline;
@@ -565,7 +566,7 @@ fn test_majority_threshold_precision_with_large_numbers() {
         let resolution_deadline = 2000;
         let market_id = create_multi_outcome_market(&client, &e, 2, resolution_deadline);
         
-        client.set_oracle_result(&market_id, &0);
+        client.set_oracle_result(&market_id, &0, &0);
         
         e.ledger().with_mut(|li| {
             li.timestamp = resolution_deadline;
@@ -620,7 +621,7 @@ fn test_three_outcomes_single_voter_100_percent() {
     let resolution_deadline = 2000;
     let market_id = create_multi_outcome_market(&client, &e, 3, resolution_deadline);
     
-    client.set_oracle_result(&market_id, &0);
+    client.set_oracle_result(&market_id, &0, &0);
     
     e.ledger().with_mut(|li| {
         li.timestamp = resolution_deadline;
@@ -670,7 +671,7 @@ fn test_four_outcomes_outcome_1_wins() {
     let resolution_deadline = 2000;
     let market_id = create_multi_outcome_market(&client, &e, 4, resolution_deadline);
     
-    client.set_oracle_result(&market_id, &0);
+    client.set_oracle_result(&market_id, &0, &0);
     
     e.ledger().with_mut(|li| {
         li.timestamp = resolution_deadline;
@@ -731,7 +732,7 @@ fn test_three_outcomes_vote_revision_changes_winner() {
     let resolution_deadline = 2000;
     let market_id = create_multi_outcome_market(&client, &e, 3, resolution_deadline);
     
-    client.set_oracle_result(&market_id, &0);
+    client.set_oracle_result(&market_id, &0, &0);
     
     e.ledger().with_mut(|li| {
         li.timestamp = resolution_deadline;
@@ -797,7 +798,7 @@ fn test_winner_is_not_outcome_0_when_outcome_0_has_zero_votes() {
     let resolution_deadline = 2000u64;
     let market_id = create_multi_outcome_market(&client, &e, 3, resolution_deadline);
 
-    client.set_oracle_result(&market_id, &0);
+    client.set_oracle_result(&market_id, &0, &0);
     e.ledger().with_mut(|li| li.timestamp = resolution_deadline);
     client.attempt_oracle_resolution(&market_id);
 
@@ -841,7 +842,7 @@ fn test_winner_is_last_outcome_outcome_0_has_zero_votes_exactly_60_pct() {
     let resolution_deadline = 2000u64;
     let market_id = create_multi_outcome_market(&client, &e, 3, resolution_deadline);
 
-    client.set_oracle_result(&market_id, &0);
+    client.set_oracle_result(&market_id, &0, &0);
     e.ledger().with_mut(|li| li.timestamp = resolution_deadline);
     client.attempt_oracle_resolution(&market_id);
 
@@ -885,7 +886,7 @@ fn test_no_votes_cast_returns_no_majority() {
     let resolution_deadline = 2000u64;
     let market_id = create_multi_outcome_market(&client, &e, 3, resolution_deadline);
 
-    client.set_oracle_result(&market_id, &0);
+    client.set_oracle_result(&market_id, &0, &0);
     e.ledger().with_mut(|li| li.timestamp = resolution_deadline);
     client.attempt_oracle_resolution(&market_id);
 
@@ -918,7 +919,7 @@ fn test_five_outcomes_winner_is_outcome_4_not_outcome_0() {
     let resolution_deadline = 2000u64;
     let market_id = create_multi_outcome_market(&client, &e, 5, resolution_deadline);
 
-    client.set_oracle_result(&market_id, &0);
+    client.set_oracle_result(&market_id, &0, &0);
     e.ledger().with_mut(|li| li.timestamp = resolution_deadline);
     client.attempt_oracle_resolution(&market_id);
 
@@ -968,7 +969,7 @@ fn test_cast_vote_invalid_outcome() {
     // Market has 2 outcomes (indices 0 and 1).
     let market_id = create_multi_outcome_market(&client, &e, 2, resolution_deadline);
 
-    client.set_oracle_result(&market_id, &0);
+    client.set_oracle_result(&market_id, &0, &0);
     e.ledger().with_mut(|li| li.timestamp = resolution_deadline);
     client.attempt_oracle_resolution(&market_id);
 

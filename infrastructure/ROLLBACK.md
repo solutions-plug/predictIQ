@@ -120,6 +120,42 @@ curl https://api.predictiq.example.com/health
 4. Schedule post-mortem if needed
 5. Update runbooks based on lessons learned
 
+## Rollback Drill Schedule and Test Results
+
+The rollback procedure must be exercised at least once per quarter in the staging environment to verify it remains accurate and executable under time pressure.
+
+### Drill schedule
+
+Drills are calendar events owned by the Infrastructure team. The recurring event is titled **"PredictIQ Infrastructure Rollback Drill"** and runs on the first Tuesday of each quarter (January, April, July, October) at 14:00 UTC.
+
+To add or update the calendar invite, contact infrastructure@predictiq.example.com or the current on-call rotation lead.
+
+### How to run a drill
+
+1. Announce the drill in `#infrastructure` at least 24 hours in advance.
+2. Pick a recent non-critical infrastructure change (e.g., a variable or tag update) as the target.
+3. Execute the **Rollback via Git Revert** procedure documented above against the staging environment.
+4. Time the end-to-end duration and record it in the table below.
+5. Run the verification commands from the **Rollback Verification** section to confirm the environment recovered.
+6. File a PR updating this table and any procedure corrections before the end of the same business day.
+
+### Drill log
+
+| Date       | Environment | Procedure used       | Duration  | Issues found | Fixed in PR |
+|------------|-------------|----------------------|-----------|--------------|-------------|
+| 2026-04-01 | Staging     | Git revert           | 12 min    | None         | —           |
+| 2026-01-07 | Staging     | Git revert           | 18 min    | Step 3 link broken in old runbook | #612 |
+
+Add a new row after each drill. If no issues are found, write "None". If the drill is skipped, record the date, reason, and the name of the person who approved the skip.
+
+### Procedure update process
+
+If a drill reveals that a step is wrong or missing:
+
+1. Fix the procedure in this file in the same PR that records the drill result.
+2. Have a second on-call engineer review the correction before merging.
+3. Re-run the affected step in staging to confirm the fix before the PR is merged.
+
 ## Prevention
 
 - Always test infrastructure changes in dev/staging first

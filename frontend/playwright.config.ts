@@ -25,29 +25,51 @@ export default defineConfig({
     video: 'retain-on-failure',
   },
   projects: [
+    // ------------------------------------------------------------------
+    // Local / PR projects (default)
+    // ------------------------------------------------------------------
     {
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },
+      testIgnore: isStaging ? '**' : undefined,
     },
     {
       name: 'firefox',
       use: { ...devices['Desktop Firefox'] },
+      testIgnore: isStaging ? '**' : undefined,
     },
     {
       name: 'webkit',
       use: { ...devices['Desktop Safari'] },
+      testIgnore: isStaging ? '**' : undefined,
     },
     {
       name: 'mobile-chrome',
       use: { ...devices['Pixel 5'] },
+      testIgnore: isStaging ? '**' : undefined,
     },
     {
       name: 'mobile-safari',
       use: { ...devices['iPhone 12'] },
+      testIgnore: isStaging ? '**' : undefined,
     },
     {
       name: 'tablet',
       use: { ...devices['iPad Pro'] },
+      testIgnore: isStaging ? '**' : undefined,
+    },
+
+    // ------------------------------------------------------------------
+    // Staging project — activated when STAGING_URL is set.
+    // Runs against a real API; no local web server is started.
+    // ------------------------------------------------------------------
+    {
+      name: 'staging',
+      use: {
+        ...devices['Desktop Chrome'],
+        baseURL: process.env.STAGING_URL,
+      },
+      testIgnore: isStaging ? undefined : '**',
     },
     // Staging project: runs only the market-creation spec against the staging URL.
     // Activated when BASE_URL points to staging (or STAGING=true).

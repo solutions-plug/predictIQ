@@ -5,6 +5,7 @@
  * 
  * Calculates SLO compliance and error budget consumption based on metrics.
  * Supports multiple SLOs and generates reports.
+ * Persists error budget snapshots for historical tracking.
  */
 
 const fs = require('fs');
@@ -14,6 +15,124 @@ const path = require('path');
 const sloConfig = JSON.parse(
   fs.readFileSync(path.join(__dirname, '../config/slo.json'), 'utf8')
 );
+
+const BASELINES_DIR = path.join(__dirname, '../.performance-baselines');
+
+/**
+ * Save error budget snapshot with timestamp
+ * @param {Array} results - Error budget calculation results
+ * @returns {string} Path to saved snapshot
+ */
+function saveErrorBudgetSnapshot(results) {
+  if (!fs.existsSync(BASELINES_DIR)) {
+    fs.mkdirSync(BASELINES_DIR, { recursive: true });
+  }
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const snapshotFile = path.join(BASELINES_DIR, `error-budget-${timestamp}.json`);
+  
+  const snapshot = {
+    timestamp: new Date().toISOString(),
+    results,
+    summary: {
+      total_slos: results.length,
+      healthy: results.filter(r => r.status === 'healthy').length,
+      warning: results.filter(r => r.status === 'warning').length,
+      alert: results.filter(r => r.status === 'alert').length,
+      critical: results.filter(r => r.status === 'critical').length,
+      emergency: results.filter(r => r.status === 'emergency').length,
+    },
+  };
+  
+  fs.writeFileSync(snapshotFile, JSON.stringify(snapshot, null, 2));
+  return snapshotFile;
+}
+
+/**
+ * Load all error budget snapshots for trend analysis
+ * @returns {Array} Array of snapshots sorted by timestamp
+ */
+function loadErrorBudgetHistory() {
+  if (!fs.existsSync(BASELINES_DIR)) {
+    return [];
+  }
+
+  const files = fs.readdirSync(BASELINES_DIR)
+    .filter(f => f.startsWith('error-budget-') && f.endsWith('.json'))
+    .sort();
+
+  return files.map(file => {
+    try {
+      return JSON.parse(fs.readFileSync(path.join(BASELINES_DIR, file), 'utf8'));
+    } catch (e) {
+      console.error(`Failed to parse ${file}:`, e.message);
+      return null;
+    }
+  }).filter(Boolean);
+}
+
+/**
+ * Calculate error budget trend over N runs
+ * @param {number} runs - Number of recent runs to analyze
+ * @returns {Object} Trend analysis
+ */
+function calculateErrorBudgetTrend(runs = 10) {
+  const history = loadErrorBudgetHistory();
+  const recent = history.slice(-runs);
+
+  if (recent.length === 0) {
+    return { message: 'No historical data available' };
+  }
+
+  const trends = {};
+  
+  // Analyze each SLO
+  recent.forEach(snapshot => {
+    snapshot.results.forEach(result => {
+      if (!trends[result.slo_name]) {
+        trends[result.slo_name] = {
+          slo_name: result.slo_name,
+          samples: [],
+          avg_remaining: 0,
+          min_remaining: 100,
+          max_remaining: 0,
+          trend: 'stable',
+        };
+      }
+      
+      const remaining = parseFloat(result.error_budget_remaining);
+      trends[result.slo_name].samples.push({
+        timestamp: snapshot.timestamp,
+        remaining,
+      });
+      trends[result.slo_name].min_remaining = Math.min(trends[result.slo_name].min_remaining, remaining);
+      trends[result.slo_name].max_remaining = Math.max(trends[result.slo_name].max_remaining, remaining);
+    });
+  });
+
+  // Calculate averages and trends
+  Object.keys(trends).forEach(sloName => {
+    const data = trends[sloName];
+    data.avg_remaining = (data.samples.reduce((sum, s) => sum + s.remaining, 0) / data.samples.length).toFixed(2);
+    
+    // Determine trend direction
+    if (data.samples.length >= 2) {
+      const first = data.samples[0].remaining;
+      const last = data.samples[data.samples.length - 1].remaining;
+      const change = last - first;
+      
+      if (change < -5) {
+        data.trend = 'degrading';
+      } else if (change > 5) {
+        data.trend = 'improving';
+      } else {
+        data.trend = 'stable';
+      }
+    }
+  });
+
+  return trends;
+}
 
 /**
  * Calculate error budget for a given SLO
@@ -244,11 +363,33 @@ function main() {
   const report = generateReport(results);
   console.log(report);
   
+  // Save error budget snapshot for historical tracking
+  const snapshotPath = saveErrorBudgetSnapshot(results);
+  console.log(`\n✓ Error budget snapshot saved to: ${snapshotPath}`);
+  
   // Save report to file
   const reportPath = path.join(__dirname, '../reports/slo-report.txt');
   fs.mkdirSync(path.dirname(reportPath), { recursive: true });
   fs.writeFileSync(reportPath, report);
   console.log(`Report saved to: ${reportPath}`);
+  
+  // Calculate and display trend analysis
+  const trends = calculateErrorBudgetTrend(10);
+  if (trends.message) {
+    console.log(`\n${trends.message}`);
+  } else {
+    console.log('\n📊 Error Budget Trend (Last 10 Runs):');
+    console.log('─'.repeat(80));
+    Object.values(trends).forEach(trend => {
+      const trendEmoji = {
+        improving: '📈',
+        degrading: '📉',
+        stable: '➡️',
+      }[trend.trend] || '❓';
+      console.log(`${trendEmoji} ${trend.slo_name}`);
+      console.log(`   Avg Remaining: ${trend.avg_remaining}% | Min: ${trend.min_remaining.toFixed(2)}% | Max: ${trend.max_remaining.toFixed(2)}%`);
+    });
+  }
   
   // Exit with error code if any SLO is in critical/emergency state
   const hasCritical = results.some(r => ['critical', 'emergency'].includes(r.status));
@@ -264,4 +405,7 @@ module.exports = {
   calculateErrorBudget,
   checkBurnRateAlerts,
   generateReport,
+  saveErrorBudgetSnapshot,
+  loadErrorBudgetHistory,
+  calculateErrorBudgetTrend,
 };

@@ -1,21 +1,22 @@
-use axum::{
-    body::Body,
-    extract::Request,
-    http::StatusCode,
-    middleware::Next,
-    response::{IntoResponse, Response},
-    Json,
-};
+//! Input validation and sanitization for predictIQ API.
+//!
+//! ## XSS prevention
+//! String fields are sanitized before storage using an allowlist-based approach:
+//! - HTML tags are stripped entirely
+//! - Script / event-handler patterns are rejected outright
+//! - Null bytes and control characters are removed
+//!
+//! This is a defence-in-depth layer; the frontend MUST also escape output.
+
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use axum::Json;
 use serde::Serialize;
 
-use crate::security::sanitize;
-
-const DEFAULT_REQUEST_BODY_MAX_BYTES: usize = 1_048_576;
-const REQUEST_BODY_MAX_BYTES_ENV: &str = "REQUEST_BODY_MAX_BYTES";
-
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct ValidationError {
-    pub error: String,
+    pub error:   &'static str,
+    pub field:   String,
     pub message: String,
 }
 
@@ -25,108 +26,185 @@ impl IntoResponse for ValidationError {
     }
 }
 
-pub fn parse_request_body_max_bytes(raw: Option<&str>) -> usize {
-    raw.and_then(|value| value.trim().parse::<usize>().ok())
-        .filter(|bytes| *bytes > 0)
-        .unwrap_or(DEFAULT_REQUEST_BODY_MAX_BYTES)
+static REJECT_PATTERNS: &[&str] = &[
+    "<script",
+    "</script",
+    "javascript:",
+    "vbscript:",
+    "data:text/html",
+    "on error=",
+    "onerror=",
+    "onload=",
+    "onclick=",
+    "onmouseover=",
+    "onfocus=",
+    "expression(",
+    "&#",
+    "&lt;script",
+];
+
+fn contains_injection(value: &str) -> bool {
+    let lower = value.to_lowercase();
+    REJECT_PATTERNS.iter().any(|pat| lower.contains(pat))
 }
 
-pub fn request_body_max_bytes_from_env() -> usize {
-    parse_request_body_max_bytes(std::env::var(REQUEST_BODY_MAX_BYTES_ENV).ok().as_deref())
-}
+pub fn strip_html_tags(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut in_tag = false;
 
-/// Request validation middleware
-pub async fn request_validation_middleware(
-    request: Request,
-    next: Next,
-) -> Result<Response, ValidationError> {
-    // Extract and validate query parameters
-    let uri = request.uri();
-    let query = uri.query().unwrap_or("");
-
-    // Check for SQL injection patterns in query
-    if sanitize::contains_sql_injection(query) {
-        return Err(ValidationError {
-            error: "invalid_input".to_string(),
-            message: "Invalid characters detected in request".to_string(),
-        });
-    }
-
-    // Check for excessively long query strings
-    if query.len() > 2048 {
-        return Err(ValidationError {
-            error: "invalid_input".to_string(),
-            message: "Query string too long".to_string(),
-        });
-    }
-
-    // Validate path parameters
-    let path = uri.path();
-    if sanitize::contains_sql_injection(path) {
-        return Err(ValidationError {
-            error: "invalid_input".to_string(),
-            message: "Invalid characters detected in path".to_string(),
-        });
-    }
-
-    // Check for path traversal attempts
-    if path.contains("..") || path.contains("//") {
-        return Err(ValidationError {
-            error: "invalid_input".to_string(),
-            message: "Invalid path format".to_string(),
-        });
-    }
-
-    Ok(next.run(request).await)
-}
-
-/// Content-Type validation for POST/PUT requests
-pub async fn content_type_validation_middleware(
-    request: Request,
-    next: Next,
-) -> Result<Response, StatusCode> {
-    let method = request.method();
-    let headers = request.headers();
-
-    // Only validate POST, PUT, PATCH requests
-    if matches!(method.as_str(), "POST" | "PUT" | "PATCH") {
-        if let Some(content_type) = headers.get("content-type") {
-            let ct = content_type.to_str().unwrap_or("");
-
-            // Allow only JSON and form data
-            if !ct.starts_with("application/json")
-                && !ct.starts_with("application/x-www-form-urlencoded")
-                && !ct.starts_with("multipart/form-data")
-            {
-                return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
-            }
-        } else {
-            // Require Content-Type header for mutation requests
-            return Err(StatusCode::BAD_REQUEST);
+    for ch in input.chars() {
+        match ch {
+            '<'          => { in_tag = true; }
+            '>'          => { in_tag = false; }
+            _ if !in_tag => out.push(ch),
+            _            => {}
         }
     }
-
-    Ok(next.run(request).await)
+    out
 }
 
-/// Request size validation
-pub async fn request_size_validation_middleware(
-    request: Request,
-    next: Next,
-) -> Result<Response, StatusCode> {
-    let headers = request.headers();
-    let max_bytes = request_body_max_bytes_from_env();
+fn strip_control_chars(input: &str) -> String {
+    input
+        .chars()
+        .filter(|&c| c == '\t' || c == '\n' || c == '\r' || (!c.is_control() && c != '\0'))
+        .collect()
+}
 
-    // Check Content-Length header
-    if let Some(content_length) = headers.get("content-length") {
-        if let Ok(length_str) = content_length.to_str() {
-            if let Ok(length) = length_str.parse::<usize>() {
-                if length > max_bytes {
-                    return Err(StatusCode::PAYLOAD_TOO_LARGE);
-                }
-            }
-        }
+pub fn sanitize_string(
+    field_name: &str,
+    value: &str,
+) -> Result<String, ValidationError> {
+    if contains_injection(value) {
+        return Err(ValidationError {
+            error:   "invalid_content",
+            field:   field_name.to_string(),
+            message: format!(
+                "Field '{}' contains disallowed content (script tags or event handlers).",
+                field_name
+            ),
+        });
     }
 
-    Ok(next.run(request).await)
+    let stripped = strip_html_tags(value);
+    let clean    = strip_control_chars(&stripped);
+    Ok(clean.trim().to_string())
+}
+
+pub fn validate_string(
+    field_name: &str,
+    value: &str,
+    min_len: usize,
+    max_len: usize,
+) -> Result<String, ValidationError> {
+    let sanitized = sanitize_string(field_name, value)?;
+
+    if sanitized.len() < min_len {
+        return Err(ValidationError {
+            error:   "too_short",
+            field:   field_name.to_string(),
+            message: format!(
+                "Field '{}' must be at least {} characters (got {}).",
+                field_name, min_len, sanitized.len()
+            ),
+        });
+    }
+
+    if sanitized.len() > max_len {
+        return Err(ValidationError {
+            error:   "too_long",
+            field:   field_name.to_string(),
+            message: format!(
+                "Field '{}' must not exceed {} characters (got {}).",
+                field_name, max_len, sanitized.len()
+            ),
+        });
+    }
+
+    Ok(sanitized)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_removes_simple_tags() {
+        assert_eq!(strip_html_tags("<b>hello</b>"), "hello");
+    }
+
+    #[test]
+    fn strip_preserves_plain_text() {
+        let s = "Market closes at 3 PM on Friday.";
+        assert_eq!(strip_html_tags(s), s);
+    }
+
+    #[test]
+    fn detects_script_tag() {
+        assert!(contains_injection("<script>alert(1)</script>"));
+    }
+
+    #[test]
+    fn detects_event_handler() {
+        assert!(contains_injection(r#"<img onerror="alert(1)">"#));
+    }
+
+    #[test]
+    fn detects_javascript_protocol() {
+        assert!(contains_injection("javascript:void(0)"));
+    }
+
+    #[test]
+    fn clean_input_passes() {
+        assert!(!contains_injection("Will the S&P 500 close above 5000?"));
+    }
+
+    #[test]
+    fn sanitize_rejects_script_tags() {
+        let err = sanitize_string("title", "<script>evil()</script>").unwrap_err();
+        assert_eq!(err.error, "invalid_content");
+        assert_eq!(err.field, "title");
+    }
+
+    #[test]
+    fn sanitize_strips_html_from_clean_html() {
+        let result = sanitize_string("title", "<b>Bold Market</b>").unwrap();
+        assert_eq!(result, "Bold Market");
+    }
+
+    #[test]
+    fn sanitize_strips_null_bytes() {
+        let result = sanitize_string("title", "Hello\0World").unwrap();
+        assert!(!result.contains('\0'));
+    }
+
+    #[test]
+    fn sanitize_trims_whitespace() {
+        let result = sanitize_string("title", "  trimmed  ").unwrap();
+        assert_eq!(result, "trimmed");
+    }
+
+    #[test]
+    fn validate_rejects_too_short() {
+        let err = validate_string("title", "hi", 5, 100).unwrap_err();
+        assert_eq!(err.error, "too_short");
+    }
+
+    #[test]
+    fn validate_rejects_too_long() {
+        let long = "x".repeat(101);
+        let err = validate_string("title", &long, 1, 100).unwrap_err();
+        assert_eq!(err.error, "too_long");
+    }
+
+    #[test]
+    fn validate_accepts_valid_input() {
+        let result = validate_string("title", "Will BTC hit 100k?", 5, 200).unwrap();
+        assert_eq!(result, "Will BTC hit 100k?");
+    }
+
+    #[test]
+    fn validate_rejects_encoded_script_tag() {
+        let err = validate_string("desc", "&lt;script&gt;", 1, 200).unwrap_err();
+        assert_eq!(err.error, "invalid_content");
+    }
 }

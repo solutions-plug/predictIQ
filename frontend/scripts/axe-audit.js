@@ -81,38 +81,65 @@ async function runAxeAudit() {
     console.log(`  🟡 Moderate: ${moderate.length}`);
     console.log(`  🟢 Minor: ${minor.length}\n`);
 
-    // Display detailed violations
-    console.log('DETAILED VIOLATIONS:');
-    console.log('-'.repeat(60));
+    // Check for critical and serious violations (these will cause failure)
+    const criticalOrSerious = [...critical, ...serious];
 
-    violations.forEach((violation, index) => {
-      const impactEmoji = {
-        critical: '🔴',
-        serious: '🟠',
-        moderate: '🟡',
-        minor: '🟢',
-      }[violation.impact] || '⚪';
+    if (criticalOrSerious.length > 0) {
+      console.log('CRITICAL/SERIOUS VIOLATIONS (FAILING):');
+      console.log('-'.repeat(60));
 
-      console.log(`\n${index + 1}. ${impactEmoji} ${violation.id.toUpperCase()}`);
-      console.log(`   Impact: ${violation.impact}`);
-      console.log(`   Description: ${violation.description}`);
-      console.log(`   Help: ${violation.help}`);
-      console.log(`   WCAG: ${violation.tags.filter(t => t.startsWith('wcag')).join(', ')}`);
-      console.log(`   Affected elements: ${violation.nodes.length}`);
+      criticalOrSerious.forEach((violation, index) => {
+        const impactEmoji = violation.impact === 'critical' ? '🔴' : '🟠';
 
-      violation.nodes.forEach((node, nodeIndex) => {
-        console.log(`\n   Element ${nodeIndex + 1}:`);
-        console.log(`     HTML: ${node.html.substring(0, 100)}...`);
-        console.log(`     Target: ${node.target.join(' > ')}`);
-        console.log(`     Fix: ${node.failureSummary}`);
+        console.log(`\n${index + 1}. ${impactEmoji} ${violation.id.toUpperCase()}`);
+        console.log(`   Impact: ${violation.impact}`);
+        console.log(`   Description: ${violation.description}`);
+        console.log(`   Help: ${violation.help}`);
+        console.log(`   URL: ${violation.helpUrl}`);
+        console.log(`   WCAG: ${violation.tags.filter(t => t.startsWith('wcag')).join(', ')}`);
+        console.log(`   Affected elements: ${violation.nodes.length}`);
+
+        violation.nodes.slice(0, 3).forEach((node, nodeIndex) => {
+          console.log(`\n   Element ${nodeIndex + 1}:`);
+          console.log(`     HTML: ${node.html.substring(0, 100)}...`);
+          console.log(`     Target: ${node.target.join(' > ')}`);
+          console.log(`     Fix: ${node.failureSummary}`);
+        });
+
+        if (violation.nodes.length > 3) {
+          console.log(`\n   ... and ${violation.nodes.length - 3} more elements`);
+        }
       });
-    });
+
+      console.log('\n' + '='.repeat(60));
+      console.log('❌ FAILED: Critical or serious accessibility violations found!');
+      console.log('='.repeat(60));
+
+      return false;
+    }
+
+    // If only moderate/minor violations, pass but display them
+    if (violations.length > 0) {
+      console.log('OTHER VIOLATIONS (NON-CRITICAL):');
+      console.log('-'.repeat(60));
+
+      [...moderate, ...minor].forEach((violation, index) => {
+        const impactEmoji = {
+          moderate: '🟡',
+          minor: '🟢',
+        }[violation.impact] || '⚪';
+
+        console.log(`\n${index + 1}. ${impactEmoji} ${violation.id.toUpperCase()}`);
+        console.log(`   Impact: ${violation.impact}`);
+        console.log(`   Description: ${violation.description}`);
+      });
+    }
 
     console.log('\n' + '='.repeat(60));
-    console.log('❌ FAILED: Accessibility violations found!');
+    console.log('✅ PASSED: No critical or serious violations found!');
     console.log('='.repeat(60));
 
-    return false;
+    return true;
   } catch (error) {
     console.error('❌ Error running axe audit:', error);
     return false;

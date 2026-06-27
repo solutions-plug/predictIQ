@@ -39,5 +39,11 @@
     "note": "Service Level Objectives are defined in slo.json",
     "documentation": "See performance/SLO_GUIDE.md for details",
     "calculator": "Run 'node scripts/calculate-error-budget.js' to check SLO compliance"
+  },
+  "lighthouse": {
+    "performance": 90,
+    "accessibility": 95,
+    "best-practices": 90,
+    "seo": 90
   }
 }

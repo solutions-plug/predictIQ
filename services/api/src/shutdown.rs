@@ -1,164 +1,155 @@
 use std::time::Duration;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::watch;
 use tokio::time::timeout;
-use tracing::{info, warn, error};
+use tokio_util::sync::CancellationToken;
+use tracing::{error, info, warn};
 
-/// Shutdown coordinator that manages graceful termination of background workers
+/// Read `EMAIL_QUEUE_DRAIN_TIMEOUT_SECS` from the environment.
+/// Defaults to 60 s — more generous than the global shutdown timeout
+/// because losing in-flight emails is more expensive than delaying exit.
+pub fn email_queue_drain_timeout() -> Duration {
+    let secs = std::env::var("EMAIL_QUEUE_DRAIN_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(60);
+    Duration::from_secs(secs)
+}
+
+/// Coordinates graceful shutdown across all background workers.
+///
+/// Workers receive a [`CancellationToken`] they poll on each iteration.
+/// When [`ShutdownCoordinator::shutdown`] is called the token is cancelled,
+/// workers finish their current in-flight task, then decrement the completion
+/// counter via [`ShutdownCoordinator::worker_completed`].
 #[derive(Clone)]
 pub struct ShutdownCoordinator {
-    /// Broadcast channel to signal shutdown to all workers
-    shutdown_tx: broadcast::Sender<()>,
-    /// Watch channel to track worker completion
+    /// Token cancelled when shutdown is initiated.
+    token: CancellationToken,
+    /// Tracks how many workers have finished.
     completion_tx: watch::Sender<usize>,
     completion_rx: watch::Receiver<usize>,
-    /// Total number of workers to wait for
     total_workers: usize,
 }
 
 impl ShutdownCoordinator {
     pub fn new(total_workers: usize) -> Self {
-        let (shutdown_tx, _) = broadcast::channel(1);
         let (completion_tx, completion_rx) = watch::channel(0);
-        
         Self {
-            shutdown_tx,
+            token: CancellationToken::new(),
             completion_tx,
             completion_rx,
             total_workers,
         }
     }
 
-    /// Get a shutdown receiver for a worker
-    pub fn subscribe(&self) -> broadcast::Receiver<()> {
-        self.shutdown_tx.subscribe()
+    /// Returns a child token that workers should poll with `.is_cancelled()`.
+    pub fn token(&self) -> CancellationToken {
+        self.token.child_token()
     }
 
-    /// Signal that a worker has completed shutdown
-    pub async fn worker_completed(&self) {
+    /// Subscribe to the raw broadcast — kept for backward-compat with tests.
+    pub fn subscribe(&self) -> CancellationToken {
+        self.token.child_token()
+    }
+
+    /// Called by each worker once it has finished its last in-flight task.
+    pub fn worker_completed(&self) {
         let current = *self.completion_rx.borrow();
         let _ = self.completion_tx.send(current + 1);
     }
 
-    /// Initiate graceful shutdown and wait for all workers to complete
+    /// Cancel the token and wait up to `timeout_duration` for all workers.
+    /// Returns `Err` if the timeout is exceeded (callers should force-exit).
     pub async fn shutdown(&self, timeout_duration: Duration) -> anyhow::Result<()> {
-        info!("Initiating graceful shutdown for {} workers", self.total_workers);
-        
-        // Signal all workers to shutdown
-        if let Err(e) = self.shutdown_tx.send(()) {
-            warn!("Failed to send shutdown signal: {}", e);
-        }
+        info!(
+            total_workers = self.total_workers,
+            "Initiating graceful shutdown"
+        );
+        self.token.cancel();
 
-        // Wait for all workers to complete with timeout
-        let result = timeout(timeout_duration, self.wait_for_completion()).await;
-        
-        match result {
+        match timeout(timeout_duration, self.wait_for_completion()).await {
             Ok(_) => {
                 info!("All workers completed graceful shutdown");
                 Ok(())
             }
             Err(_) => {
-                error!("Shutdown timeout exceeded, some workers may not have completed");
-                Err(anyhow::anyhow!("Shutdown timeout exceeded"))
+                let done = *self.completion_rx.borrow();
+                error!(
+                    completed = done,
+                    total = self.total_workers,
+                    "Shutdown timeout exceeded — forcing exit"
+                );
+                Err(anyhow::anyhow!(
+                    "Shutdown timeout: {}/{} workers completed",
+                    done,
+                    self.total_workers
+                ))
             }
         }
     }
 
     async fn wait_for_completion(&self) {
         let mut rx = self.completion_rx.clone();
-        
-        while *rx.borrow() < self.total_workers {
+        loop {
+            if *rx.borrow() >= self.total_workers {
+                return;
+            }
             if rx.changed().await.is_err() {
-                break;
+                return;
             }
         }
     }
 }
 
-/// Handle for a background worker that supports graceful shutdown
+/// A handle to a spawned background worker.
 pub struct WorkerHandle {
     name: String,
     handle: tokio::task::JoinHandle<()>,
-    coordinator: ShutdownCoordinator,
 }
 
 impl WorkerHandle {
-    pub fn new(
-        name: String,
-        handle: tokio::task::JoinHandle<()>,
-        coordinator: ShutdownCoordinator,
-    ) -> Self {
+    pub fn new(name: impl Into<String>, handle: tokio::task::JoinHandle<()>) -> Self {
         Self {
-            name,
+            name: name.into(),
             handle,
-            coordinator,
         }
     }
 
-    /// Wait for the worker to complete
     pub async fn join(self) -> Result<(), tokio::task::JoinError> {
-        info!("Waiting for worker '{}' to complete", self.name);
+        info!(worker = %self.name, "Waiting for worker to finish");
         let result = self.handle.await;
-        
-        if result.is_ok() {
-            info!("Worker '{}' completed successfully", self.name);
-        } else {
-            error!("Worker '{}' completed with error: {:?}", self.name, result);
+        match &result {
+            Ok(_) => info!(worker = %self.name, "Worker finished cleanly"),
+            Err(e) => error!(worker = %self.name, error = %e, "Worker panicked"),
         }
-        
-        self.coordinator.worker_completed().await;
         result
     }
 
-    /// Abort the worker (force termination)
     pub fn abort(&self) {
-        warn!("Aborting worker '{}'", self.name);
+        warn!(worker = %self.name, "Aborting worker (force)");
         self.handle.abort();
     }
 }
 
-/// Setup signal handlers for graceful shutdown
-pub async fn setup_signal_handlers() -> anyhow::Result<()> {
-    use tokio::signal;
-    
+/// Waits for SIGTERM or SIGINT (cross-platform).
+pub async fn wait_for_signal() {
     #[cfg(unix)]
     {
-        let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())?;
-        let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt())?;
-        
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate()).expect("failed to install SIGTERM handler");
+        let mut sigint = signal(SignalKind::interrupt()).expect("failed to install SIGINT handler");
         tokio::select! {
-            _ = sigterm.recv() => {
-                info!("Received SIGTERM, initiating graceful shutdown");
-            }
-            _ = sigint.recv() => {
-                info!("Received SIGINT, initiating graceful shutdown");
-            }
+            _ = sigterm.recv() => info!("Received SIGTERM"),
+            _ = sigint.recv()  => info!("Received SIGINT"),
         }
     }
-    
-    #[cfg(windows)]
+    #[cfg(not(unix))]
     {
-        let mut ctrl_c = signal::windows::ctrl_c()?;
-        let mut ctrl_break = signal::windows::ctrl_break()?;
-        let mut ctrl_close = signal::windows::ctrl_close()?;
-        let mut ctrl_shutdown = signal::windows::ctrl_shutdown()?;
-        
-        tokio::select! {
-            _ = ctrl_c.recv() => {
-                info!("Received Ctrl+C, initiating graceful shutdown");
-            }
-            _ = ctrl_break.recv() => {
-                info!("Received Ctrl+Break, initiating graceful shutdown");
-            }
-            _ = ctrl_close.recv() => {
-                info!("Received Ctrl+Close, initiating graceful shutdown");
-            }
-            _ = ctrl_shutdown.recv() => {
-                info!("Received shutdown signal, initiating graceful shutdown");
-            }
-        }
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+        info!("Received Ctrl+C");
     }
-    
-    Ok(())
 }
 
 #[cfg(test)]
@@ -167,53 +158,102 @@ mod tests {
     use tokio::time::sleep;
 
     #[tokio::test]
-    async fn test_shutdown_coordinator() {
-        let coordinator = ShutdownCoordinator::new(2);
-        
-        // Spawn two mock workers
-        let coord1 = coordinator.clone();
-        let coord2 = coordinator.clone();
-        
-        let worker1 = tokio::spawn(async move {
-            let mut shutdown_rx = coord1.subscribe();
-            let _ = shutdown_rx.recv().await;
-            sleep(Duration::from_millis(100)).await;
-            coord1.worker_completed().await;
-        });
-        
-        let worker2 = tokio::spawn(async move {
-            let mut shutdown_rx = coord2.subscribe();
-            let _ = shutdown_rx.recv().await;
-            sleep(Duration::from_millis(50)).await;
-            coord2.worker_completed().await;
-        });
-        
-        // Start shutdown
-        let shutdown_result = coordinator.shutdown(Duration::from_secs(1)).await;
-        
-        // Wait for workers
-        let _ = worker1.await;
-        let _ = worker2.await;
-        
-        assert!(shutdown_result.is_ok());
+    async fn test_workers_stop_on_cancellation() {
+        let coord = ShutdownCoordinator::new(2);
+
+        for _ in 0..2 {
+            let token = coord.token();
+            let coord2 = coord.clone();
+            tokio::spawn(async move {
+                token.cancelled().await;
+                sleep(Duration::from_millis(20)).await;
+                coord2.worker_completed();
+            });
+        }
+
+        let result = coord.shutdown(Duration::from_secs(1)).await;
+        assert!(result.is_ok());
     }
 
     #[tokio::test]
-    async fn test_shutdown_timeout() {
-        let coordinator = ShutdownCoordinator::new(1);
-        
-        // Spawn a worker that takes too long
-        let coord = coordinator.clone();
-        let _worker = tokio::spawn(async move {
-            let mut shutdown_rx = coord.subscribe();
-            let _ = shutdown_rx.recv().await;
-            sleep(Duration::from_secs(2)).await; // Takes longer than timeout
-            coord.worker_completed().await;
+    async fn test_shutdown_timeout_forces_exit() {
+        let coord = ShutdownCoordinator::new(1);
+
+        // Worker that never calls worker_completed
+        let token = coord.token();
+        tokio::spawn(async move {
+            token.cancelled().await;
+            sleep(Duration::from_secs(60)).await; // far longer than timeout
         });
-        
-        // Start shutdown with short timeout
-        let shutdown_result = coordinator.shutdown(Duration::from_millis(100)).await;
-        
-        assert!(shutdown_result.is_err());
+
+        let result = coord.shutdown(Duration::from_millis(80)).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_inflight_work_completes_before_shutdown() {
+        let coord = ShutdownCoordinator::new(1);
+        let work_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let work_done2 = work_done.clone();
+
+        let token = coord.token();
+        let coord2 = coord.clone();
+        tokio::spawn(async move {
+            token.cancelled().await;
+            // Simulate finishing in-flight work
+            sleep(Duration::from_millis(50)).await;
+            work_done2.store(true, std::sync::atomic::Ordering::SeqCst);
+            coord2.worker_completed();
+        });
+
+        coord.shutdown(Duration::from_secs(1)).await.unwrap();
+        assert!(work_done.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn test_no_new_work_after_signal() {
+        // Verify that once the token is cancelled, workers stop dequeuing.
+        let coord = ShutdownCoordinator::new(1);
+        let iterations = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let iterations2 = iterations.clone();
+
+        let token = coord.token();
+        let coord2 = coord.clone();
+        tokio::spawn(async move {
+            loop {
+                if token.is_cancelled() {
+                    break;
+                }
+                iterations2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                sleep(Duration::from_millis(10)).await;
+            }
+            coord2.worker_completed();
+        });
+
+        sleep(Duration::from_millis(35)).await;
+        let before = iterations.load(std::sync::atomic::Ordering::SeqCst);
+        coord.shutdown(Duration::from_secs(1)).await.unwrap();
+        let after = iterations.load(std::sync::atomic::Ordering::SeqCst);
+
+        // No new iterations after shutdown
+        assert_eq!(before, after);
+    }
+
+    #[tokio::test]
+    async fn test_multiple_workers_all_complete() {
+        let coord = ShutdownCoordinator::new(3);
+
+        for i in 0..3u64 {
+            let token = coord.token();
+            let coord2 = coord.clone();
+            tokio::spawn(async move {
+                token.cancelled().await;
+                sleep(Duration::from_millis(10 * (i + 1))).await;
+                coord2.worker_completed();
+            });
+        }
+
+        let result = coord.shutdown(Duration::from_secs(1)).await;
+        assert!(result.is_ok());
     }
 }

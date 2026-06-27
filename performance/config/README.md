@@ -13,6 +13,17 @@ Grafana dashboard configuration that provides visual monitoring of key system me
 - **Contract Performance**: Gas costs for different operations
 - **System Health**: Overall service status
 
+### grafana-slo-dashboard.json
+Grafana dashboard for SLO compliance and error budget tracking:
+
+- **Error Budget Status**: Remaining budget per SLO
+- **Burn Rate**: How fast error budget is being consumed
+- **SLO Compliance**: Percentage of time meeting targets
+- **Trend Analysis**: Historical performance trends
+
+### grafana-provisioning.yaml
+Grafana provisioning configuration for automatic dashboard loading from the repository.
+
 ### alerts.yaml
 Prometheus/Alertmanager alert rules for critical system thresholds:
 
@@ -36,12 +47,131 @@ Performance threshold definitions used by testing and monitoring:
 
 ## Setup
 
-### Grafana Dashboard
+### Grafana Dashboard Provisioning
+
+Dashboards are version-controlled and automatically loaded by Grafana on startup.
+
+#### Docker Compose Setup
+
+```yaml
+services:
+  grafana:
+    image: grafana/grafana:latest
+    volumes:
+      - ./performance/config/grafana-provisioning.yaml:/etc/grafana/provisioning/dashboards/dashboards.yaml
+      - ./performance/config/:/var/lib/grafana/dashboards/
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    ports:
+      - "3000:3000"
+```
+
+#### Kubernetes Setup
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-provisioning
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: 'PredictIQ Dashboards'
+        orgId: 1
+        folder: 'Performance'
+        type: file
+        disableDeletion: false
+        updateIntervalSeconds: 10
+        allowUiUpdates: true
+        options:
+          path: /var/lib/grafana/dashboards
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+spec:
+  template:
+    spec:
+      containers:
+      - name: grafana
+        image: grafana/grafana:latest
+        volumeMounts:
+        - name: provisioning
+          mountPath: /etc/grafana/provisioning/dashboards
+        - name: dashboards
+          mountPath: /var/lib/grafana/dashboards
+      volumes:
+      - name: provisioning
+        configMap:
+          name: grafana-provisioning
+      - name: dashboards
+        configMap:
+          name: grafana-dashboards
+```
+
+### Exporting Dashboard Changes
+
+When you make changes to dashboards in the Grafana UI, export them back to the repository:
+
+```bash
+# Set your Grafana API key
+export GRAFANA_API_KEY=your-api-key-here
+
+# Export dashboards
+node ../scripts/export-grafana-dashboards.js
+
+# Review changes
+git diff grafana-*.json
+
+# Commit and push
+git add grafana-*.json
+git commit -m "chore: update Grafana dashboards"
+git push
+```
+
+#### Getting a Grafana API Key
+
+1. Log in to Grafana as an admin
+2. Navigate to Configuration → API Keys
+3. Click "New API Key"
+4. Set Role to "Admin"
+5. Copy the generated key
+
+#### Workflow for Dashboard Updates
+
+1. **Make changes in Grafana UI**
+   - Add panels, modify queries, adjust colors, etc.
+   - Test the dashboard thoroughly
+
+2. **Export to repository**
+   ```bash
+   GRAFANA_API_KEY=your-key node ../scripts/export-grafana-dashboards.js
+   ```
+
+3. **Review and commit**
+   ```bash
+   git diff grafana-*.json  # Review changes
+   git add grafana-*.json
+   git commit -m "feat: add new performance panel to dashboard"
+   ```
+
+4. **Deploy**
+   - Push to main branch
+   - Grafana will automatically reload dashboards on next startup
+   - Or manually reload via Grafana UI
+
+### Manual Dashboard Import
+
+If provisioning is not available:
 
 1. Import the dashboard into Grafana:
    ```bash
    curl -X POST http://grafana:3000/api/dashboards/db \
      -H "Content-Type: application/json" \
+     -H "Authorization: Bearer YOUR_API_KEY" \
      -d @grafana-dashboard.json
    ```
 

@@ -1,9 +1,19 @@
 # Next.js build output
 frontend/.next/
+out/
+dist/
+build/
 
 # Dependencies
 node_modules/
 **/node_modules/
+
+# Logs and local diagnostics
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 
 /target
 **/*.rs.bk
@@ -11,6 +21,11 @@ node_modules/
 .env.*
 !.env.example
 .kiro/
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+*.swo
 
 # E2E Test Artifacts
 frontend/playwright-report/
@@ -21,6 +36,18 @@ frontend/playwright/.cache/
 # Test snapshots
 **/__snapshots__/
 **/*.snap
+**/test-snapshots/
+**/testsnapshots/
+**/testSnapshots/
+**/*.snap.new
+
+# Coverage and cache output
+coverage/
+**/coverage/
+.nyc_output/
+**/.cache/
+.turbo/
+.pytest_cache/
 
 # Rust build artifacts
 contracts/**/target/

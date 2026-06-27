@@ -1,0 +1,15 @@
+{
+  "_comment": "Baseline median nanoseconds per benchmark. Auto-updated by the save-api-bench-baseline CI job on every push to main. Edit manually only to reset a runaway baseline.",
+  "api_key_verify_constant_time/early_mismatch": 25.0,
+  "api_key_verify_constant_time/late_mismatch": 25.0,
+  "api_key_verify_constant_time/exact_match": 25.0,
+  "api_key_verify_constant_time/wrong_length_short": 15.0,
+  "api_key_verify_constant_time/wrong_length_long": 30.0,
+  "api_key_verify_constant_time/no_keys": 5.0,
+  "api_key_verify_scalability/keys_1": 10.0,
+  "api_key_verify_scalability/keys_10": 50.0,
+  "api_key_verify_scalability/keys_100": 400.0,
+  "api_key_verify_scalability/keys_1000": 4000.0,
+  "invalidation_tag/market_resolved_tag_keys": 80.0,
+  "invalidation_tag/market_resolved_manual_keys": 60.0
+}

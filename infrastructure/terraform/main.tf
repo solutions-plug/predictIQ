@@ -7,13 +7,9 @@ terraform {
     }
   }
 
-  backend "s3" {
-    bucket         = "predictiq-terraform-state"
-    key            = "prod/terraform.tfstate"
-    region         = "us-east-1"
-    encrypt        = true
-    dynamodb_table = "terraform-locks"
-  }
+  # Backend configuration is provided via -backend-config flag during init
+  # See backend-config.hcl for details
+  backend "s3" {}
 }
 
 provider "aws" {

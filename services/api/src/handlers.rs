@@ -1,3 +1,4 @@
+use crate::content_type::require_json_content_type;
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -14,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::ValidateEmail;
 
-use crate::{blockchain::HealthStatus, cache::keys, db::DbError, email::webhook::sendgrid_webhook_handler, pagination::{PaginatedResponse, PaginationQuery}, AppState};
+use crate::{blockchain::HealthStatus, cache::{keys, InvalidationTag}, db::DbError, email::webhook::sendgrid_webhook_handler, pagination::{PaginatedResponse, PaginationQuery}, AppState};
 
 #[derive(Debug, Serialize)]
 pub struct ApiError {
@@ -26,9 +27,10 @@ pub struct ApiError {
 
 impl ApiError {
     pub fn internal(err: anyhow::Error) -> Self {
+        tracing::error!(error = %err, "internal server error");
         Self {
             code: "INTERNAL_ERROR",
-            message: err.to_string(),
+            message: "An internal error occurred.".to_string(),
             status: StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -82,8 +84,17 @@ impl IntoResponse for ApiError {
 
 fn into_api_error(err: anyhow::Error) -> ApiError {
     if let Some(db_err) = err.downcast_ref::<DbError>() {
-        if matches!(db_err, DbError::Timeout) {
-            return ApiError::service_unavailable("database query timed out");
+        match db_err {
+            DbError::Timeout => {
+                return ApiError::service_unavailable("database query timed out");
+            }
+            DbError::PoolExhausted => {
+                return ApiError::service_unavailable("database connection pool exhausted");
+            }
+            DbError::ConstraintViolation(msg) => {
+                return ApiError::conflict(msg.clone());
+            }
+            DbError::Other(_) => {}
         }
     }
     ApiError::internal(err)
@@ -208,7 +219,7 @@ fn is_disposable_email(email: &str) -> bool {
         .unwrap_or(false)
 }
 
-use crate::security::extract_client_ip;
+use crate::security::extract_client_ip_cidrs;
 
 pub async fn newsletter_subscribe(
     State(state): State<Arc<AppState>>,
@@ -216,25 +227,12 @@ pub async fn newsletter_subscribe(
     connect_info: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>,
     Json(payload): Json<NewsletterSubscribeRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let ip = extract_client_ip(
+    let ip = extract_client_ip_cidrs(
         &headers,
         connect_info.as_ref(),
-        !state.config.trusted_proxy_cidrs.is_empty(),
+        state.config.trust_proxy,
+        &state.config.trusted_proxy_cidrs,
     );
-    let allowed = state
-        .newsletter_rate_limiter
-        .allow(&ip, 5, Duration::from_secs(15 * 60))
-        .await;
-
-    if !allowed {
-        return Ok((
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(NewsletterResponse {
-                success: false,
-                message: "Too many requests, please try again later.".to_string(),
-            }),
-        ));
-    }
 
     let email = match normalized_email(&payload.email) {
         Some(value) => value,
@@ -332,7 +330,7 @@ pub async fn newsletter_subscribe(
     tracing::info!(request_id, email = %email, source = %source, ip = %ip, "newsletter subscription attempt");
 
     Ok((
-        StatusCode::OK,
+        StatusCode::ACCEPTED,
         Json(NewsletterResponse {
             success: true,
             message: "Please check your email to confirm your subscription.".to_string(),
@@ -432,11 +430,12 @@ pub async fn newsletter_gdpr_export(
     connect_info: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>,
     Query(query): Query<NewsletterExportQuery>,
 ) -> Result<Response, ApiError> {
-    use crate::security::extract_client_ip;
-    let ip = extract_client_ip(
+    use crate::security::extract_client_ip_cidrs;
+    let ip = extract_client_ip_cidrs(
         &headers,
         connect_info.as_ref(),
-        !state.config.trusted_proxy_cidrs.is_empty(),
+        state.config.trust_proxy,
+        &state.config.trusted_proxy_cidrs,
     );
     let allowed_ip = state
         .newsletter_rate_limiter
@@ -715,40 +714,21 @@ pub async fn resolve_market(
     State(state): State<Arc<AppState>>,
     Path(market_id): Path<i64>,
     Json(payload): Json<ResolveMarketRequest>,
-) -> Result<impl IntoResponse, (StatusCode, Json<ApiError>)> {
-    let map_err = |e: anyhow::Error| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError { code: "INTERNAL_ERROR", message: e.to_string(), status: StatusCode::INTERNAL_SERVER_ERROR }),
-        )
-    };
-
+) -> Result<impl IntoResponse, ApiError> {
     // 1. Persist the resolution to the database.
     state
         .db
         .resolve_market(market_id, payload.outcome_index)
         .await
-        .map_err(map_err)?;
+        .map_err(into_api_error)?;
 
-    // 2. Invalidate only the keys affected by this market's resolution.
-    //    Broad prefix wildcards (api:v1:* / dbq:v1:*) are intentionally avoided
-    //    to keep the blast radius small.
-    let network = state.config.network_name();
-    let featured_limit = state.config.featured_limit;
-    let keys_to_del = [
-        keys::chain_market(market_id),
-        keys::chain_oracle_result(network, market_id),
-        keys::api_statistics(),
-        keys::api_featured_markets(),
-        keys::dbq_statistics(),
-        keys::dbq_featured_markets(featured_limit),
-    ];
-
-    let mut invalidated = 0usize;
-    for key in &keys_to_del {
-        state.cache.del(key).await.map_err(map_err)?;
-        invalidated += 1;
-    }
+    // 2. Invalidate only the keys affected by this market's resolution via tag.
+    let tag = InvalidationTag::MarketResolved {
+        market_id,
+        network: state.config.network_name().to_owned(),
+        featured_limit: state.config.featured_limit,
+    };
+    let invalidated = state.cache.invalidate_tag(&tag).await.map_err(into_api_error)?;
 
     state
         .metrics
@@ -765,6 +745,7 @@ pub async fn resolve_market(
 }
 
 pub async fn metrics(State(state): State<Arc<AppState>>) -> Result<impl IntoResponse, ApiError> {
+    state.db.record_pool_metrics();
     let body = state.metrics.render().map_err(into_api_error)?;
     Ok((
         StatusCode::OK,
@@ -1005,15 +986,52 @@ pub async fn email_queue_stats(
         .await
         .map_err(into_api_error)?;
 
+    state.metrics.set_dlq_size(stats.dead_letter as i64);
+
     Ok((StatusCode::OK, Json(stats)))
+}
+
+pub async fn email_dead_letter_list(
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, ApiError> {
+    let ids = state
+        .email_queue
+        .list_dead_letter()
+        .await
+        .map_err(into_api_error)?;
+
+    Ok((StatusCode::OK, Json(serde_json::json!({ "jobs": ids, "count": ids.len() }))))
+}
+
+pub async fn email_dead_letter_requeue(
+    State(state): State<Arc<AppState>>,
+    Path(job_id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    let requeued = state
+        .email_queue
+        .requeue_dead_letter(job_id)
+        .await
+        .map_err(into_api_error)?;
+
+    if requeued {
+        Ok((StatusCode::OK, Json(serde_json::json!({ "requeued": true, "job_id": job_id }))))
+    } else {
+        Err(ApiError::not_found(format!("Job {job_id} not found in dead-letter set")))
+    }
 }
 
 pub async fn sendgrid_webhook(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(events): Json<Vec<crate::email::webhook::SendGridEvent>>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    sendgrid_webhook_handler(State(Arc::new(state.webhook_handler.clone())), headers, Json(events)).await
+) -> Result<impl IntoResponse, ApiError> {
+    sendgrid_webhook_handler(State(Arc::new(state.webhook_handler.clone())), headers, Json(events))
+        .await
+        .map_err(|(status, msg)| ApiError {
+            code: "WEBHOOK_ERROR",
+            message: msg,
+            status,
+        })
 }
 
 /// Query audit logs with filters

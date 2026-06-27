@@ -78,6 +78,7 @@ fn create_market(env: &Env, client: &PredictIQClient, token: &Address) -> u64 {
         min_responses: Some(1),
         max_staleness_seconds: 3600,
         max_confidence_bps: 200,
+        strike_price: None,
     };
     client.create_market(
         &Address::generate(env),
@@ -416,6 +417,64 @@ fn prop_error_codes_are_mutually_exclusive() {
             }
             // Other errors (e.g. transfer failure) are acceptable for invalid inputs
             _ => {}
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Property 10 — fee calculation on maximum i128 bet amounts never panics
+//
+// place_bet with i128::MAX as amount must either succeed or return a typed
+// contract error (Overflow / InvalidAmount / InsufficientBalance), never an
+// unhandled panic.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn prop_max_i128_bet_amount_does_not_panic() {
+    let (env, client, _admin, token) = setup();
+    let market_id = create_market(&env, &client, &token);
+
+    env.ledger().set_timestamp(0);
+
+    // Mint i128::MAX to the user so the transfer itself can't fail on balance
+    let user = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token).mint(&user, &i128::MAX);
+
+    let result = client.try_place_bet(&user, &market_id, &0, &i128::MAX, &token, &None);
+
+    // Must not panic — any typed error or success is acceptable
+    match result {
+        Ok(_) => {}
+        Err(Ok(_)) => {} // typed contract error (e.g. Overflow, InsufficientBalance)
+        Err(Err(_)) => panic!("unexpected host panic on i128::MAX bet amount"),
+    }
+}
+
+#[test]
+fn prop_near_max_i128_fee_calculation_does_not_panic() {
+    let (env, client, _admin, token) = setup();
+
+    // Re-initialize with a non-zero fee so fee arithmetic is exercised
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &500); // 5% fee in bps
+
+    let market_id = create_market(&env, &client, &token);
+    env.ledger().set_timestamp(0);
+
+    let mut rng = Lcg(0xDEAD_C0DE_FEED_FACE);
+
+    for _ in 0..20 {
+        // Amounts near i128::MAX — these should trigger Overflow in fee math
+        let amount = rng.next_i128_range(i128::MAX / 2, i128::MAX);
+        let user = Address::generate(&env);
+        token::StellarAssetClient::new(&env, &token).mint(&user, &amount);
+
+        let result = client.try_place_bet(&user, &market_id, &0, &amount, &token, &None);
+
+        match result {
+            Ok(_) => {}
+            Err(Ok(_)) => {} // typed contract error is the expected path for overflow
+            Err(Err(_)) => panic!("host panic on near-max i128 amount={amount}"),
         }
     }
 }

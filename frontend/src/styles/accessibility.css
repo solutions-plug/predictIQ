@@ -428,6 +428,80 @@ html.dark-mode td {
   border-color: #4a4a4a;
 }
 
+/* Manual light mode class (overrides dark system preference) */
+html.light-mode,
+html.light-mode body {
+  background-color: #ffffff;
+  color: #222222;
+}
+
+html.light-mode a {
+  color: #0066cc;
+}
+
+html.light-mode a:hover {
+  color: #004499;
+}
+
+html.light-mode a:visited {
+  color: #551a8b;
+}
+
+html.light-mode button {
+  background-color: #0066cc;
+  border-color: #0066cc;
+  color: #ffffff;
+}
+
+html.light-mode button:hover {
+  background-color: #0052a3;
+  border-color: #0052a3;
+}
+
+html.light-mode input,
+html.light-mode textarea,
+html.light-mode select {
+  background-color: #ffffff;
+  color: #222222;
+  border-color: #666666;
+}
+
+html.light-mode input:focus,
+html.light-mode textarea:focus,
+html.light-mode select:focus {
+  border-color: #0066cc;
+  background-color: #ffffff;
+}
+
+html.light-mode .error-message {
+  color: #d32f2f;
+}
+
+html.light-mode input[aria-invalid="true"],
+html.light-mode textarea[aria-invalid="true"] {
+  border-color: #d32f2f;
+}
+
+html.light-mode h1,
+html.light-mode h2,
+html.light-mode h3,
+html.light-mode h4,
+html.light-mode h5,
+html.light-mode h6,
+html.light-mode label {
+  color: #222222;
+}
+
+html.light-mode th {
+  background-color: #f5f5f5;
+  border-color: #dddddd;
+  color: #222222;
+}
+
+html.light-mode td {
+  border-color: #dddddd;
+}
+
 /* Dark mode toggle button */
 .dark-mode-toggle {
   background: none;

@@ -178,7 +178,7 @@ describe("sanitizeInput", () => {
   });
 
   it("strips SSML/XML tags", () => {
-    expect(sanitizeInput("<speak>Hello <break time='1s'/> world</speak>")).toBe("Hello  world");
+    expect(sanitizeInput("<speak>Hello <break time='1s'/> world</speak>")).toBe("Hello world");
   });
 
   it("strips nested tags", () => {

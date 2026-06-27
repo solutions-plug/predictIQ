@@ -2,6 +2,7 @@ import http from 'k6/http';
 import { check, sleep } from 'k6';
 import { Rate, Trend } from 'k6/metrics';
 import { randomIntBetween } from 'https://jslib.k6.io/k6-utils/1.2.0/index.js';
+import { getThresholdsForTest } from './slo-thresholds.js';
 
 const errorRate = new Rate('errors');
 const responseTime = new Trend('response_time');
@@ -18,10 +19,7 @@ export const options = {
     { duration: '5m', target: 400 },   // Stay at 400
     { duration: '10m', target: 0 },    // Ramp down
   ],
-  thresholds: {
-    errors: ['rate<0.05'],  // Allow higher error rate in stress test
-    http_req_duration: ['p(95)<500', 'p(99)<1000'],
-  },
+  thresholds: getThresholdsForTest('stress'),
 };
 
 const BASE_URL = __ENV.API_URL || 'http://localhost:8080';

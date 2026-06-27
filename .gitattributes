@@ -1,0 +1,12 @@
+# Git LFS configuration for baseline screenshots
+frontend/e2e/**/__snapshots__/*.png filter=lfs diff=lfs merge=lfs -text
+frontend/e2e/**/*.png filter=lfs diff=lfs merge=lfs -text
+
+# Standard text file endings
+*.js text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf

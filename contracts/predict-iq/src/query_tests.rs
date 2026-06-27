@@ -25,6 +25,7 @@ fn test_paginated_markets() {
             min_responses: None,
             max_staleness_seconds: 3600,
             max_confidence_bps: 100,
+        strike_price: None,
         };
         
         client.create_market(
@@ -83,6 +84,7 @@ fn test_paginated_archived_markets() {
             min_responses: None,
             max_staleness_seconds: 3600,
             max_confidence_bps: 100,
+        strike_price: None,
         };
         
         let id = client.create_market(
@@ -137,6 +139,7 @@ fn test_status_based_pagination() {
             min_responses: None,
             max_staleness_seconds: 3600,
             max_confidence_bps: 100,
+        strike_price: None,
         };
         client.create_market(&creator, &String::from_str(&e, "Active"), &options, &100, &200, &oracle_cfg, &MarketTier::Basic, &native_token, &0, &0);
     }

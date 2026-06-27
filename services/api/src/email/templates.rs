@@ -33,7 +33,46 @@ impl EmailTemplateEngine {
             include_str!("../../templates/welcome_email.html"),
         )?;
 
-        Ok(Self { handlebars })
+        let engine = Self { handlebars };
+
+        // Validate all templates at startup by rendering with representative data.
+        // This catches missing/misspelled variable references before the first send.
+        engine.validate_all_templates()?;
+
+        Ok(engine)
+    }
+
+    /// Render each registered template with representative data to catch syntax
+    /// errors and missing variable references at startup rather than at send time.
+    fn validate_all_templates(&self) -> Result<()> {
+        let fixtures: &[(&str, Value)] = &[
+            ("newsletter_confirmation", serde_json::json!({
+                "confirm_url": "https://example.com/confirm?token=startup-check",
+                "email": "startup@example.com"
+            })),
+            ("waitlist_confirmation", serde_json::json!({
+                "email": "startup@example.com"
+            })),
+            ("contact_form_auto_response", serde_json::json!({
+                "name": "Startup Check",
+                "subject": "Startup Check",
+                "message": "Startup validation render."
+            })),
+            ("welcome_email", serde_json::json!({
+                "name": "Startup Check",
+                "dashboard_url": "https://example.com/dashboard",
+                "help_url": "https://example.com/help",
+                "unsubscribe_url": "https://example.com/unsubscribe"
+            })),
+        ];
+
+        for (name, data) in fixtures {
+            self.handlebars
+                .render(name, data)
+                .with_context(|| format!("Template validation failed for '{name}': invalid syntax or missing variable"))?;
+        }
+
+        Ok(())
     }
 
     pub fn render(&self, template_name: &str, data: &Value) -> Result<String> {

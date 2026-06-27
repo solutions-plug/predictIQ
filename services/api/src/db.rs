@@ -14,7 +14,14 @@ use crate::{
 /// Errors that can be returned by [`Database`] methods.
 #[derive(Debug)]
 pub enum DbError {
+    /// A query exceeded the per-operation timeout.
     Timeout,
+    /// The connection pool had no connections available within the acquire timeout.
+    PoolExhausted,
+    /// A database constraint was violated (unique, foreign-key, not-null, check).
+    /// The inner string is the database error message for logging.
+    ConstraintViolation(String),
+    /// Any other database error.
     Other(anyhow::Error),
 }
 
@@ -22,6 +29,10 @@ impl std::fmt::Display for DbError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DbError::Timeout => write!(f, "database query timed out"),
+            DbError::PoolExhausted => write!(f, "database connection pool exhausted"),
+            DbError::ConstraintViolation(msg) => {
+                write!(f, "database constraint violation: {msg}")
+            }
             DbError::Other(e) => write!(f, "{e}"),
         }
     }
@@ -31,7 +42,19 @@ impl std::error::Error for DbError {}
 
 impl From<sqlx::Error> for DbError {
     fn from(e: sqlx::Error) -> Self {
-        DbError::Other(anyhow::Error::from(e))
+        match &e {
+            sqlx::Error::PoolTimedOut => DbError::PoolExhausted,
+            sqlx::Error::Database(db_err) => {
+                // PostgreSQL constraint violation SQLSTATE codes start with "23"
+                // (23000 integrity constraint, 23505 unique violation, etc.).
+                if db_err.code().map(|c| c.starts_with("23")).unwrap_or(false) {
+                    DbError::ConstraintViolation(db_err.message().to_string())
+                } else {
+                    DbError::Other(anyhow::Error::from(e))
+                }
+            }
+            _ => DbError::Other(anyhow::Error::from(e)),
+        }
     }
 }
 
@@ -98,16 +121,36 @@ impl Database {
         self.pool.clone()
     }
 
+    /// Snapshot pool size/idle into Prometheus gauges.
+    /// Call this just before rendering `/metrics` so the values are current.
+    pub fn record_pool_metrics(&self) {
+        self.metrics.record_pool_metrics(self.pool.size(), self.pool.num_idle());
+    }
+
     pub async fn new(
         database_url: &str,
         cache: RedisCache,
         metrics: Metrics,
         pool_config: &crate::config::DbPoolConfig,
     ) -> anyhow::Result<Self> {
+        let stmt_timeout_ms = pool_config.statement_timeout_ms;
+        let lock_timeout_ms = pool_config.lock_timeout_ms;
+
         let mut builder = PgPoolOptions::new()
             .max_connections(pool_config.max_connections)
             .min_connections(pool_config.min_connections)
-            .acquire_timeout(pool_config.acquire_timeout);
+            .acquire_timeout(pool_config.acquire_timeout)
+            .after_connect(move |conn, _meta| {
+                Box::pin(async move {
+                    sqlx::query(&format!("SET statement_timeout = {stmt_timeout_ms}"))
+                        .execute(&mut *conn)
+                        .await?;
+                    sqlx::query(&format!("SET lock_timeout = {lock_timeout_ms}"))
+                        .execute(&mut *conn)
+                        .await?;
+                    Ok(())
+                })
+            });
 
         if let Some(idle) = pool_config.idle_timeout {
             builder = builder.idle_timeout(idle);
@@ -335,13 +378,25 @@ impl Database {
     }
 
     /// Remove pending (unconfirmed) subscriptions whose token has expired.
-    pub async fn newsletter_delete_expired_pending(&self, token_ttl_secs: u64) -> anyhow::Result<u64> {
+    /// `batch_size` caps the number of rows deleted per call to prevent long
+    /// table locks on large datasets; callers should loop until 0 rows are
+    /// returned if they need to drain the full backlog.
+    pub async fn newsletter_delete_expired_pending(
+        &self,
+        token_ttl_secs: u64,
+        batch_size: u64,
+    ) -> anyhow::Result<u64> {
         let result = self.with_timeout("newsletter_delete_expired_pending", sqlx::query(
             "DELETE FROM newsletter_subscribers
-             WHERE confirmed = FALSE
-               AND created_at <= NOW() - ($1 || ' seconds')::INTERVAL",
+             WHERE id IN (
+                 SELECT id FROM newsletter_subscribers
+                 WHERE confirmed = FALSE
+                   AND created_at <= NOW() - ($1 || ' seconds')::INTERVAL
+                 LIMIT $2
+             )",
         )
         .bind(token_ttl_secs as i64)
+        .bind(batch_size as i64)
         .execute(&self.pool)).await.map_err(anyhow::Error::from)?;
 
         Ok(result.rows_affected())
@@ -478,6 +533,19 @@ impl Database {
     }
 
     // Email event tracking
+    /// Create an email event record.
+    ///
+    /// ## PII Considerations
+    ///
+    /// The `recipient` field contains a personally identifiable email address.
+    /// This is stored for analytics purposes: to correlate events with recipients,
+    /// calculate delivery success rates, and track engagement per email domain.
+    ///
+    /// Important:
+    /// - The email_events table should be protected from unauthorized access
+    /// - Analytics queries should anonymize or filter recipient data for reports
+    /// - Deletion policies must align with privacy regulations (GDPR, etc)
+    /// - Consider hashing or tokenizing recipient emails in analytics aggregates
     pub async fn email_create_event(
         &self,
         job_id: Option<uuid::Uuid>,
@@ -630,8 +698,30 @@ impl Database {
         Ok(analytics)
     }
 
-    /// Stub: resolve a market outcome. Full implementation requires a markets table.
-    pub async fn resolve_market(&self, _market_id: i64, _outcome_index: u32) -> anyhow::Result<()> {
+    /// Resolve a market by persisting the winning outcome to the database.
+    ///
+    /// Returns an error if the market does not exist or is not in `active` status.
+    pub async fn resolve_market(&self, market_id: i64, outcome_index: u32) -> anyhow::Result<()> {
+        let rows_affected = self
+            .with_timeout(
+                "resolve_market",
+                sqlx::query(
+                    "UPDATE markets \
+                     SET status = 'resolved', outcome_index = $1, resolved_at = NOW() \
+                     WHERE id = $2 AND status = 'active'",
+                )
+                .bind(outcome_index as i32)
+                .bind(market_id)
+                .execute(&self.pool),
+            )
+            .await
+            .map_err(anyhow::Error::from)?
+            .rows_affected();
+
+        if rows_affected == 0 {
+            anyhow::bail!("market {market_id} not found or not in active status");
+        }
+
         Ok(())
     }
 
@@ -668,5 +758,42 @@ impl Database {
         .bind(timestamp as f64)
         .fetch_one(&self.pool)).await.unwrap_or(0);
         Ok(count > 0)
+    }
+}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn db_error_timeout_display() {
+        let e = DbError::Timeout;
+        assert_eq!(e.to_string(), "database query timed out");
+    }
+
+    #[test]
+    fn db_error_pool_exhausted_display() {
+        let e = DbError::PoolExhausted;
+        assert_eq!(e.to_string(), "database connection pool exhausted");
+    }
+
+    #[test]
+    fn db_error_constraint_violation_display() {
+        let e = DbError::ConstraintViolation("duplicate key value".to_string());
+        assert!(e.to_string().contains("constraint violation"));
+        assert!(e.to_string().contains("duplicate key value"));
+    }
+
+    #[test]
+    fn from_sqlx_pool_timed_out_maps_to_pool_exhausted() {
+        let e = DbError::from(sqlx::Error::PoolTimedOut);
+        assert!(matches!(e, DbError::PoolExhausted));
+    }
+
+    #[test]
+    fn from_sqlx_other_maps_to_other() {
+        let e = DbError::from(sqlx::Error::RowNotFound);
+        assert!(matches!(e, DbError::Other(_)));
     }
 }

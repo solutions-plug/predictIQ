@@ -99,7 +99,11 @@ pub fn withdraw_refund(
             &deposit,
         )?;
         e.events().publish(
-            (Symbol::new(e, "deposit_refunded"), market_id, bettor.clone()),
+            (
+                Symbol::new(e, "deposit_refunded"),
+                market_id,
+                bettor.clone(),
+            ),
             deposit,
         );
         // If the creator also placed bets, fall through to refund those too.
@@ -114,7 +118,10 @@ pub fn withdraw_refund(
     // Gross refund = net amount + fee that was deducted at bet time.
     // The bettor paid `amount` originally; the contract kept `fee_paid` as
     // protocol revenue. On cancellation both must be returned.
-    let refund_amount = bet.amount.checked_add(bet.fee_paid).ok_or(crate::errors::ErrorCode::ArithmeticOverflow)?;
+    let refund_amount = bet
+        .amount
+        .checked_add(bet.fee_paid)
+        .ok_or(crate::errors::ErrorCode::ArithmeticOverflow)?;
     let fee_paid = bet.fee_paid;
     e.storage().persistent().remove(&bet_key);
 
@@ -123,8 +130,15 @@ pub fn withdraw_refund(
 
     // Reverse any referral reward that was credited when this bet was placed.
     // The referrer only earns rewards from markets that complete — not cancelled ones.
-    if let Some(referrer) = crate::modules::bets::get_bet_referrer(e, market_id, bettor.clone(), outcome) {
-        crate::modules::fees::reverse_referral_reward(e, &referrer, &market.token_address, fee_paid);
+    if let Some(referrer) =
+        crate::modules::bets::get_bet_referrer(e, market_id, bettor.clone(), outcome)
+    {
+        crate::modules::fees::reverse_referral_reward(
+            e,
+            &referrer,
+            &market.token_address,
+            fee_paid,
+        );
         crate::modules::bets::remove_bet_referrer(e, market_id, &bettor, outcome);
     }
 

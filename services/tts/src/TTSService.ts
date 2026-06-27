@@ -42,6 +42,7 @@ export interface TTSJob {
   error?: string;
   createdAt: Date;
   updatedAt: Date;
+  bypassCache?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -490,13 +491,15 @@ export class TTSService {
    * Enqueue a TTS job and return its ID immediately.
    * @param credential API key or JWT Bearer token (required when auth is configured).
    * @param rateLimitKey IP address or user ID for rate limiting (e.g. "ip:1.2.3.4" or "user:abc").
+   * @param bypassCache If true, skip cache lookup and always generate fresh audio.
    */
   enqueue(
     text: string,
     voice: TTSVoice,
     provider?: TTSProvider,
     credential?: string,
-    rateLimitKey?: string
+    rateLimitKey?: string,
+    bypassCache?: boolean
   ): string {
     if (this.config.auth) authenticate(credential, this.config.auth);
 
@@ -517,6 +520,7 @@ export class TTSService {
       status: "pending",
       createdAt: new Date(),
       updatedAt: new Date(),
+      bypassCache: bypassCache || false,
     };
     jobStore.set(id, job);
 
@@ -545,15 +549,17 @@ export class TTSService {
   /**
    * Synchronous generation — awaits completion and returns the output path.
    * @param rateLimitKey IP address or user ID for rate limiting.
+   * @param bypassCache If true, skip cache lookup and always generate fresh audio.
    */
   async generate(
     text: string,
     voice: TTSVoice,
     provider?: TTSProvider,
     credential?: string,
-    rateLimitKey?: string
+    rateLimitKey?: string,
+    bypassCache?: boolean
   ): Promise<string> {
-    const id = this.enqueue(text, voice, provider, credential, rateLimitKey);
+    const id = this.enqueue(text, voice, provider, credential, rateLimitKey, bypassCache);
     return this._waitForJob(id);
   }
 
@@ -586,7 +592,7 @@ export class TTSService {
     job.status = "processing";
     job.updatedAt = new Date();
 
-    const cacheKey = this.cache
+    const cacheKey = this.cache && !job.bypassCache
       ? AudioCache.key(job.text, job.voice.voiceId, job.provider)
       : null;
 

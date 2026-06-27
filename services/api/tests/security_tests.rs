@@ -10,7 +10,7 @@ mod tests {
         Router,
     };
     use predictiq_api::security::{
-        ip_whitelist_middleware, sanitize, signing, IpWhitelist, RateLimitConfig, RateLimiter, TrustProxy,
+        ip_whitelist_middleware, sanitize, signing, ApiKeyAuth, IpWhitelist, MetricsAuthConfig, RateLimitConfig, RateLimiter, TrustProxy,
     };
     use tower::ServiceExt;
 
@@ -377,5 +377,59 @@ mod tests {
         assert!(sanitize::contains_sql_injection("Union Select id FROM t"));
         assert!(sanitize::contains_sql_injection("JAVASCRIPT:alert(1)"));
         assert!(sanitize::contains_sql_injection("ONERROR=x"));
+    }
+
+    // ── metrics_auth_middleware — HTTP-level tests ────────────────────────────
+
+    fn metrics_app(public: bool, allowlist: Vec<&str>, keys: Vec<&str>) -> Router {
+        use predictiq_api::security::metrics_auth_middleware;
+        let config = Arc::new(MetricsAuthConfig::new(
+            public,
+            allowlist.iter().filter_map(|s| s.parse().ok()).collect(),
+            Arc::new(ApiKeyAuth::new(keys.iter().map(|s| s.to_string()).collect())),
+        ));
+        Router::new()
+            .route("/metrics", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(config, metrics_auth_middleware))
+    }
+
+    async fn call_metrics(app: Router, api_key: Option<&str>) -> StatusCode {
+        let mut builder = Request::builder().uri("/metrics");
+        if let Some(k) = api_key {
+            builder = builder.header("x-api-key", k);
+        }
+        app.oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn metrics_public_mode_no_key_required() {
+        assert_eq!(call_metrics(metrics_app(true, vec![], vec!["s"]), None).await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn metrics_no_key_returns_unauthorized() {
+        assert_eq!(call_metrics(metrics_app(false, vec![], vec!["s"]), None).await, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn metrics_valid_key_returns_ok() {
+        assert_eq!(call_metrics(metrics_app(false, vec![], vec!["s"]), Some("s")).await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn metrics_wrong_key_returns_unauthorized() {
+        assert_eq!(call_metrics(metrics_app(false, vec![], vec!["s"]), Some("bad")).await, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn metrics_ip_not_in_allowlist_returns_forbidden() {
+        // allowlist = 10.0.0.1 only; request has no ConnectInfo → "unknown" → rejected
+        assert_eq!(
+            call_metrics(metrics_app(false, vec!["10.0.0.1"], vec!["s"]), Some("s")).await,
+            StatusCode::FORBIDDEN,
+        );
     }
 }

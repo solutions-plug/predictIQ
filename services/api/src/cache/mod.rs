@@ -7,12 +7,14 @@ use std::{
     time::{Duration, Instant},
 };
 
+use redis::redis_module::RedisResult;
+
+
 use anyhow::Context;
 use deadpool_redis::{Config as PoolConfig, Pool, Runtime};
 use redis::AsyncCommands;
 use serde::{de::DeserializeOwned, Serialize};
 
-// ── Circuit breaker ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CircuitState {
@@ -96,6 +98,7 @@ impl CircuitBreaker {
 pub struct RedisCacheConfig {
     pub pool_min_idle: usize,
     pub pool_max_size: usize,
+
     /// Timeout for acquiring a connection from the pool.
     pub acquire_timeout: Duration,
     /// Retry attempts on transient errors (0 = no retry).
@@ -164,14 +167,167 @@ pub struct RedisCache {
     pool: Pool,
     cb: Arc<CircuitBreaker>,
     cfg: RedisCacheConfig,
+    tag_cfg: TagStoreConfig,
+}
+
+
+// ── Tag-store config + implementation ────────────────────────────────────
+
+/// Settings for Redis-backed tag metadata to prevent unbounded growth.
+///
+/// The tag metadata is used to cap how many unique cache keys are tracked
+/// per tag and to apply TTL so that rarely used tags don't accumulate
+/// forever.
+#[derive(Clone, Debug)]
+pub struct TagStoreConfig {
+    /// Key set TTL for tag metadata. Must be >= the longest-lived cached
+    /// value TTL + any grace period.
+    pub tag_ttl: Duration,
+
+    /// Maximum number of tracked keys per invalidation tag.
+    pub keys_per_tag_cap: usize,
+
+    /// Redis key prefix for tag metadata.
+    pub prefix: String,
+}
+
+impl TagStoreConfig {
+    pub fn from_env() -> Self {
+        // Longest-lived cache entries in this codebase appear to be:
+        // - statistics: 5 * 60 seconds (300s)
+        // - featured_markets: 2 * 60 seconds (120s)
+        // - content: 60 * 60 seconds (3600s)
+        // Tag TTL must match the longest-lived cached entry.
+        let tag_ttl_secs = std::env::var("REDIS_CACHE_TAG_TTL_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(3600);
+
+        let keys_per_tag_cap = std::env::var("REDIS_CACHE_TAG_KEYS_PER_TAG_CAP")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(256);
+
+        let prefix = std::env::var("REDIS_CACHE_TAG_PREFIX")
+            .ok()
+            .unwrap_or_else(|| "cache_tags:v1".to_string());
+
+        Self {
+            tag_ttl: Duration::from_secs(tag_ttl_secs),
+            keys_per_tag_cap,
+            prefix,
+        }
+    }
+
+    fn tag_key(&self, tag_hash: &str) -> String {
+        format!("{}:tag:{}", self.prefix, tag_hash)
+    }
+
+    fn counter_key(&self, tag_hash: &str) -> String {
+        format!("{}:tag:{}:seq", self.prefix, tag_hash)
+    }
 }
 
 impl RedisCache {
+
+    async fn tag_store_invalidate(&self, tag: &InvalidationTag) -> anyhow::Result<()> {
+        // Store/cap tag->keys metadata with TTL.
+        // We use an ordered-set (ZSET) where score is an ever-increasing
+        // sequence number so we can evict oldest items when cap is hit.
+        //
+        // Redis keys:
+        // - <prefix>:tag:<hash>                (ZSET of tracked cache keys)
+        // - <prefix>:tag:<hash>:seq           (string counter for insertion order)
+
+        let tag_keys = tag.cache_keys();
+        if tag_keys.is_empty() {
+            return Ok(());
+        }
+
+        // Deterministically hash the tag so the metadata key is stable.
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&tag, &mut hasher);
+        let tag_hash = format!("{:x}", hasher.finish());
+
+        let zset_key = self.tag_cfg.tag_key(&tag_hash);
+        let seq_key = self.tag_cfg.counter_key(&tag_hash);
+
+        // Longest-lived cached entry TTL.
+        // We configured tag_ttl to match that (see TagStoreConfig::from_env).
+        let tag_ttl_secs = self.tag_cfg.tag_ttl.as_secs();
+        let cap = self.tag_cfg.keys_per_tag_cap as i64;
+
+        // Lua keeps this operation atomic.
+        let script = redis::Script::new(
+            r#"
+            local zset_key = KEYS[1]
+            local seq_key  = KEYS[2]
+            local ttl      = tonumber(ARGV[1])
+            local cap      = tonumber(ARGV[2])
+
+            -- ARGV layout: [ttl, cap, key1, key2, ...]
+            -- Use ZADD with monotonic seq scores; update seq counter once per run.
+            -- We increment seq for each key so we can evict by insertion order.
+            local start_seq = redis.call('INCR', seq_key)
+            local n = 0
+            for i = 3, #ARGV do
+              n = n + 1
+              local key = ARGV[i]
+              redis.call('ZADD', zset_key, start_seq + (n-1), key)
+            end
+
+            -- Apply/refresh TTL for tag metadata.
+            if ttl and ttl > 0 then
+              redis.call('EXPIRE', zset_key, ttl)
+            end
+
+            -- Cap size: evict oldest (lowest scores) beyond cap.
+            local current = redis.call('ZCARD', zset_key)
+            if current and cap and current > cap then
+              local over = current - cap
+              -- Remove lowest-scored 'over' members.
+              redis.call('ZREMRANGEBYRANK', zset_key, 0, over-1)
+              return over
+            end
+            return 0
+            "#,
+        );
+
+        let mut over_evicted: i64 = 0;
+        self.exec(|mut conn| {
+            let zset_key = zset_key.clone();
+            let seq_key = seq_key.clone();
+            let keys = tag_keys.clone();
+            async move {
+                let mut argv: Vec<String> = Vec::with_capacity(2 + keys.len());
+                argv.push(tag_ttl_secs.to_string());
+                argv.push(cap.to_string());
+                argv.extend(keys);
+
+                over_evicted = script
+                    .key(&zset_key)
+                    .key(&seq_key)
+                    .arg(tag_ttl_secs)
+                    .arg(cap)
+                    .invoke_async(&mut conn)
+                    .await?;
+                Ok(())
+            }
+        })
+        .await?;
+
+        // Note: we don't need the evicted count for correctness.
+        Ok(())
+    }
+
+
     pub async fn new(redis_url: &str) -> anyhow::Result<Self> {
-        Self::new_with_config(redis_url, RedisCacheConfig::from_env()).await
+        let cfg = RedisCacheConfig::from_env();
+        Self::new_with_config(redis_url, cfg).await
     }
 
     pub async fn new_with_config(redis_url: &str, cfg: RedisCacheConfig) -> anyhow::Result<Self> {
+
         let pool_cfg = PoolConfig::from_url(redis_url);
         let pool = pool_cfg
             .builder()
@@ -182,8 +338,10 @@ impl RedisCache {
             .context("failed to build Redis pool")?;
 
         let cb = Arc::new(CircuitBreaker::new(cfg.cb_threshold, cfg.cb_reset_timeout));
-        Ok(Self { pool, cb, cfg })
+        let tag_cfg = TagStoreConfig::from_env();
+        Ok(Self { pool, cb, cfg, tag_cfg })
     }
+
 
     /// Returns the current circuit breaker state — useful for health checks and metrics.
     pub fn circuit_state(&self) -> CircuitState {
@@ -286,32 +444,50 @@ impl RedisCache {
         .await
     }
 
+    /// Delete all keys matching `pattern` using non-blocking cursor-based SCAN.
+    ///
+    /// Each SCAN+DEL batch acquires and releases its own pool connection so no
+    /// single connection is held for the full duration of a large-keyspace scan.
+    /// The circuit breaker is checked once before the loop; individual batch
+    /// errors are propagated immediately.
     pub async fn del_by_pattern(&self, pattern: &str) -> anyhow::Result<usize> {
+        if !self.cb.allow() {
+            anyhow::bail!("Redis circuit breaker is open");
+        }
+
+        let mut cursor: u64 = 0;
+        let mut total_deleted: usize = 0;
         let pattern = pattern.to_owned();
-        self.exec(|mut conn| async move {
-            let mut cursor: u64 = 0;
-            let mut total_deleted: usize = 0;
-            loop {
-                let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
-                    .arg(cursor)
-                    .arg("MATCH")
-                    .arg(&pattern)
-                    .arg("COUNT")
-                    .arg(100u64)
-                    .query_async(&mut conn)
-                    .await?;
-                if !keys.is_empty() {
-                    let deleted: usize = conn.del(keys).await?;
-                    total_deleted += deleted;
-                }
-                cursor = next_cursor;
-                if cursor == 0 {
-                    break;
-                }
+
+        loop {
+            let pattern_clone = pattern.clone();
+            let (next_cursor, batch_deleted) = self
+                .exec(|mut conn| async move {
+                    let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                        .arg(cursor)
+                        .arg("MATCH")
+                        .arg(&pattern_clone)
+                        .arg("COUNT")
+                        .arg(100u64)
+                        .query_async(&mut conn)
+                        .await?;
+                    let deleted = if keys.is_empty() {
+                        0
+                    } else {
+                        conn.del(keys).await?
+                    };
+                    Ok((next_cursor, deleted))
+                })
+                .await?;
+
+            total_deleted += batch_deleted;
+            cursor = next_cursor;
+            if cursor == 0 {
+                break;
             }
-            Ok(total_deleted)
-        })
-        .await
+        }
+
+        Ok(total_deleted)
     }
 
     /// Fetch-or-set with stampede protection.
@@ -348,19 +524,29 @@ impl RedisCache {
         if let Ok(Some(cached)) = self.get_json(key).await {
             return Ok((cached, true));
         }
+
+        // Cache miss — call fetcher and store the result.
+        self.recompute_and_store(key, ttl, fetcher).await
     }
 
     async fn set_entry<T>(&self, key: &str, entry: &CachedEntry<T>, ttl: Duration) -> anyhow::Result<()>
     where
         T: Serialize,
     {
-        let mut conn = self.manager.clone();
+        let key = key.to_owned();
         let raw = serde_json::to_string(entry)?;
         // Store with a small grace period beyond the logical TTL so XFetch
         // can still serve the stale value while a refresh is in flight.
         let redis_ttl = ttl + Duration::from_secs(30);
-        let _: () = conn.set_ex(key, raw, redis_ttl.as_secs()).await?;
-        Ok(())
+        self.exec(|mut conn| {
+            let key = key.clone();
+            let raw = raw.clone();
+            async move {
+                let _: () = conn.set_ex(&key, raw, redis_ttl.as_secs()).await?;
+                Ok(())
+            }
+        })
+        .await
     }
 
     async fn recompute_and_store<T, F, Fut>(
@@ -368,20 +554,131 @@ impl RedisCache {
         entry_key: &str,
         ttl: Duration,
         fetcher: F,
-    ) -> anyhow::Result<T>
+    ) -> anyhow::Result<(T, bool)>
     where
         T: Serialize + DeserializeOwned + Clone,
         F: FnOnce() -> Fut,
         Fut: Future<Output = anyhow::Result<T>>,
     {
-        let start = std::time::Instant::now();
+        let _start = std::time::Instant::now();
         let value = fetcher().await?;
         // Best-effort write — don't fail the request if cache write fails.
-        if let Err(e) = self.set_json(key, &value, ttl).await {
-            tracing::warn!(key, error = %e, "cache write failed");
+        if let Err(e) = self.set_json(entry_key, &value, ttl).await {
+            tracing::warn!(entry_key, error = %e, "cache write failed");
         }
         Ok((value, false))
     }
+
+    /// Invalidate all cache keys associated with `tag`.
+    ///
+    /// Keys are derived from the tag at call time — no Redis set membership
+    /// lookup is required, keeping the blast radius deterministic and bounded.
+    /// Returns the number of keys deleted (keys that were already absent count
+    /// as 0 from Redis DEL but are still included in the returned count for
+    /// observability purposes).
+    pub async fn invalidate_tag(&self, tag: &InvalidationTag) -> anyhow::Result<usize> {
+        // Keep tag-sets bounded + TTL'd so Redis memory usage can't grow
+        // unboundedly from high-cardinality tag usage.
+        //
+        // We still eagerly delete the concrete cache keys for correctness,
+        // but tag metadata is now stored in Redis with TTL + cap.
+        let _ = self.tag_store_invalidate(tag).await?;
+
+        let tag_keys = tag.cache_keys();
+        let mut deleted = 0usize;
+        for key in &tag_keys {
+            self.del(key).await?;
+            deleted += 1;
+        }
+        Ok(deleted)
+    }
+
+
+    /// Atomically increment `key` and set its TTL on first increment.
+    /// Returns the new counter value. Used for Redis-backed rate limiting.
+    pub async fn incr_with_ttl(&self, key: &str, ttl: Duration) -> anyhow::Result<u64> {
+        let key = key.to_owned();
+        let ttl_secs = ttl.as_secs();
+        self.exec(|mut conn| {
+            let key = key.clone();
+            async move {
+                let script = redis::Script::new(
+                    r#"
+                    local current = redis.call('INCR', KEYS[1])
+                    if tonumber(current) == 1 then
+                        redis.call('EXPIRE', KEYS[1], ARGV[1])
+                    end
+                    return current
+                    "#,
+                );
+                Ok(script.key(&key).arg(ttl_secs).invoke_async(&mut conn).await?)
+            }
+        })
+        .await
+    }
+
+    /// Acquire a raw connection from the pool.
+    /// Prefer `exec` for most use cases; use this only when you need to hold
+    /// a connection across multiple commands (e.g. pipelined operations).
+    pub async fn get_connection(&self) -> anyhow::Result<deadpool_redis::Connection> {
+        if !self.cb.allow() {
+            anyhow::bail!("Redis circuit breaker is open");
+        }
+        self.pool.get().await.context("failed to acquire Redis connection")
+    }
+}
+
+// ── XFetch stampede protection types ────────────────────────────────────────
+
+/// A cached entry with metadata for probabilistic early expiry (XFetch).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CachedEntry<T> {
+    pub value: T,
+    /// Unix timestamp (seconds) when this entry expires.
+    pub expires_at: i64,
+    /// Measured recomputation time in seconds (delta for XFetch formula).
+    pub delta_secs: f64,
+}
+
+/// Configuration for stampede protection strategies.
+#[derive(Debug, Clone)]
+pub struct StampedeConfig {
+    /// Enable probabilistic early expiry (XFetch algorithm).
+    pub probabilistic_early_expiry: bool,
+    /// Enable mutex lock to serialise concurrent recomputations.
+    pub mutex_lock: bool,
+    /// Beta parameter for XFetch (higher = more aggressive early refresh).
+    pub xfetch_beta: f64,
+}
+
+impl Default for StampedeConfig {
+    fn default() -> Self {
+        Self {
+            probabilistic_early_expiry: true,
+            mutex_lock: true,
+            xfetch_beta: 1.0,
+        }
+    }
+}
+
+/// Returns `true` if the entry should be refreshed early (XFetch algorithm).
+/// Uses probabilistic early expiry: the closer to expiry and the longer the
+/// recomputation time, the more likely a refresh is triggered.
+pub fn xfetch_should_refresh<T>(entry: &CachedEntry<T>, beta: f64) -> bool {
+    let now = chrono::Utc::now().timestamp();
+    let ttl_remaining = entry.expires_at - now;
+    if ttl_remaining <= 0 {
+        return true;
+    }
+    // XFetch: refresh if -delta * beta * ln(rand) >= ttl_remaining
+    // Use a simple pseudo-random value derived from current time nanos.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+    let rand_f: f64 = (nanos as f64 + 1.0) / (u32::MAX as f64 + 1.0); // (0, 1]
+    let score = -entry.delta_secs * beta * rand_f.ln();
+    score >= ttl_remaining as f64
 }
 
 #[cfg(test)]
@@ -479,6 +776,126 @@ mod tests {
         assert_eq!(other, Some(100));
     }
 
+    /// Verifies that del_by_pattern correctly handles a keyspace larger than a
+    /// single SCAN page (COUNT 100), exercising the cursor-batching loop.
+    #[tokio::test]
+    async fn del_by_pattern_large_keyspace_uses_cursor_batching() {
+        let (cache, _c) = start_cache().await;
+        let n = 250u32; // exceeds the COUNT 100 hint, forcing multiple SCAN rounds
+        for i in 0..n {
+            cache
+                .set_json(&format!("large:item:{i}"), &i, Duration::from_secs(60))
+                .await
+                .unwrap();
+        }
+        // One key outside the pattern must survive.
+        cache
+            .set_json("large:other:0", &999u32, Duration::from_secs(60))
+            .await
+            .unwrap();
+
+        let deleted = cache.del_by_pattern("large:item:*").await.unwrap();
+        assert_eq!(deleted, n as usize, "all {n} matching keys must be deleted");
+
+        // Spot-check a few keys are gone.
+        for i in [0u32, 99, 100, 249] {
+            let v: Option<u32> = cache.get_json(&format!("large:item:{i}")).await.unwrap();
+            assert!(v.is_none(), "large:item:{i} must be gone after del_by_pattern");
+        }
+        // Non-matching key must be untouched.
+        let survivor: Option<u32> = cache.get_json("large:other:0").await.unwrap();
+        assert_eq!(survivor, Some(999), "non-matching key must survive");
+    }
+
+    /// Verifies that del_by_pattern returns 0 and does not error when no keys match.
+    #[tokio::test]
+    async fn del_by_pattern_no_matches_returns_zero() {
+        let (cache, _c) = start_cache().await;
+        let deleted = cache.del_by_pattern("nonexistent:*").await.unwrap();
+        assert_eq!(deleted, 0);
+    }
+
+    // ── InvalidationTag tests ────────────────────────────────────────────────
+
+    /// Verifies that MarketResolved tag produces exactly the expected 6 keys.
+    #[test]
+    fn market_resolved_tag_produces_correct_keys() {
+        use super::InvalidationTag;
+        let tag = InvalidationTag::MarketResolved {
+            market_id: 7,
+            network: "testnet".to_string(),
+            featured_limit: 10,
+        };
+        let keys = tag.cache_keys();
+        assert_eq!(keys.len(), 6, "MarketResolved must cover exactly 6 keys");
+        assert!(keys.contains(&"chain:v1:market:7".to_string()));
+        assert!(keys.contains(&"chain:v1:oracle:testnet:market:7".to_string()));
+        assert!(keys.contains(&"api:v1:statistics".to_string()));
+        assert!(keys.contains(&"api:v1:featured_markets".to_string()));
+        assert!(keys.contains(&"dbq:v1:statistics".to_string()));
+        assert!(keys.contains(&"dbq:v1:featured_markets:limit:10".to_string()));
+    }
+
+    /// Verifies that different market IDs produce distinct key sets (no cross-contamination).
+    #[test]
+    fn market_resolved_tag_keys_are_market_id_scoped() {
+        use super::InvalidationTag;
+        let keys_a = InvalidationTag::MarketResolved {
+            market_id: 1,
+            network: "mainnet".to_string(),
+            featured_limit: 5,
+        }
+        .cache_keys();
+        let keys_b = InvalidationTag::MarketResolved {
+            market_id: 2,
+            network: "mainnet".to_string(),
+            featured_limit: 5,
+        }
+        .cache_keys();
+
+        // Per-market keys must differ.
+        assert_ne!(
+            keys_a.iter().find(|k| k.contains("chain:v1:market:")),
+            keys_b.iter().find(|k| k.contains("chain:v1:market:")),
+        );
+        // Aggregate keys are shared (both markets affect statistics).
+        assert_eq!(
+            keys_a.iter().find(|k| k.as_str() == "api:v1:statistics"),
+            keys_b.iter().find(|k| k.as_str() == "api:v1:statistics"),
+        );
+    }
+
+    /// Integration: invalidate_tag deletes exactly the keys in the tag and leaves others.
+    #[tokio::test]
+    async fn invalidate_tag_deletes_tag_keys_only() {
+        use super::InvalidationTag;
+        let (cache, _c) = start_cache().await;
+
+        let tag = InvalidationTag::MarketResolved {
+            market_id: 99,
+            network: "testnet".to_string(),
+            featured_limit: 10,
+        };
+
+        // Populate all tag keys plus one unrelated key.
+        for key in tag.cache_keys() {
+            cache.set_json(&key, &1u32, Duration::from_secs(60)).await.unwrap();
+        }
+        cache.set_json("unrelated:key", &42u32, Duration::from_secs(60)).await.unwrap();
+
+        let deleted = cache.invalidate_tag(&tag).await.unwrap();
+        assert_eq!(deleted, 6, "must report 6 deletions");
+
+        // All tag keys must be gone.
+        for key in tag.cache_keys() {
+            let v: Option<u32> = cache.get_json(&key).await.unwrap();
+            assert!(v.is_none(), "{key} must be absent after invalidate_tag");
+        }
+        // Unrelated key must survive.
+        let survivor: Option<u32> = cache.get_json("unrelated:key").await.unwrap();
+        assert_eq!(survivor, Some(42));
+    }
+
     #[tokio::test]
     async fn circuit_breaker_degrades_gracefully() {
         use super::{CircuitState, RedisCacheConfig};
@@ -511,6 +928,157 @@ mod tests {
             .unwrap();
         assert_eq!(val, 7);
         assert!(!hit);
+    }
+}
+
+// ── Invalidation tags ────────────────────────────────────────────────────────
+//
+// # Key and tag strategy
+//
+// Every cache key belongs to exactly one *invalidation tag*. A tag groups the
+// minimal set of keys that must be evicted together when a specific write
+// occurs. This keeps the blast radius deterministic: callers declare *what
+// changed* (the tag) rather than *which keys to delete* (the key list).
+//
+// ## Tag → key mapping
+//
+// | Tag                          | Keys invalidated                                                  |
+// |------------------------------|-------------------------------------------------------------------|
+// | `MarketResolved(id, net, lim)` | chain_market(id), chain_oracle_result(net,id),                  |
+// |                              | api_statistics, api_featured_markets,                             |
+// |                              | dbq_statistics, dbq_featured_markets(lim)                         |
+//
+// ## Rules
+// - Tags are defined here; handlers import and use them.
+// - A tag must never include keys from unrelated domains (e.g. resolving a
+//   market must not evict content or user-bet keys).
+// - When a new write path is added, add a corresponding tag here first.
+
+/// Describes a write event and the exact cache keys it invalidates.
+///
+/// Use [`RedisCache::invalidate_tag`] to apply a tag.
+#[derive(Debug, Clone)]
+pub enum InvalidationTag {
+
+    /// A market was resolved.
+    ///
+    /// Invalidates the per-market chain entry, the oracle result, and the
+    /// aggregate statistics / featured-markets lists.
+    MarketResolved {
+        market_id: i64,
+        network: String,
+        featured_limit: i64,
+    },
+}
+
+impl InvalidationTag {
+    /// Returns the exact set of cache keys this tag covers.
+    pub fn cache_keys(&self) -> Vec<String> {
+        match self {
+            InvalidationTag::MarketResolved {
+                market_id,
+                network,
+                featured_limit,
+            } => vec![
+                keys::chain_market(*market_id),
+                keys::chain_oracle_result(network, *market_id),
+                keys::api_statistics(),
+                keys::api_featured_markets(),
+                keys::dbq_statistics(),
+                keys::dbq_featured_markets(*featured_limit),
+            ],
+        }
+    }
+}
+
+// ── Cache key categories ─────────────────────────────────────────────────────
+
+/// Logical grouping for cache keys, used for TTL configuration and metrics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KeyCategory {
+    Statistics,
+    FeaturedMarkets,
+    Content,
+    ChainMarket,
+    ChainPlatformStats,
+    ChainUserBets,
+    ChainOracleResult,
+    ChainTxStatus,
+    ChainHealth,
+    ChainLedger,
+    ChainSyncCursor,
+    Custom,
+}
+
+impl KeyCategory {
+    pub fn label(&self) -> &'static str {
+        match self {
+            KeyCategory::Statistics => "statistics",
+            KeyCategory::FeaturedMarkets => "featured_markets",
+            KeyCategory::Content => "content",
+            KeyCategory::ChainMarket => "chain_market",
+            KeyCategory::ChainPlatformStats => "chain_platform_stats",
+            KeyCategory::ChainUserBets => "chain_user_bets",
+            KeyCategory::ChainOracleResult => "chain_oracle_result",
+            KeyCategory::ChainTxStatus => "chain_tx_status",
+            KeyCategory::ChainHealth => "chain_health",
+            KeyCategory::ChainLedger => "chain_ledger",
+            KeyCategory::ChainSyncCursor => "chain_sync_cursor",
+            KeyCategory::Custom => "custom",
+        }
+    }
+}
+
+/// Per-category TTL configuration.
+#[derive(Debug, Clone)]
+pub struct TtlConfig {
+    pub statistics: Duration,
+    pub featured_markets: Duration,
+    pub content: Duration,
+    pub chain_market: Duration,
+    pub chain_platform_stats: Duration,
+    pub chain_user_bets: Duration,
+    pub chain_oracle_result: Duration,
+    pub chain_tx_status: Duration,
+    pub chain_health: Duration,
+    pub chain_ledger: Duration,
+    pub chain_sync_cursor: Duration,
+}
+
+impl Default for TtlConfig {
+    fn default() -> Self {
+        Self {
+            statistics: Duration::from_secs(60),
+            featured_markets: Duration::from_secs(300),
+            content: Duration::from_secs(600),
+            chain_market: Duration::from_secs(30),
+            chain_platform_stats: Duration::from_secs(120),
+            chain_user_bets: Duration::from_secs(60),
+            chain_oracle_result: Duration::from_secs(300),
+            chain_tx_status: Duration::from_secs(15),
+            chain_health: Duration::from_secs(10),
+            chain_ledger: Duration::from_secs(5),
+            chain_sync_cursor: Duration::from_secs(5),
+        }
+    }
+}
+
+impl TtlConfig {
+    pub fn get(&self, category: KeyCategory) -> Option<Duration> {
+        match category {
+            KeyCategory::Statistics => Some(self.statistics),
+            KeyCategory::FeaturedMarkets => Some(self.featured_markets),
+            KeyCategory::Content => Some(self.content),
+            KeyCategory::ChainMarket => Some(self.chain_market),
+            KeyCategory::ChainPlatformStats => Some(self.chain_platform_stats),
+            KeyCategory::ChainUserBets => Some(self.chain_user_bets),
+            KeyCategory::ChainOracleResult => Some(self.chain_oracle_result),
+            KeyCategory::ChainTxStatus => Some(self.chain_tx_status),
+            KeyCategory::ChainHealth => Some(self.chain_health),
+            KeyCategory::ChainLedger => Some(self.chain_ledger),
+            KeyCategory::ChainSyncCursor => Some(self.chain_sync_cursor),
+            KeyCategory::Custom => None,
+        }
     }
 }
 

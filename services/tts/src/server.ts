@@ -16,14 +16,16 @@
  * - POST /tts/generate — Synchronous generation
  */
 
-import express, { Express, Request, Response } from "express";
-import { TTSService, TTSConfig, VOICES } from "./TTSService";
+import express, { Express, Request, Response, NextFunction } from "express";
+import { TTSService, TTSConfig, VOICES, AuthError } from "./TTSService";
 import {
   HealthChecker,
   createHealthCheckHandler,
   createReadinessHandler,
   createLivenessHandler,
 } from "./HealthCheck";
+import { W3CTraceContextPropagator } from "@opentelemetry/core";
+import { trace, context } from "@opentelemetry/api";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -49,6 +51,14 @@ const config: TTSConfig = {
         keys: process.env.TTS_API_KEY.split(","),
       }
     : undefined,
+  rateLimit: {
+    maxRequests: parseInt(process.env.TTS_RATE_LIMIT_MAX || "100", 10),
+    windowMs: parseInt(process.env.TTS_RATE_LIMIT_WINDOW_MS || "60000", 10),
+  },
+  cache: {
+    ttlMs: parseInt(process.env.TTS_CACHE_TTL_MS || "86400000", 10),
+    maxEntries: parseInt(process.env.TTS_CACHE_MAX_ENTRIES || "1000", 10),
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -72,6 +82,53 @@ app.use(express.json());
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
   next();
+});
+
+// Issue #726: Extract and propagate W3C Trace Context
+const propagator = new W3CTraceContextPropagator();
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const tracer = trace.getTracer("tts-service");
+  const ctx = propagator.extract(context.active(), req.headers, {
+    get: (carrier, key) => (carrier as any)[key],
+    keys: (carrier) => Object.keys(carrier as any),
+  });
+  
+  context.with(ctx, () => {
+    const span = tracer.startSpan(`${req.method} ${req.path}`);
+    res.on("finish", () => span.end());
+    context.with(trace.setSpan(ctx, span), () => {
+      next();
+    });
+  });
+});
+
+// Issue #723: Authentication middleware
+app.use((req: Request, res: Response, next: NextFunction) => {
+  // Skip auth for health checks
+  if (req.path.startsWith("/health")) {
+    return next();
+  }
+
+  if (config.auth) {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) {
+      return res.status(401).json({ error: "Missing Authorization header" });
+    }
+
+    const credential = authHeader.replace(/^Bearer\s+/i, "");
+    try {
+      const { authenticate } = require("./TTSService");
+      authenticate(credential, config.auth);
+      next();
+    } catch (err) {
+      if (err instanceof AuthError) {
+        return res.status(401).json({ error: err.message });
+      }
+      return res.status(500).json({ error: "Authentication error" });
+    }
+  } else {
+    next();
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -114,6 +171,10 @@ app.get("/health/live", createLivenessHandler(healthChecker));
  *   "provider": "elevenlabs" (optional)
  * }
  *
+ * Headers:
+ * - Authorization: Bearer <api-key> (required if auth configured)
+ * - Cache-Control: no-cache (optional, bypass cache)
+ *
  * Response:
  * {
  *   "jobId": "tts_1234567890_abc123",
@@ -123,7 +184,8 @@ app.get("/health/live", createLivenessHandler(healthChecker));
 app.post("/tts/enqueue", (req: Request, res: Response) => {
   try {
     const { text, voiceId, provider } = req.body;
-    const credential = req.headers.authorization?.replace("Bearer ", "");
+    const rateLimitKey = req.ip || "unknown";
+    const bypassCache = req.headers["cache-control"]?.includes("no-cache");
 
     if (!text || !voiceId) {
       return res.status(400).json({ error: "Missing text or voiceId" });
@@ -134,7 +196,7 @@ app.post("/tts/enqueue", (req: Request, res: Response) => {
       return res.status(400).json({ error: `Unknown voice: ${voiceId}` });
     }
 
-    const jobId = service.enqueue(text, voice, provider, credential);
+    const jobId = service.enqueue(text, voice, provider, undefined, rateLimitKey, bypassCache);
     res.json({ jobId, status: "pending" });
   } catch (error: any) {
     const statusCode = error.statusCode || 500;
@@ -194,6 +256,10 @@ app.get("/tts/jobs", (req: Request, res: Response) => {
  *   "provider": "elevenlabs" (optional)
  * }
  *
+ * Headers:
+ * - Authorization: Bearer <api-key> (required if auth configured)
+ * - Cache-Control: no-cache (optional, bypass cache)
+ *
  * Response:
  * {
  *   "outputPath": "/tmp/tts-output/tts_1234567890_abc123.mp3"
@@ -202,7 +268,8 @@ app.get("/tts/jobs", (req: Request, res: Response) => {
 app.post("/tts/generate", async (req: Request, res: Response) => {
   try {
     const { text, voiceId, provider } = req.body;
-    const credential = req.headers.authorization?.replace("Bearer ", "");
+    const rateLimitKey = req.ip || "unknown";
+    const bypassCache = req.headers["cache-control"]?.includes("no-cache");
 
     if (!text || !voiceId) {
       return res.status(400).json({ error: "Missing text or voiceId" });
@@ -217,7 +284,9 @@ app.post("/tts/generate", async (req: Request, res: Response) => {
       text,
       voice,
       provider,
-      credential,
+      undefined,
+      rateLimitKey,
+      bypassCache,
     );
     res.json({ outputPath });
   } catch (error: any) {

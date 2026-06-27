@@ -1,6 +1,9 @@
 import React from 'react';
 import { useI18n } from '../lib/hooks/useI18n';
 import { useDarkMode } from '../lib/hooks/useDarkMode';
+import { type Locale } from '../lib/i18n';
+import { Statistics } from './Statistics';
+import { ErrorBoundary } from './ErrorBoundary';
 
 interface LandingPageProps {
   className?: string;
@@ -90,7 +93,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
                 <select
                   id="locale-select"
                   value={locale}
-                  onChange={(e) => setLocale(e.target.value as any)}
+                  onChange={(e) => setLocale(e.target.value as Locale)}
                   aria-label="Language selection"
                 >
                   {availableLocales.map((loc) => (
@@ -172,6 +175,18 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
             />
           </form>
         </section>
+
+        {/* Statistics Section */}
+        <ErrorBoundary section="statistics" fallback={
+          <section className="statistics" aria-labelledby="statistics-heading">
+            <h2 id="statistics-heading">Platform Statistics</h2>
+            <div className="error-message" role="alert">
+              <p>Unable to load statistics at this time. Please try again later.</p>
+            </div>
+          </section>
+        }>
+          <Statistics />
+        </ErrorBoundary>
 
         {/* Features Section */}
         <section aria-labelledby="features-heading" id="features">

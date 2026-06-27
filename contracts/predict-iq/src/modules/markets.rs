@@ -1,11 +1,15 @@
 use crate::errors::ErrorCode;
-use crate::types::{ConfigKey, CreatorReputation, Market, MarketStatus, MarketTier, OracleConfig, TTL_LOW_THRESHOLD, TTL_HIGH_THRESHOLD, PRUNE_GRACE_PERIOD};
+use crate::types::{
+    ConfigKey, CreatorReputation, Market, MarketStatus, MarketTier, OracleConfig,
+    PRUNE_GRACE_PERIOD, TTL_HIGH_THRESHOLD, TTL_LOW_THRESHOLD,
+};
 use soroban_sdk::{contracttype, token, Address, Env, String, Vec};
 
 #[contracttype]
 pub enum DataKey {
     Market(u64),
     MarketCount,
+    MarketDisputeWindow(u64),
     CreatorReputation(Address),
     /// Presence key for the status index.
     /// `StatusIndex(market_id, status)` exists iff market `market_id` currently
@@ -52,6 +56,36 @@ pub fn create_market(
     parent_id: u64,
     parent_outcome_idx: u32,
 ) -> Result<u64, ErrorCode> {
+    create_market_with_dispute_window(
+        e,
+        creator,
+        description,
+        options,
+        deadline,
+        resolution_deadline,
+        oracle_config,
+        tier,
+        native_token,
+        parent_id,
+        parent_outcome_idx,
+        None,
+    )
+}
+
+pub fn create_market_with_dispute_window(
+    e: &Env,
+    creator: Address,
+    description: String,
+    options: Vec<String>,
+    deadline: u64,
+    resolution_deadline: u64,
+    oracle_config: OracleConfig,
+    tier: MarketTier,
+    native_token: Address,
+    parent_id: u64,
+    parent_outcome_idx: u32,
+    dispute_window_seconds: Option<u64>,
+) -> Result<u64, ErrorCode> {
     creator.require_auth();
 
     // Issue #512: Check circuit breaker - prevent market creation during emergency pause
@@ -59,21 +93,21 @@ pub fn create_market(
 
     // Issue #510: Validate market deadlines
     let current_time = e.ledger().timestamp();
-    
-    // Betting deadline must be in the future
+
+    // end_time (deadline) must be strictly greater than current ledger time
     if deadline <= current_time {
-        return Err(ErrorCode::InvalidDeadline);
+        return Err(ErrorCode::InvalidTimeRange);
     }
-    
-    // Resolution deadline must be after betting deadline
+
+    // end_time (resolution_deadline) must be strictly greater than start_time (deadline)
     if resolution_deadline <= deadline {
-        return Err(ErrorCode::InvalidDeadline);
+        return Err(ErrorCode::InvalidTimeRange);
     }
-    
+
     // Enforce minimum deadline gap (24 hours = 86400 seconds)
     const MIN_DEADLINE_GAP: u64 = 86400;
     if resolution_deadline - deadline < MIN_DEADLINE_GAP {
-        return Err(ErrorCode::InvalidDeadline);
+        return Err(ErrorCode::InvalidTimeRange);
     }
 
     // Gas optimization: Limit number of outcomes to prevent excessive iteration
@@ -161,7 +195,7 @@ pub fn create_market(
     if creation_fee > 0 {
         let treasury = get_protocol_treasury(e);
         token_client.transfer(&creator, &treasury, &creation_fee);
-        
+
         // Emit fee collection event
         crate::modules::events::emit_fee_collected(e, 0, treasury, creation_fee);
     }
@@ -179,6 +213,8 @@ pub fn create_market(
     count += 1;
 
     let num_outcomes = options.len() as u32;
+    let dispute_window =
+        crate::modules::resolution::resolve_market_dispute_window(e, dispute_window_seconds)?;
 
     let market = Market {
         id: count,
@@ -210,11 +246,21 @@ pub fn create_market(
     e.storage()
         .persistent()
         .set(&DataKey::Market(count), &market);
-    
-    // Set initial TTL for the market data
     e.storage()
         .persistent()
-        .extend_ttl(&DataKey::Market(count), TTL_LOW_THRESHOLD, TTL_HIGH_THRESHOLD);
+        .set(&DataKey::MarketDisputeWindow(count), &dispute_window);
+
+    // Set initial TTL for the market data
+    e.storage().persistent().extend_ttl(
+        &DataKey::Market(count),
+        TTL_LOW_THRESHOLD,
+        TTL_HIGH_THRESHOLD,
+    );
+    e.storage().persistent().extend_ttl(
+        &DataKey::MarketDisputeWindow(count),
+        TTL_LOW_THRESHOLD,
+        TTL_HIGH_THRESHOLD,
+    );
 
     // Maintain status index so get_markets_by_status can probe O(limit) keys.
     e.storage()
@@ -235,6 +281,13 @@ pub fn create_market(
     );
 
     Ok(count)
+}
+
+pub fn get_market_dispute_window(e: &Env, market_id: u64) -> u64 {
+    e.storage()
+        .persistent()
+        .get(&DataKey::MarketDisputeWindow(market_id))
+        .unwrap_or_else(|| crate::modules::resolution::get_default_dispute_window(e))
 }
 
 pub fn get_market(e: &Env, id: u64) -> Option<Market> {
@@ -374,9 +427,11 @@ pub fn release_creation_deposit(
 
 /// Bump TTL for market data to prevent state expiration
 pub fn bump_market_ttl(e: &Env, market_id: u64) {
-    e.storage()
-        .persistent()
-        .extend_ttl(&DataKey::Market(market_id), TTL_LOW_THRESHOLD, TTL_HIGH_THRESHOLD);
+    e.storage().persistent().extend_ttl(
+        &DataKey::Market(market_id),
+        TTL_LOW_THRESHOLD,
+        TTL_HIGH_THRESHOLD,
+    );
 }
 
 /// Maximum number of markets returned per paginated query
@@ -401,7 +456,7 @@ pub fn prune_market(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
     // Check if 30 days have passed since resolution
     let resolved_at = market.resolved_at.ok_or(ErrorCode::MarketNotActive)?;
     let current_time = e.ledger().timestamp();
-    
+
     if current_time < resolved_at + PRUNE_GRACE_PERIOD {
         return Err(ErrorCode::MarketNotActive);
     }
@@ -416,6 +471,9 @@ pub fn prune_market(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
 
     // Remove market from persistent storage
     e.storage().persistent().remove(&DataKey::Market(market_id));
+    e.storage()
+        .persistent()
+        .remove(&DataKey::MarketDisputeWindow(market_id));
 
     // Emit pruning event
     crate::modules::events::emit_market_pruned(e, market_id, current_time);

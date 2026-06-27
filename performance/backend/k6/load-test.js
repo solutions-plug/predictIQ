@@ -2,6 +2,7 @@ import http from 'k6/http';
 import { check, sleep } from 'k6';
 import { Rate, Trend, Counter } from 'k6/metrics';
 import { randomIntBetween } from 'https://jslib.k6.io/k6-utils/1.2.0/index.js';
+import { getThresholdsForTest } from './slo-thresholds.js';
 
 const errorRate = new Rate('errors');
 const marketLoadTime = new Trend('market_load_time');
@@ -15,10 +16,8 @@ export const options = {
     { duration: '2m', target: 0 },    // Ramp down
   ],
   thresholds: {
+    ...getThresholdsForTest('load'),
     errors: ['rate<0.001'],
-    http_req_duration: ['p(95)<200', 'p(99)<500'],
-    'http_req_duration{endpoint:health}': ['p(95)<50'],
-    'http_req_duration{endpoint:markets}': ['p(95)<200'],
     market_load_time: ['p(95)<200'],
     bet_placement_time: ['p(95)<250'],
   },

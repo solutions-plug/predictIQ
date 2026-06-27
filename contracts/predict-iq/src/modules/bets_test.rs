@@ -45,6 +45,7 @@ fn create_simple_market(
         min_responses: Some(1),
         max_staleness_seconds: 3600,
         max_confidence_bps: 200,
+        strike_price: None,
     };
 
     client.create_market(
@@ -740,6 +741,7 @@ fn test_parimutuel_payout_10_bettors_2_winners() {
         min_responses: Some(1),
         max_staleness_seconds: 3600,
         max_confidence_bps: 100,
+        strike_price: None,
     };
     let market_id = client.create_market(
         &users[0],

@@ -1,6 +1,7 @@
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 import { Rate } from 'k6/metrics';
+import { getThresholdsForTest } from './slo-thresholds.js';
 
 const errorRate = new Rate('errors');
 
@@ -14,10 +15,7 @@ export const options = {
     { duration: '3m', target: 100 },    // Recover
     { duration: '10s', target: 0 },     // Ramp down
   ],
-  thresholds: {
-    errors: ['rate<0.1'],
-    http_req_duration: ['p(95)<1000'],
-  },
+  thresholds: getThresholdsForTest('spike'),
 };
 
 const BASE_URL = __ENV.API_URL || 'http://localhost:8080';

@@ -67,6 +67,7 @@ fn test_pause_blocks_operations() {
         min_responses: Some(1),
         max_staleness_seconds: 3600,
         max_confidence_bps: 100,
+        strike_price: None,
     };
 
     let token = Address::generate(&env);
@@ -109,6 +110,7 @@ fn test_unpause_allows_operations() {
         min_responses: Some(1),
         max_staleness_seconds: 3600,
         max_confidence_bps: 100,
+        strike_price: None,
     };
 
     let token = Address::generate(&env);
@@ -174,6 +176,7 @@ fn test_require_closed_when_open() {
         min_responses: Some(1),
         max_staleness_seconds: 3600,
         max_confidence_bps: 100,
+        strike_price: None,
     };
 
     let token = Address::generate(&env);
@@ -236,6 +239,7 @@ fn test_auto_recovery_open_to_half_open_after_cooldown() {
         min_responses: Some(1),
         max_staleness_seconds: 3600,
         max_confidence_bps: 100,
+        strike_price: None,
     };
     let result = client.try_create_market(
         &Address::generate(&env),
@@ -273,6 +277,7 @@ fn test_half_open_trips_back_to_open_after_max_ops() {
             min_responses: Some(1),
             max_staleness_seconds: 3600,
             max_confidence_bps: 100,
+        strike_price: None,
         };
         client.try_create_market(
             &admin,

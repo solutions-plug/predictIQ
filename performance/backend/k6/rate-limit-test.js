@@ -1,6 +1,7 @@
 import http from 'k6/http';
 import { check } from 'k6';
 import { Rate, Counter } from 'k6/metrics';
+import { getThresholdsForTest } from './slo-thresholds.js';
 
 const rateLimitHits = new Counter('rate_limit_hits');
 const successfulRequests = new Counter('successful_requests');
@@ -8,9 +9,7 @@ const successfulRequests = new Counter('successful_requests');
 export const options = {
   vus: 10,
   duration: '30s',
-  thresholds: {
-    rate_limit_hits: ['count>0'],  // Expect to hit rate limits
-  },
+  thresholds: getThresholdsForTest('rate-limit'),
 };
 
 const BASE_URL = __ENV.API_URL || 'http://localhost:8080';

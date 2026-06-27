@@ -10,6 +10,15 @@ variable "ecs_service" {
   type = string
 }
 
+locals {
+  common_tags = {
+    Project   = "predictiq"
+    Environment = var.environment
+    Owner     = "infrastructure-team"
+    ManagedBy = "terraform"
+  }
+}
+
 resource "aws_cloudwatch_dashboard" "main" {
   dashboard_name = "predictiq-${var.environment}"
 
@@ -49,9 +58,12 @@ resource "aws_cloudwatch_dashboard" "main" {
 resource "aws_sns_topic" "alerts" {
   name = "predictiq-${var.environment}-alerts"
 
-  tags = {
-    Name = "predictiq-${var.environment}-alerts"
-  }
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-alerts"
+    }
+  )
 }
 
 resource "aws_cloudwatch_metric_alarm" "ecs_cpu" {
@@ -70,6 +82,13 @@ resource "aws_cloudwatch_metric_alarm" "ecs_cpu" {
     ClusterName = var.ecs_cluster
     ServiceName = var.ecs_service
   }
+
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-ecs-cpu-high"
+    }
+  )
 }
 
 resource "aws_cloudwatch_metric_alarm" "ecs_memory" {
@@ -88,6 +107,13 @@ resource "aws_cloudwatch_metric_alarm" "ecs_memory" {
     ClusterName = var.ecs_cluster
     ServiceName = var.ecs_service
   }
+
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-ecs-memory-high"
+    }
+  )
 }
 
 resource "aws_cloudwatch_metric_alarm" "alb_5xx" {
@@ -105,6 +131,13 @@ resource "aws_cloudwatch_metric_alarm" "alb_5xx" {
   dimensions = {
     LoadBalancer = "app/predictiq-${var.environment}-alb/*"
   }
+
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-alb-5xx-errors"
+    }
+  )
 }
 
 data "aws_region" "current" {}

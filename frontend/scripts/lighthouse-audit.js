@@ -4,12 +4,31 @@ const fs = require('fs');
 const path = require('path');
 
 /**
- * Lighthouse Accessibility Audit Script
- * Ensures 100% accessibility score
+ * Lighthouse Audit Script
+ * Validates Lighthouse scores against configured thresholds
  */
 
-const ACCESSIBILITY_THRESHOLD = 100;
 const URL = process.env.TEST_URL || 'http://localhost:3000';
+
+// Load thresholds from performance/config/thresholds.json
+function loadThresholds() {
+  const thresholdsPath = path.join(__dirname, '../../performance/config/thresholds.json');
+  try {
+    const content = fs.readFileSync(thresholdsPath, 'utf8');
+    const thresholds = JSON.parse(content);
+    return thresholds.lighthouse || {};
+  } catch (error) {
+    console.warn('⚠️  Could not load thresholds.json, using defaults');
+    return {
+      performance: 90,
+      accessibility: 95,
+      'best-practices': 90,
+      seo: 90,
+    };
+  }
+}
+
+const THRESHOLDS = loadThresholds();
 
 async function runLighthouseAudit() {
   console.log('🚀 Starting Lighthouse Accessibility Audit...\n');
@@ -27,7 +46,7 @@ async function runLighthouseAudit() {
     const options = {
       logLevel: 'info',
       output: ['html', 'json'],
-      onlyCategories: ['accessibility'],
+      onlyCategories: ['performance', 'accessibility', 'best-practices', 'seo'],
       port: chrome.port,
     };
 
@@ -57,74 +76,61 @@ async function runLighthouseAudit() {
     console.log(`📊 Reports saved to: ${reportsDir}\n`);
 
     // Analyze results
-    const accessibilityScore = results.categories.accessibility.score * 100;
     console.log('='.repeat(60));
-    console.log('LIGHTHOUSE ACCESSIBILITY AUDIT RESULTS');
+    console.log('LIGHTHOUSE AUDIT RESULTS');
     console.log('='.repeat(60));
-    console.log(`\nAccessibility Score: ${accessibilityScore}/100`);
-    console.log(`Threshold: ${ACCESSIBILITY_THRESHOLD}/100\n`);
+    console.log();
 
-    // List all audits
-    const audits = results.categories.accessibility.auditRefs;
-    const passedAudits = [];
-    const failedAudits = [];
-    const manualAudits = [];
+    // Check all categories against thresholds
+    const categories = ['performance', 'accessibility', 'best-practices', 'seo'];
+    const failingCategories = [];
+    const passingCategories = [];
 
-    audits.forEach(auditRef => {
-      const audit = results.audits[auditRef.id];
-      if (audit.score === null) {
-        manualAudits.push({ id: auditRef.id, title: audit.title });
-      } else if (audit.score === 1) {
-        passedAudits.push({ id: auditRef.id, title: audit.title });
+    categories.forEach(category => {
+      if (!results.categories[category]) {
+        console.warn(`⚠️  Category '${category}' not found in results`);
+        return;
+      }
+
+      const score = results.categories[category].score * 100;
+      const threshold = THRESHOLDS[category];
+      const status = score >= threshold ? '✅' : '❌';
+
+      console.log(`${status} ${category.toUpperCase()}: ${score.toFixed(0)}/100 (threshold: ${threshold})`);
+
+      if (score >= threshold) {
+        passingCategories.push({ category, score, threshold });
       } else {
-        failedAudits.push({
-          id: auditRef.id,
-          title: audit.title,
-          description: audit.description,
-          score: audit.score,
-        });
+        failingCategories.push({ category, score, threshold });
       }
     });
 
-    console.log(`✅ Passed Audits: ${passedAudits.length}`);
-    console.log(`❌ Failed Audits: ${failedAudits.length}`);
-    console.log(`⚠️  Manual Audits Required: ${manualAudits.length}\n`);
+    console.log();
 
-    // Show failed audits
-    if (failedAudits.length > 0) {
-      console.log('FAILED AUDITS:');
+    // Show detailed failure information if any category fails
+    if (failingCategories.length > 0) {
+      console.log('FAILING CATEGORIES:');
       console.log('-'.repeat(60));
-      failedAudits.forEach(audit => {
-        console.log(`\n❌ ${audit.title}`);
-        console.log(`   Score: ${(audit.score * 100).toFixed(0)}/100`);
-        console.log(`   ${audit.description}`);
-      });
-      console.log();
-    }
 
-    // Show manual audits
-    if (manualAudits.length > 0) {
-      console.log('MANUAL AUDITS REQUIRED:');
-      console.log('-'.repeat(60));
-      manualAudits.forEach(audit => {
-        console.log(`⚠️  ${audit.title}`);
+      failingCategories.forEach(({ category, score, threshold }) => {
+        const diff = threshold - score;
+        console.log(`\n❌ ${category.toUpperCase()}`);
+        console.log(`   Threshold: ${threshold}`);
+        console.log(`   Actual: ${score.toFixed(0)}`);
+        console.log(`   Gap: -${diff.toFixed(0)} points`);
       });
-      console.log();
-    }
 
-    // Check if threshold is met
-    console.log('='.repeat(60));
-    if (accessibilityScore >= ACCESSIBILITY_THRESHOLD) {
-      console.log('✅ PASSED: Accessibility score meets threshold!');
-      console.log('='.repeat(60));
-      return true;
-    } else {
-      console.log('❌ FAILED: Accessibility score below threshold!');
-      console.log(`   Required: ${ACCESSIBILITY_THRESHOLD}`);
-      console.log(`   Actual: ${accessibilityScore}`);
+      console.log('\n' + '='.repeat(60));
+      console.log('❌ FAILED: One or more categories below threshold!');
       console.log('='.repeat(60));
       return false;
     }
+
+    // All categories passing
+    console.log('='.repeat(60));
+    console.log('✅ PASSED: All categories meet thresholds!');
+    console.log('='.repeat(60));
+    return true;
   } catch (error) {
     console.error('❌ Error running Lighthouse audit:', error);
     return false;

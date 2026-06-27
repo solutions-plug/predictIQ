@@ -62,7 +62,9 @@ fn test_config_setters_reject_non_admin() {
     expect_not_authorized!(client.try_set_minimum_bet_amount(&1000));
 
     // set_creator_reputation
-    expect_not_authorized!(client.try_set_creator_reputation(&non_admin, &types::CreatorReputation::Pro));
+    expect_not_authorized!(
+        client.try_set_creator_reputation(&non_admin, &types::CreatorReputation::Pro)
+    );
 
     // set_guardian
     expect_not_authorized!(client.try_set_guardian(&guardian));
@@ -93,6 +95,7 @@ fn create_test_market(
         min_responses: Some(1),
         max_staleness_seconds: 3600,
         max_confidence_bps: 200,
+        strike_price: None,
     };
 
     client.create_market(
@@ -129,6 +132,7 @@ fn make_stored_market(e: &Env, id: u64) -> types::Market {
             min_responses: Some(1),
             max_staleness_seconds: 3600,
             max_confidence_bps: 200,
+            strike_price: None,
         },
         total_staked: 0,
         payout_mode: types::PayoutMode::Pull,
@@ -176,12 +180,16 @@ fn test_market_creation_fails_without_deposit() {
             min_responses: 1,
             max_staleness_seconds: 300,
             max_confidence_bps: 200,
+            strike_price: None,
             min_responses: Some(1),
             max_staleness_seconds: 3600,
             max_confidence_bps: 200,
-        max_staleness_seconds: 3600,
-        max_confidence_bps: 200,
-        max_confidence_bps: 100,
+            strike_price: None,
+            max_staleness_seconds: 3600,
+            max_confidence_bps: 200,
+            strike_price: None,
+            max_confidence_bps: 100,
+            strike_price: None,
         },
         &types::MarketTier::Basic,
         &native_token,
@@ -723,6 +731,53 @@ fn test_add_guardian() {
     assert_eq!(stored_guardians.len(), 2);
 }
 
+#[test]
+fn test_guardian_removal_requires_timelock_after_majority() {
+    let (e, _admin, _contract_id, client) = setup_test_env();
+
+    let guardian1 = Address::generate(&e);
+    let guardian2 = Address::generate(&e);
+    let guardian3 = Address::generate(&e);
+
+    let mut guardians = Vec::new(&e);
+    guardians.push_back(types::Guardian {
+        address: guardian1.clone(),
+        voting_power: 1,
+    });
+    guardians.push_back(types::Guardian {
+        address: guardian2.clone(),
+        voting_power: 1,
+    });
+    guardians.push_back(types::Guardian {
+        address: guardian3.clone(),
+        voting_power: 1,
+    });
+
+    client.initialize_guardians(&guardians);
+    client.set_timelock_duration(&(24 * 3600));
+
+    e.ledger().set_timestamp(1000);
+    client.remove_guardian(&guardian3);
+
+    client.vote_on_guardian_removal(&guardian1, &true);
+    client.vote_on_guardian_removal(&guardian2, &true);
+
+    assert_eq!(
+        client.try_execute_guardian_removal(),
+        Err(Ok(ErrorCode::TimelockActive))
+    );
+    assert_eq!(client.get_guardians().len(), 3);
+
+    e.ledger().set_timestamp(1000 + 24 * 3600);
+    assert!(client.try_execute_guardian_removal().is_ok());
+
+    let stored_guardians = client.get_guardians();
+    assert_eq!(stored_guardians.len(), 2);
+    for guardian in stored_guardians.iter() {
+        assert_ne!(guardian.address, guardian3);
+    }
+}
+
 // Issue #19: Admin-Guardian separation tests
 
 #[test]
@@ -731,7 +786,10 @@ fn test_add_admin_as_guardian_rejected() {
 
     let guardian = Address::generate(&e);
     let mut guardians = Vec::new(&e);
-    guardians.push_back(types::Guardian { address: guardian.clone(), voting_power: 1 });
+    guardians.push_back(types::Guardian {
+        address: guardian.clone(),
+        voting_power: 1,
+    });
     client.initialize_guardians(&guardians);
 
     // Attempt to add the admin address as a guardian — must be rejected
@@ -747,7 +805,10 @@ fn test_initialize_guardians_with_admin_rejected() {
     let (e, admin, _contract_id, client) = setup_test_env();
 
     let mut guardians = Vec::new(&e);
-    guardians.push_back(types::Guardian { address: admin.clone(), voting_power: 1 });
+    guardians.push_back(types::Guardian {
+        address: admin.clone(),
+        voting_power: 1,
+    });
 
     let result = client.try_initialize_guardians(&guardians);
     assert_eq!(result, Err(Ok(ErrorCode::NotAuthorized)));
@@ -804,6 +865,36 @@ fn test_execute_upgrade_before_timelock_fails() {
     // Try to execute immediately - should fail with TimelockActive
     let result = client.try_execute_upgrade();
     assert_eq!(result, Err(Ok(ErrorCode::TimelockActive)));
+}
+
+#[test]
+fn test_execute_upgrade_timelock_starts_when_vote_passes() {
+    let (e, _admin, _contract_id, client) = setup_test_env();
+
+    let guardian = Address::generate(&e);
+    let mut guardians = Vec::new(&e);
+    guardians.push_back(types::Guardian {
+        address: guardian.clone(),
+        voting_power: 1,
+    });
+
+    client.initialize_guardians(&guardians);
+    client.set_timelock_duration(&(24 * 3600));
+
+    let wasm_hash = upgrade_wasm_hash(&e);
+    e.ledger().set_timestamp(1000);
+    client.initiate_upgrade(&wasm_hash);
+
+    e.ledger().set_timestamp(1000 + 24 * 3600 + 1);
+    client.vote_for_upgrade(&guardian, &true);
+
+    assert_eq!(
+        client.try_execute_upgrade(),
+        Err(Ok(ErrorCode::TimelockActive))
+    );
+
+    e.ledger().set_timestamp(1000 + (2 * 24 * 3600) + 1);
+    assert!(client.try_execute_upgrade().is_ok());
 }
 
 #[test]
@@ -893,21 +984,24 @@ fn test_set_timelock_duration_and_early_execution() {
     });
     client.initialize_guardians(&guardians);
 
-    // Reduce timelock to 6 hours (minimum allowed)
-    let six_hours: u64 = 6 * 60 * 60;
-    assert!(client.try_set_timelock_duration(&six_hours).is_ok());
+    // Reduce timelock to 24 hours (minimum allowed)
+    let one_day: u64 = 24 * 60 * 60;
+    assert!(client.try_set_timelock_duration(&one_day).is_ok());
 
     let wasm_hash = upgrade_wasm_hash(&e);
     e.ledger().set_timestamp(1000);
     client.initiate_upgrade(&wasm_hash);
     client.vote_for_upgrade(&guardian, &true);
 
-    // Still blocked before 6 hours
-    e.ledger().set_timestamp(1000 + six_hours - 1);
-    assert_eq!(client.try_execute_upgrade(), Err(Ok(ErrorCode::TimelockActive)));
+    // Still blocked before 24 hours
+    e.ledger().set_timestamp(1000 + one_day - 1);
+    assert_eq!(
+        client.try_execute_upgrade(),
+        Err(Ok(ErrorCode::TimelockActive))
+    );
 
-    // Succeeds exactly at 6 hours
-    e.ledger().set_timestamp(1000 + six_hours);
+    // Succeeds exactly at 24 hours
+    e.ledger().set_timestamp(1000 + one_day);
     assert!(client.try_execute_upgrade().is_ok());
 }
 
@@ -915,9 +1009,9 @@ fn test_set_timelock_duration_and_early_execution() {
 fn test_set_timelock_duration_out_of_range_rejected() {
     let (_e, _admin, _contract_id, client) = setup_test_env();
 
-    // Below minimum (6h)
+    // Below minimum (24h)
     assert_eq!(
-        client.try_set_timelock_duration(&(6 * 3600 - 1)),
+        client.try_set_timelock_duration(&(24 * 3600 - 1)),
         Err(Ok(ErrorCode::InvalidAmount))
     );
     // Above maximum (7 days)
@@ -935,8 +1029,8 @@ fn test_get_timelock_duration_default_and_updated() {
     assert_eq!(client.get_timelock_duration(), 48 * 3600);
 
     // After update, reflects new value
-    client.set_timelock_duration(&(6 * 3600));
-    assert_eq!(client.get_timelock_duration(), 6 * 3600);
+    client.set_timelock_duration(&(24 * 3600));
+    assert_eq!(client.get_timelock_duration(), 24 * 3600);
 }
 
 #[test]
@@ -1299,10 +1393,13 @@ fn test_create_conditional_market_parent_not_resolved() {
         min_responses: 1,
         max_staleness_seconds: 300,
         max_confidence_bps: 200,
+        strike_price: None,
         min_responses: Some(1),
         max_staleness_seconds: 3600,
         max_confidence_bps: 200,
+        strike_price: None,
         max_confidence_bps: 100,
+        strike_price: None,
     };
 
     let result = client.try_create_market(
@@ -1354,10 +1451,13 @@ fn test_create_conditional_market_parent_wrong_outcome() {
         min_responses: 1,
         max_staleness_seconds: 300,
         max_confidence_bps: 200,
+        strike_price: None,
         min_responses: Some(1),
         max_staleness_seconds: 3600,
         max_confidence_bps: 200,
+        strike_price: None,
         max_confidence_bps: 100,
+        strike_price: None,
     };
 
     let result = client.try_create_market(
@@ -1409,10 +1509,13 @@ fn test_create_conditional_market_success() {
         min_responses: 1,
         max_staleness_seconds: 300,
         max_confidence_bps: 200,
+        strike_price: None,
         min_responses: Some(1),
         max_staleness_seconds: 3600,
         max_confidence_bps: 200,
+        strike_price: None,
         max_confidence_bps: 100,
+        strike_price: None,
     };
 
     let child_id = client.create_market(
@@ -1473,10 +1576,13 @@ fn test_place_bet_on_conditional_market_parent_not_resolved() {
         min_responses: 1,
         max_staleness_seconds: 300,
         max_confidence_bps: 200,
+        strike_price: None,
         min_responses: Some(1),
         max_staleness_seconds: 3600,
         max_confidence_bps: 200,
+        strike_price: None,
         max_confidence_bps: 100,
+        strike_price: None,
     };
 
     let child_id = client.create_market(
@@ -1537,10 +1643,13 @@ fn test_place_bet_on_conditional_market_parent_wrong_outcome() {
         min_responses: 1,
         max_staleness_seconds: 300,
         max_confidence_bps: 200,
+        strike_price: None,
         min_responses: Some(1),
         max_staleness_seconds: 3600,
         max_confidence_bps: 200,
+        strike_price: None,
         max_confidence_bps: 100,
+        strike_price: None,
     };
 
     let child_id = client.create_market(
@@ -1622,10 +1731,13 @@ fn test_multi_level_conditional_markets() {
         min_responses: 1,
         max_staleness_seconds: 300,
         max_confidence_bps: 200,
+        strike_price: None,
         min_responses: Some(1),
         max_staleness_seconds: 3600,
         max_confidence_bps: 200,
+        strike_price: None,
         max_confidence_bps: 100,
+        strike_price: None,
     };
 
     let level2_id = client.create_market(
@@ -1695,10 +1807,13 @@ fn test_create_conditional_market_invalid_parent_outcome_idx() {
         min_responses: 1,
         max_staleness_seconds: 300,
         max_confidence_bps: 200,
+        strike_price: None,
         min_responses: Some(1),
         max_staleness_seconds: 3600,
         max_confidence_bps: 200,
+        strike_price: None,
         max_confidence_bps: 100,
+        strike_price: None,
     };
 
     let result = client.try_create_market(
@@ -1919,7 +2034,10 @@ fn test_vote_on_upgrade_refreshes_ttl() {
     });
 
     let pending = client.get_pending_upgrade();
-    assert!(pending.is_some(), "PendingUpgrade expired after vote + 3 months inactivity");
+    assert!(
+        pending.is_some(),
+        "PendingUpgrade expired after vote + 3 months inactivity"
+    );
     let votes_for = client.get_upgrade_votes().votes_for;
     assert_eq!(votes_for, 1);
 }
@@ -2052,8 +2170,6 @@ fn test_double_vote_still_rejected_with_optimized_struct() {
     assert_eq!(result, Err(Ok(crate::errors::ErrorCode::AlreadyVoted)));
 }
 
-
-
 // ===================== Dispute Deadline Idempotency Test =====================
 
 #[test]
@@ -2087,6 +2203,7 @@ fn test_dispute_deadline_extension_is_one_time_and_idempotent() {
             min_responses: Some(1),
             max_staleness_seconds: 3600,
             max_confidence_bps: 200,
+            strike_price: None,
         },
         &types::MarketTier::Basic,
         &native_token,
@@ -2101,7 +2218,8 @@ fn test_dispute_deadline_extension_is_one_time_and_idempotent() {
 
     // First dispute — must succeed and extend deadline by one dispute window (72h)
     let disputer = Address::generate(&e);
-    e.ledger().with_mut(|li| li.timestamp = resolution_deadline + 1000);
+    e.ledger()
+        .with_mut(|li| li.timestamp = resolution_deadline + 1000);
     client.file_dispute(&disputer, &market_id);
 
     let market_after_first = client.get_market(&market_id).unwrap();
@@ -2120,7 +2238,10 @@ fn test_dispute_deadline_extension_is_one_time_and_idempotent() {
 
     // Deadline must be unchanged after the rejected second attempt
     let market_after_second = client.get_market(&market_id).unwrap();
-    assert_eq!(market_after_second.resolution_deadline, deadline_after_first);
+    assert_eq!(
+        market_after_second.resolution_deadline,
+        deadline_after_first
+    );
     assert_eq!(market_after_second.status, types::MarketStatus::Disputed);
 }
 
@@ -2143,7 +2264,6 @@ fn test_initialize_rejects_non_deployer() {
     let result = client.try_initialize(&attacker, &100, &guardians);
     assert!(result.is_err());
 }
-
 
 // ─── Fee Calculation Unit Tests ───────────────────────────────────────────────
 
@@ -2309,7 +2429,10 @@ mod fee_calculation_tests {
         let referrer = Address::generate(&env);
         // No reward seeded — claim must fail
         let result = client.try_claim_referral_rewards(&referrer, &token);
-        assert_eq!(result, Err(Ok(crate::errors::ErrorCode::InsufficientBalance)));
+        assert_eq!(
+            result,
+            Err(Ok(crate::errors::ErrorCode::InsufficientBalance))
+        );
     }
 
     #[test]
@@ -2340,7 +2463,10 @@ mod fee_calculation_tests {
 
         // Second claim must fail — balance is zero
         let result = client.try_claim_referral_rewards(&referrer, &token);
-        assert_eq!(result, Err(Ok(crate::errors::ErrorCode::InsufficientBalance)));
+        assert_eq!(
+            result,
+            Err(Ok(crate::errors::ErrorCode::InsufficientBalance))
+        );
     }
 
     // ── Fee distribution / edge cases ─────────────────────────────────────────
@@ -2401,7 +2527,10 @@ mod dispute_resolution_tests {
     use crate::modules::{markets, voting};
     use crate::types::{MarketStatus, MarketTier, OracleConfig};
     use crate::{PredictIQ, PredictIQClient};
-    use soroban_sdk::{testutils::{Address as _, Ledger as _}, token, Address, Env, String, Vec};
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger as _},
+        token, Address, Env, String, Vec,
+    };
 
     const DISPUTE_WINDOW: u64 = 86_400; // 24h — matches resolution::DISPUTE_WINDOW_SECONDS
 
@@ -2440,6 +2569,7 @@ mod dispute_resolution_tests {
                 min_responses: Some(1),
                 max_staleness_seconds: 3600,
                 max_confidence_bps: 200,
+                strike_price: None,
             },
             &MarketTier::Basic,
             &token,
@@ -2475,7 +2605,10 @@ mod dispute_resolution_tests {
 
         let disputer = Address::generate(&env);
         let result = client.try_file_dispute(&disputer, &market_id);
-        assert_eq!(result, Err(Ok(crate::errors::ErrorCode::MarketNotPendingResolution)));
+        assert_eq!(
+            result,
+            Err(Ok(crate::errors::ErrorCode::MarketNotPendingResolution))
+        );
     }
 
     #[test]
@@ -2522,7 +2655,10 @@ mod dispute_resolution_tests {
         env.ledger().set_timestamp(pending_ts + DISPUTE_WINDOW);
         let disputer = Address::generate(&env);
         let result = client.try_file_dispute(&disputer, &market_id);
-        assert_eq!(result, Err(Ok(crate::errors::ErrorCode::DisputeWindowClosed)));
+        assert_eq!(
+            result,
+            Err(Ok(crate::errors::ErrorCode::DisputeWindowClosed))
+        );
     }
 
     #[test]
@@ -2541,7 +2677,10 @@ mod dispute_resolution_tests {
 
         let disputer = Address::generate(&env);
         let result = client.try_file_dispute(&disputer, &market_id);
-        assert_eq!(result, Err(Ok(crate::errors::ErrorCode::MarketNotPendingResolution)));
+        assert_eq!(
+            result,
+            Err(Ok(crate::errors::ErrorCode::MarketNotPendingResolution))
+        );
     }
 
     #[test]
@@ -2549,11 +2688,21 @@ mod dispute_resolution_tests {
         let (env, client, _admin, contract_id) = setup();
         let market_id = create_market(&env, &client, &contract_id);
 
-        seed_market_status(&env, &contract_id, market_id, MarketStatus::Resolved, None, None);
+        seed_market_status(
+            &env,
+            &contract_id,
+            market_id,
+            MarketStatus::Resolved,
+            None,
+            None,
+        );
 
         let disputer = Address::generate(&env);
         let result = client.try_file_dispute(&disputer, &market_id);
-        assert_eq!(result, Err(Ok(crate::errors::ErrorCode::MarketNotPendingResolution)));
+        assert_eq!(
+            result,
+            Err(Ok(crate::errors::ErrorCode::MarketNotPendingResolution))
+        );
     }
 
     #[test]
@@ -2674,7 +2823,10 @@ mod dispute_resolution_tests {
 
         let voter = Address::generate(&env);
         let result = client.try_cast_vote(&voter, &market_id, &0, &100);
-        assert_eq!(result, Err(Ok(crate::errors::ErrorCode::GovernanceTokenNotSet)));
+        assert_eq!(
+            result,
+            Err(Ok(crate::errors::ErrorCode::GovernanceTokenNotSet))
+        );
     }
 
     #[test]
@@ -2847,6 +2999,9 @@ mod dispute_resolution_tests {
 
         let metrics_0 = client.get_resolution_metrics(&market_id, &0);
         // gas_estimate = 100_000 + winner_count * 50_000
-        assert_eq!(metrics_0.gas_estimate, 100_000 + metrics_0.winner_count as u64 * 50_000);
+        assert_eq!(
+            metrics_0.gas_estimate,
+            100_000 + metrics_0.winner_count as u64 * 50_000
+        );
     }
 }

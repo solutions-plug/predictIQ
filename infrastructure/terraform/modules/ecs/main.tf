@@ -44,6 +44,15 @@ variable "redis_url" {
   sensitive = true
 }
 
+locals {
+  common_tags = {
+    Project   = "predictiq"
+    Environment = var.environment
+    Owner     = "infrastructure-team"
+    ManagedBy = "terraform"
+  }
+}
+
 resource "aws_ecs_cluster" "main" {
   name = "predictiq-${var.environment}"
 
@@ -52,18 +61,24 @@ resource "aws_ecs_cluster" "main" {
     value = "enabled"
   }
 
-  tags = {
-    Name = "predictiq-${var.environment}-cluster"
-  }
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-cluster"
+    }
+  )
 }
 
 resource "aws_cloudwatch_log_group" "ecs" {
   name              = "/ecs/predictiq-${var.environment}"
   retention_in_days = var.environment == "prod" ? 30 : 7
 
-  tags = {
-    Name = "predictiq-${var.environment}-logs"
-  }
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-logs"
+    }
+  )
 }
 
 resource "aws_ecs_task_definition" "api" {
@@ -114,9 +129,12 @@ resource "aws_ecs_task_definition" "api" {
     }
   ])
 
-  tags = {
-    Name = "predictiq-${var.environment}-api-task"
-  }
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-api-task"
+    }
+  )
 }
 
 resource "aws_security_group" "alb" {
@@ -144,9 +162,12 @@ resource "aws_security_group" "alb" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = {
-    Name = "predictiq-${var.environment}-alb-sg"
-  }
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-alb-sg"
+    }
+  )
 }
 
 resource "aws_lb" "main" {
@@ -156,9 +177,12 @@ resource "aws_lb" "main" {
   security_groups    = [aws_security_group.alb.id]
   subnets            = var.public_subnet_ids
 
-  tags = {
-    Name = "predictiq-${var.environment}-alb"
-  }
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-alb"
+    }
+  )
 }
 
 resource "aws_lb_target_group" "api" {
@@ -177,9 +201,12 @@ resource "aws_lb_target_group" "api" {
     matcher             = "200"
   }
 
-  tags = {
-    Name = "predictiq-${var.environment}-api-tg"
-  }
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-api-tg"
+    }
+  )
 }
 
 resource "aws_lb_listener" "api" {
@@ -211,9 +238,12 @@ resource "aws_security_group" "ecs_tasks" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = {
-    Name = "predictiq-${var.environment}-ecs-tasks-sg"
-  }
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-ecs-tasks-sg"
+    }
+  )
 }
 
 resource "aws_ecs_service" "api" {
@@ -237,17 +267,23 @@ resource "aws_ecs_service" "api" {
 
   depends_on = [aws_lb_listener.api]
 
-  tags = {
-    Name = "predictiq-${var.environment}-api-service"
-  }
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-api-service"
+    }
+  )
 }
 
 resource "aws_secretsmanager_secret" "database_url" {
   name = "predictiq/${var.environment}/database-url"
 
-  tags = {
-    Name = "predictiq-${var.environment}-database-url"
-  }
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-database-url"
+    }
+  )
 }
 
 resource "aws_secretsmanager_secret_version" "database_url" {
@@ -258,9 +294,12 @@ resource "aws_secretsmanager_secret_version" "database_url" {
 resource "aws_secretsmanager_secret" "redis_url" {
   name = "predictiq/${var.environment}/redis-url"
 
-  tags = {
-    Name = "predictiq-${var.environment}-redis-url"
-  }
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-redis-url"
+    }
+  )
 }
 
 resource "aws_secretsmanager_secret_version" "redis_url" {
@@ -283,6 +322,13 @@ resource "aws_iam_role" "ecs_task_execution_role" {
       }
     ]
   })
+
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-ecs-task-execution-role"
+    }
+  )
 }
 
 resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy" {
@@ -326,6 +372,13 @@ resource "aws_iam_role" "ecs_task_role" {
       }
     ]
   })
+
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-ecs-task-role"
+    }
+  )
 }
 
 data "aws_region" "current" {}

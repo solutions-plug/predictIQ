@@ -21,10 +21,15 @@ docs/
 
 ### Want to Contribute?
 
-1. **[API Specification](../API_SPEC.md)** - API reference and integration guide
-2. **[Infrastructure README](../infrastructure/README.md)** - Infrastructure and deployment overview
+1. **[Contributing Guide](../CONTRIBUTING.md)** - Setup, branch naming, commit conventions, and PR process
+2. **[API Specification](../API_SPEC.md)** - API reference and integration guide
+3. **[Infrastructure README](../infrastructure/README.md)** - Infrastructure and deployment overview
 
 ## 📖 Documentation Categories
+
+### Dashboard Management
+
+- **[Grafana Dashboard Provisioning](../performance/config/README.md#grafana-dashboard-provisioning)** - Version-controlled dashboard setup
 
 ### Distributed Tracing
 

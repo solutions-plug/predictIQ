@@ -6,22 +6,37 @@ variable "cidr_block" {
   type = string
 }
 
+locals {
+  common_tags = {
+    Project   = "predictiq"
+    Environment = var.environment
+    Owner     = "infrastructure-team"
+    ManagedBy = "terraform"
+  }
+}
+
 resource "aws_vpc" "main" {
   cidr_block           = var.cidr_block
   enable_dns_hostnames = true
   enable_dns_support   = true
 
-  tags = {
-    Name = "predictiq-${var.environment}-vpc"
-  }
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-vpc"
+    }
+  )
 }
 
 resource "aws_internet_gateway" "main" {
   vpc_id = aws_vpc.main.id
 
-  tags = {
-    Name = "predictiq-${var.environment}-igw"
-  }
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-igw"
+    }
+  )
 }
 
 resource "aws_subnet" "public" {
@@ -31,9 +46,13 @@ resource "aws_subnet" "public" {
   availability_zone       = data.aws_availability_zones.available.names[count.index]
   map_public_ip_on_launch = true
 
-  tags = {
-    Name = "predictiq-${var.environment}-public-${count.index + 1}"
-  }
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-public-${count.index + 1}"
+      Type = "public"
+    }
+  )
 }
 
 resource "aws_subnet" "private" {
@@ -42,18 +61,25 @@ resource "aws_subnet" "private" {
   cidr_block        = cidrsubnet(var.cidr_block, 2, count.index + 2)
   availability_zone = data.aws_availability_zones.available.names[count.index]
 
-  tags = {
-    Name = "predictiq-${var.environment}-private-${count.index + 1}"
-  }
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-private-${count.index + 1}"
+      Type = "private"
+    }
+  )
 }
 
 resource "aws_eip" "nat" {
   count  = 2
   domain = "vpc"
 
-  tags = {
-    Name = "predictiq-${var.environment}-eip-${count.index + 1}"
-  }
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-eip-${count.index + 1}"
+    }
+  )
 
   depends_on = [aws_internet_gateway.main]
 }
@@ -63,9 +89,12 @@ resource "aws_nat_gateway" "main" {
   allocation_id = aws_eip.nat[count.index].id
   subnet_id     = aws_subnet.public[count.index].id
 
-  tags = {
-    Name = "predictiq-${var.environment}-nat-${count.index + 1}"
-  }
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-nat-${count.index + 1}"
+    }
+  )
 
   depends_on = [aws_internet_gateway.main]
 }
@@ -78,9 +107,13 @@ resource "aws_route_table" "public" {
     gateway_id      = aws_internet_gateway.main.id
   }
 
-  tags = {
-    Name = "predictiq-${var.environment}-public-rt"
-  }
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-public-rt"
+      Type = "public"
+    }
+  )
 }
 
 resource "aws_route_table" "private" {
@@ -92,9 +125,13 @@ resource "aws_route_table" "private" {
     nat_gateway_id = aws_nat_gateway.main[count.index].id
   }
 
-  tags = {
-    Name = "predictiq-${var.environment}-private-rt-${count.index + 1}"
-  }
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-private-rt-${count.index + 1}"
+      Type = "private"
+    }
+  )
 }
 
 resource "aws_route_table_association" "public" {

@@ -258,12 +258,12 @@ test.describe('Reduced Motion', () => {
 test.describe('Zoom and Reflow', () => {
   test('should support 200% zoom', async ({ page }) => {
     await page.goto('/');
-    
+
     // Simulate browser zoom
     await page.evaluate(() => {
       document.body.style.zoom = '2';
     });
-    
+
     // Content should still be visible and usable
     await expect(page.getByRole('heading', { name: /decentralized prediction markets/i })).toBeVisible();
     await expect(page.getByLabel(/email address/i)).toBeVisible();
@@ -272,15 +272,130 @@ test.describe('Zoom and Reflow', () => {
   test('should reflow content at 400% zoom', async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 1024 });
     await page.goto('/');
-    
+
     // Simulate 400% zoom (320px effective width)
     await page.setViewportSize({ width: 320, height: 256 });
-    
+
     // Content should reflow without horizontal scroll
     const hasHorizontalScroll = await page.evaluate(() => {
       return document.documentElement.scrollWidth > document.documentElement.clientWidth;
     });
-    
+
     expect(hasHorizontalScroll).toBe(false);
+  });
+});
+
+test.describe('Market Creation Form - Keyboard Navigation', () => {
+  test('should navigate through all form elements via Tab', async ({ page }) => {
+    await page.goto('/markets/create');
+
+    // Get all interactive form elements
+    const formElements = await page.locator('form input, form select, form textarea, form button').all();
+    expect(formElements.length).toBeGreaterThan(0);
+
+    // Tab through each element and verify it receives focus
+    for (let i = 0; i < formElements.length; i++) {
+      await page.keyboard.press('Tab');
+      const focusedElement = await page.evaluate(() => document.activeElement?.tagName);
+      expect(focusedElement).toBeTruthy();
+    }
+  });
+
+  test('should have logical tab order matching visual reading order', async ({ page }) => {
+    await page.goto('/markets/create');
+
+    const tabOrder = [];
+    const maxTabs = 20; // reasonable limit for form elements
+
+    // Tab through form and collect element names/ids
+    for (let i = 0; i < maxTabs; i++) {
+      await page.keyboard.press('Tab');
+      const elementInfo = await page.evaluate(() => {
+        const el = document.activeElement as HTMLElement;
+        return {
+          tag: el?.tagName,
+          id: el?.id,
+          name: (el as any)?.name,
+          ariaLabel: el?.getAttribute('aria-label'),
+        };
+      });
+      if (elementInfo.tag) {
+        tabOrder.push(elementInfo);
+      }
+    }
+
+    // Verify tab order is not empty (form has interactive elements)
+    expect(tabOrder.length).toBeGreaterThan(0);
+
+    // Verify focus doesn't loop back immediately (form is not a single-element trap)
+    expect(tabOrder.length).toBeGreaterThanOrEqual(3);
+  });
+
+  test('should move focus to confirmation after form submission', async ({ page }) => {
+    await page.goto('/markets/create');
+
+    // Fill in required form fields
+    await page.getByLabel(/market title/i).fill('Will BTC reach $100k by end of 2026?');
+    await page.getByLabel(/resolution date/i).fill('2026-12-31');
+    await page.getByLabel(/category/i).selectOption('cryptocurrency');
+
+    // Submit form
+    await page.getByRole('button', { name: /create market/i }).click();
+
+    // Wait for submission to complete
+    await page.waitForURL(/\/markets\/\d+/);
+
+    // Verify focus is moved to a meaningful element (success heading or confirmation)
+    const focusedElement = await page.evaluate(() => document.activeElement?.tagName);
+    expect(focusedElement).toBeTruthy();
+
+    // Verify success message or confirmation is visible
+    const confirmation = page.locator('[role="status"], [role="alert"]').first();
+    await expect(confirmation).toBeVisible();
+  });
+
+  test('should not trap focus in the form', async ({ page }) => {
+    await page.goto('/markets/create');
+
+    // Tab 50 times to simulate continuous navigation
+    for (let i = 0; i < 50; i++) {
+      await page.keyboard.press('Tab');
+    }
+
+    // Focus should not be trapped (should be able to reach outside form elements)
+    const focusedElement = await page.evaluate(() => {
+      const el = document.activeElement;
+      return el?.tagName || null;
+    });
+
+    expect(focusedElement).toBeTruthy();
+
+    // If still in form, verify we can Shift+Tab back without getting stuck
+    await page.keyboard.press('Shift+Tab');
+    const focusedAfterShiftTab = await page.evaluate(() => {
+      const el = document.activeElement;
+      return el?.tagName || null;
+    });
+
+    expect(focusedAfterShiftTab).toBeTruthy();
+  });
+
+  test('should announce form validation errors to screen readers', async ({ page }) => {
+    await page.goto('/markets/create');
+
+    // Submit form without filling required fields
+    await page.getByRole('button', { name: /create market/i }).click();
+
+    // Verify error message is announced
+    const errorAlert = page.getByRole('alert');
+    await expect(errorAlert).toBeVisible();
+
+    // Verify error is linked to the form field
+    const titleInput = page.getByLabel(/market title/i);
+    const ariaDescribedBy = await titleInput.getAttribute('aria-describedby');
+    if (ariaDescribedBy) {
+      const errorElement = page.locator(`#${ariaDescribedBy}`);
+      await expect(errorElement).toBeVisible();
+    }
   });
 });

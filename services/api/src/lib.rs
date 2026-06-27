@@ -1,5 +1,7 @@
 pub mod audit;
 pub mod audit_middleware;
+#[cfg(test)]
+mod resolve_market_tests;
 pub mod blockchain;
 pub mod cache;
 pub mod compression;

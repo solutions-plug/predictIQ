@@ -5,10 +5,7 @@ use crate::errors::ErrorCode;
 use crate::modules::markets;
 use crate::types::{CreatorReputation, MarketStatus, MarketTier, OracleConfig};
 use crate::{PredictIQ, PredictIQClient};
-use soroban_sdk::{
-    testutils::Address as _,
-    Address, Env, String, Vec,
-};
+use soroban_sdk::{testutils::Address as _, Address, Env, String, Vec};
 
 fn setup() -> (Env, PredictIQClient<'static>, Address, Address) {
     let env = Env::default();
@@ -30,6 +27,7 @@ fn oracle_config(env: &Env) -> OracleConfig {
         min_responses: Some(1),
         max_staleness_seconds: 3600,
         max_confidence_bps: 100,
+        strike_price: None,
     }
 }
 
@@ -356,7 +354,11 @@ fn test_tier_institutional_reputation_all_tiers() {
     client.set_creator_reputation(&creator, &CreatorReputation::Institutional);
     let token = Address::generate(&env);
 
-    for tier in [MarketTier::Basic, MarketTier::Pro, MarketTier::Institutional] {
+    for tier in [
+        MarketTier::Basic,
+        MarketTier::Pro,
+        MarketTier::Institutional,
+    ] {
         client.create_market(
             &creator,
             &String::from_str(&env, "Market"),

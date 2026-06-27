@@ -261,6 +261,37 @@ function compareResults(testName, currentResults) {
 }
 
 /**
+ * Load and display error budget trend
+ */
+function displayErrorBudgetTrend() {
+  try {
+    const errorBudgetModule = require('./calculate-error-budget.js');
+    const trends = errorBudgetModule.calculateErrorBudgetTrend(10);
+    
+    if (trends.message) {
+      console.log(`\n${trends.message}`);
+      return;
+    }
+    
+    console.log('\n📊 Error Budget Trend (Last 10 Runs):');
+    console.log('─'.repeat(90));
+    
+    Object.values(trends).forEach(trend => {
+      const trendEmoji = {
+        improving: '📈',
+        degrading: '📉',
+        stable: '➡️',
+      }[trend.trend] || '❓';
+      
+      console.log(`${trendEmoji} ${trend.slo_name}`);
+      console.log(`   Avg Remaining: ${trend.avg_remaining}% | Min: ${trend.min_remaining.toFixed(2)}% | Max: ${trend.max_remaining.toFixed(2)}%`);
+    });
+  } catch (e) {
+    console.log('\n⚠️  Could not load error budget trend:', e.message);
+  }
+}
+
+/**
  * Generate markdown report for PR comment
  */
 function generateMarkdownReport(testResults) {
@@ -361,6 +392,9 @@ function main() {
   const reportFile = path.join(REPORTS_DIR, "regression-report.md");
   fs.writeFileSync(reportFile, markdownReport);
   console.log(`\n📄 Regression report saved: ${reportFile}`);
+
+  // Display error budget trend
+  displayErrorBudgetTrend();
 
   if (hasAnyRegression) {
     console.log("\n❌ Performance regression detected!");

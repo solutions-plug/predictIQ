@@ -263,17 +263,42 @@ export class HealthChecker {
         };
       }
 
-      // If using keyFilename, verify file exists
+      // If using keyFilename, verify file exists and is readable
       if (keyFilename) {
         try {
           await fs.access(keyFilename);
-        } catch {
+          // Verify it's valid JSON
+          const content = await fs.readFile(keyFilename, "utf-8");
+          JSON.parse(content);
+        } catch (err) {
           return {
             status: "error",
-            message: `Google TTS key file not found: ${keyFilename}`,
+            message: `Google TTS key file invalid: ${String(err)}`,
             latency: Date.now() - start,
           };
         }
+      }
+
+      // Attempt to verify API connectivity by checking credentials format
+      // In production, this could make a lightweight API call to Google Cloud TTS
+      try {
+        // Validate credentials structure if provided
+        if (credentials && typeof credentials === "object") {
+          const creds = credentials as any;
+          if (!creds.project_id || !creds.private_key) {
+            return {
+              status: "error",
+              message: "Google TTS credentials missing required fields",
+              latency: Date.now() - start,
+            };
+          }
+        }
+      } catch (err) {
+        return {
+          status: "error",
+          message: `Google TTS credentials validation failed: ${String(err)}`,
+          latency: Date.now() - start,
+        };
       }
 
       return {

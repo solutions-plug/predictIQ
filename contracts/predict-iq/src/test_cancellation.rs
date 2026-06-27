@@ -48,6 +48,7 @@ fn test_admin_cancel_market() {
             min_responses: 1,
         max_staleness_seconds: 3600,
         max_confidence_bps: 200,
+        strike_price: None,
     },
         &token_address,
     );
@@ -80,6 +81,7 @@ fn test_withdraw_refund_full_amount() {
             min_responses: 1,
         max_staleness_seconds: 3600,
         max_confidence_bps: 200,
+        strike_price: None,
     },
         &token_address,
     );
@@ -124,6 +126,7 @@ fn test_refund_no_fee_collected() {
             min_responses: 1,
         max_staleness_seconds: 3600,
         max_confidence_bps: 200,
+        strike_price: None,
     },
         &token_address,
     );
@@ -160,6 +163,7 @@ fn test_refund_only_on_cancelled_market() {
             min_responses: 1,
         max_staleness_seconds: 3600,
         max_confidence_bps: 200,
+        strike_price: None,
     },
         &token_address,
     );
@@ -189,6 +193,7 @@ fn test_refund_only_once() {
             min_responses: 1,
         max_staleness_seconds: 3600,
         max_confidence_bps: 200,
+        strike_price: None,
     },
         &token_address,
     );
@@ -232,6 +237,7 @@ fn test_creator_deposit_refunded_on_cancellation() {
             min_responses: 1,
             max_staleness_seconds: 3600,
             max_confidence_bps: 200,
+        strike_price: None,
         },
         &crate::types::MarketTier::Basic,
         &token_address,
@@ -288,6 +294,7 @@ fn test_cancel_vote_threshold_no_overflow() {
             min_responses: 1,
             max_staleness_seconds: 3600,
             max_confidence_bps: 200,
+        strike_price: None,
         },
         &crate::types::MarketTier::Basic,
         &token_address,

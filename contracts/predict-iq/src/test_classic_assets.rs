@@ -33,6 +33,7 @@ fn test_classic_asset_sac_integration() {
         min_responses: 1,
         max_staleness_seconds: 3600,
         max_confidence_bps: 200,
+        strike_price: None,
     };
 
     let market_id = client.create_market(
@@ -99,6 +100,7 @@ fn test_clawback_detection_cancels_market() {
         min_responses: 1,
         max_staleness_seconds: 3600,
         max_confidence_bps: 200,
+        strike_price: None,
     };
 
     let market_id = client.create_market(
@@ -154,6 +156,7 @@ fn test_classic_asset_full_lifecycle() {
         min_responses: 1,
         max_staleness_seconds: 3600,
         max_confidence_bps: 200,
+        strike_price: None,
     };
 
     let market_id = client.create_market(
@@ -229,6 +232,7 @@ fn test_frozen_asset_handling() {
         min_responses: 1,
         max_staleness_seconds: 3600,
         max_confidence_bps: 200,
+        strike_price: None,
     };
 
     let market_id = client.create_market(
@@ -281,6 +285,7 @@ fn test_transfer_failure_returns_error_not_panic() {
         min_responses: 1,
         max_staleness_seconds: 3600,
         max_confidence_bps: 200,
+        strike_price: None,
     };
     client.create_market(
         &Address::generate(&e),

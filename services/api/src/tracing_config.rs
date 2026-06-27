@@ -52,6 +52,10 @@ pub fn init_tracing(
     otlp_endpoint: Option<String>,
     sample_rate: f64,
 ) -> Result<(), TraceError> {
+    // OTel standard env vars take precedence over the passed-in rate.
+    // OTEL_TRACES_SAMPLER / OTEL_TRACES_SAMPLER_ARG default to 10 % for production.
+    let sample_rate = sample_rate_from_env(sample_rate);
+
     // Create resource with service information
     let resource = Resource::new(vec![
         KeyValue::new(SERVICE_NAME, service_name.to_string()),

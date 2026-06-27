@@ -50,25 +50,20 @@ impl IpRateLimiter {
     }
 
     /// Returns true if allowed, false if rate limited.
+    /// Uses an atomic Redis Lua script so the counter is consistent across
+    /// all instances. Fails open (returns `true`) if Redis is unavailable.
     pub async fn allow(&self, key: &str, max_requests: usize, window: Duration) -> bool {
-        let redis_key = format!("newsletter:ratelimit:{}", key);
-        let mut conn = self.cache.manager.clone();
-        let script = r#"
-            local current = redis.call('INCR', KEYS[1])
-            if tonumber(current) == 1 then
-                redis.call('EXPIRE', KEYS[1], ARGV[1])
-            end
-            return current
-        "#;
-        let ttl_secs = window.as_secs() as usize;
-        let result: Result<u64, _> = redis::Script::new(script)
-            .key(&redis_key)
-            .arg(ttl_secs)
-            .invoke_async(&mut conn)
-            .await;
-        match result {
+        let redis_key = format!("newsletter:ratelimit:v1:{key}");
+        match self.cache.incr_with_ttl(&redis_key, window).await {
             Ok(count) => count as usize <= max_requests,
-            Err(_) => true, // fail open if Redis is unavailable
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    key,
+                    "newsletter rate limiter Redis error; failing open to avoid blocking subscribers"
+                );
+                true
+            }
         }
     }
 }
@@ -133,7 +128,7 @@ impl TokenStore {
             return ConfirmResult::InvalidOrExpired;
         };
 
-        let entry = self.pending.remove(&email).unwrap();
+        let entry = self.pending.remove(&email).expect("email was found in pending map immediately above");
 
         if Instant::now() > entry.expires_at {
             return ConfirmResult::InvalidOrExpired;
@@ -186,7 +181,10 @@ pub async fn send_confirmation_email(
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
+        let body = response.text().await.unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to read SendGrid error response body");
+            String::new()
+        });
         anyhow::bail!("sendgrid returned {status}: {body}");
     }
 
@@ -198,9 +196,21 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    async fn make_limiter() -> IpRateLimiter {
+        use testcontainers::runners::AsyncRunner;
+        use testcontainers_modules::redis::Redis;
+        let container = Redis::default().start().await.expect("redis container");
+        let port = container.get_host_port_ipv4(6379).await.expect("redis port");
+        // Leak the container so it lives for the test duration.
+        std::mem::forget(container);
+        let url = format!("redis://127.0.0.1:{port}");
+        let cache = crate::cache::RedisCache::new(&url).await.expect("redis cache");
+        IpRateLimiter::new(cache)
+    }
+
     #[tokio::test]
     async fn limiter_blocks_when_max_requests_reached() {
-        let limiter = IpRateLimiter::default();
+        let limiter = make_limiter().await;
         let key = "203.0.113.1";
         let window = Duration::from_secs(60);
 
@@ -211,14 +221,14 @@ mod tests {
 
     #[tokio::test]
     async fn limiter_allows_after_window_expires() {
-        let limiter = IpRateLimiter::default();
+        let limiter = make_limiter().await;
         let key = "198.51.100.42";
-        let window = Duration::from_millis(20);
+        let window = Duration::from_secs(1);
 
         assert!(limiter.allow(key, 1, window).await);
         assert!(!limiter.allow(key, 1, window).await);
 
-        tokio::time::sleep(Duration::from_millis(25)).await;
+        tokio::time::sleep(Duration::from_millis(1100)).await;
 
         assert!(limiter.allow(key, 1, window).await);
     }

@@ -30,6 +30,15 @@ fn create_test_market(
     e: &Env,
     resolution_deadline: u64,
 ) -> u64 {
+    create_test_market_with_dispute_window(client, e, resolution_deadline, None)
+}
+
+fn create_test_market_with_dispute_window(
+    client: &PredictIQClient,
+    e: &Env,
+    resolution_deadline: u64,
+    dispute_window: Option<u64>,
+) -> u64 {
     let creator = Address::generate(e);
     let description = String::from_str(e, "Test Market");
     let mut options = Vec::new(e);
@@ -42,13 +51,14 @@ fn create_test_market(
         min_responses: Some(1),
         max_staleness_seconds: 3600,
         max_confidence_bps: 200,
+        strike_price: None,
     };
 
     let token_admin = Address::generate(e);
     let token_id = e.register_stellar_asset_contract_v2(token_admin.clone());
     let token_address = token_id.address();
 
-    client.create_market(
+    client.create_market_with_dispute_window(
         &creator,
         &description,
         &options,
@@ -59,12 +69,71 @@ fn create_test_market(
         &token_address,
         &0,
         &0,
+        &dispute_window,
     )
 }
 
 // ── Illegal transition matrix ────────────────────────────────────────────────
 
-/// Active → Resolved is illegal: must go through PendingResolution first.
+#[test]
+fn test_default_dispute_window_used_when_not_specified() {
+    let (e, _admin, _, client) = setup_test_env();
+    let market_id = create_test_market(&client, &e, 100_000);
+
+    assert_eq!(
+        client.get_market_dispute_window(&market_id),
+        crate::modules::resolution::DEFAULT_DISPUTE_WINDOW_SECONDS
+    );
+}
+
+#[test]
+fn test_minimum_dispute_window_duration_at_market_creation() {
+    let (e, _admin, _, client) = setup_test_env();
+    let resolution_deadline = 100_000;
+    let window = crate::modules::resolution::MIN_DISPUTE_WINDOW_SECONDS;
+    let market_id =
+        create_test_market_with_dispute_window(&client, &e, resolution_deadline, Some(window));
+
+    assert_eq!(client.get_market_dispute_window(&market_id), window);
+
+    e.ledger().with_mut(|li| li.timestamp = resolution_deadline);
+    client.set_oracle_result(&market_id, &0, &0);
+    client.attempt_oracle_resolution(&market_id);
+
+    e.ledger().with_mut(|li| li.timestamp = resolution_deadline + window - 1);
+    assert_eq!(
+        client.try_finalize_resolution(&market_id),
+        Err(Ok(ErrorCode::DisputeWindowStillOpen))
+    );
+
+    e.ledger().with_mut(|li| li.timestamp = resolution_deadline + window);
+    assert!(client.try_finalize_resolution(&market_id).is_ok());
+}
+
+#[test]
+fn test_maximum_dispute_window_duration_at_market_creation() {
+    let (e, _admin, _, client) = setup_test_env();
+    let resolution_deadline = 100_000;
+    let window = crate::modules::resolution::MAX_DISPUTE_WINDOW_SECONDS;
+    let market_id =
+        create_test_market_with_dispute_window(&client, &e, resolution_deadline, Some(window));
+
+    assert_eq!(client.get_market_dispute_window(&market_id), window);
+
+    e.ledger().with_mut(|li| li.timestamp = resolution_deadline);
+    client.set_oracle_result(&market_id, &0, &0);
+    client.attempt_oracle_resolution(&market_id);
+
+    e.ledger().with_mut(|li| li.timestamp = resolution_deadline + window - 1);
+    assert_eq!(
+        client.try_finalize_resolution(&market_id),
+        Err(Ok(ErrorCode::DisputeWindowStillOpen))
+    );
+
+    e.ledger().with_mut(|li| li.timestamp = resolution_deadline + window);
+    assert!(client.try_finalize_resolution(&market_id).is_ok());
+}
+
 #[test]
 fn test_illegal_active_to_resolved_via_finalize() {
     let (e, _admin, _, client) = setup_test_env();
@@ -680,6 +749,7 @@ fn test_payouts_blocked_until_resolved() {
         min_responses: 1,
         max_staleness_seconds: 3600,
         max_confidence_bps: 200,
+        strike_price: None,
     };
 
     let market_id = client.create_market(&creator, &description, &options, &100, &resolution_deadline, &oracle_config, &token_address);

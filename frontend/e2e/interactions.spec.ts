@@ -175,13 +175,13 @@ test.describe('Scroll Behavior', () => {
 test.describe('External Link Clicks', () => {
   test('should have external links with proper attributes', async ({ page }) => {
     await page.goto('/');
-    
+
     const externalLinks = [
       page.getByRole('link', { name: /documentation/i }),
       page.getByRole('link', { name: /github/i }),
       page.getByRole('link', { name: /discord/i }),
     ];
-    
+
     for (const link of externalLinks) {
       if (await link.count() > 0) {
         await expect(link).toHaveAttribute('href', /.+/);
@@ -191,12 +191,102 @@ test.describe('External Link Clicks', () => {
 
   test('should open external links', async ({ page, context }) => {
     await page.goto('/');
-    
+
     const docsLink = page.getByRole('link', { name: /documentation/i });
-    
+
     if (await docsLink.count() > 0) {
       const href = await docsLink.getAttribute('href');
       expect(href).toBeTruthy();
     }
+  });
+});
+
+test.describe('Form Validation Error Messages', () => {
+  test('should display error message on empty form submission', async ({ page }) => {
+    await page.goto('/');
+
+    await page.getByRole('button', { name: /get early access/i }).click();
+
+    const errorMessage = page.getByRole('alert');
+    await expect(errorMessage).toBeVisible();
+    await expect(errorMessage).toContainText(/email is required/i);
+  });
+
+  test('should display error message for invalid email format', async ({ page }) => {
+    await page.goto('/');
+
+    await page.getByLabel(/email address/i).fill('not-an-email');
+    await page.getByRole('button', { name: /get early access/i }).click();
+
+    const errorMessage = page.getByRole('alert');
+    await expect(errorMessage).toBeVisible();
+    await expect(errorMessage).toContainText(/valid email/i);
+  });
+
+  test('error messages should be associated with inputs via aria-describedby', async ({ page }) => {
+    await page.goto('/');
+
+    await page.getByRole('button', { name: /get early access/i }).click();
+
+    const emailInput = page.getByLabel(/email address/i);
+    const describedBy = await emailInput.getAttribute('aria-describedby');
+
+    expect(describedBy).toBeTruthy();
+
+    // The element referenced by aria-describedby must exist and contain the error text
+    const errorElement = page.locator(`#${describedBy}`);
+    await expect(errorElement).toBeVisible();
+    await expect(errorElement).toContainText(/email is required/i);
+  });
+
+  test('invalid input should carry aria-invalid attribute', async ({ page }) => {
+    await page.goto('/');
+
+    await page.getByRole('button', { name: /get early access/i }).click();
+
+    const emailInput = page.getByLabel(/email address/i);
+    await expect(emailInput).toHaveAttribute('aria-invalid', 'true');
+  });
+
+  test('error messages should have role="alert" for screen-reader announcement', async ({ page }) => {
+    await page.goto('/');
+
+    await page.getByRole('button', { name: /get early access/i }).click();
+
+    // role="alert" causes assistive technology to announce the message immediately
+    const alert = page.locator('[role="alert"]');
+    await expect(alert).toBeVisible();
+    await expect(alert).not.toBeEmpty();
+  });
+
+  test('aria-describedby error should update when validation message changes', async ({ page }) => {
+    await page.goto('/');
+
+    // Trigger "required" error
+    await page.getByRole('button', { name: /get early access/i }).click();
+    const emailInput = page.getByLabel(/email address/i);
+    const describedBy = await emailInput.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+
+    // Switch to "invalid format" error
+    await emailInput.fill('bad-email');
+    await page.getByRole('button', { name: /get early access/i }).click();
+
+    const errorElement = page.locator(`#${describedBy}`);
+    await expect(errorElement).toContainText(/valid email/i);
+  });
+
+  test('error message should not be present after valid submission', async ({ page }) => {
+    await page.goto('/');
+
+    // Trigger validation error first
+    await page.getByRole('button', { name: /get early access/i }).click();
+    await expect(page.getByRole('alert')).toBeVisible();
+
+    // Submit with a valid email
+    await page.getByLabel(/email address/i).fill('valid@example.com');
+    await page.getByRole('button', { name: /get early access/i }).click();
+
+    await expect(page.getByRole('alert')).not.toBeVisible();
   });
 });

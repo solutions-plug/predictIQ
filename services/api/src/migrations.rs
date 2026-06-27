@@ -87,6 +87,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "008_create_email_tracking",
         sql: include_str!("../database/migrations/008_create_email_tracking.sql"),
     },
+    Migration {
+        version: "011",
+        name: "011_create_markets",
+        sql: include_str!("../database/migrations/011_create_markets.sql"),
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -103,9 +108,49 @@ impl<'a> MigrationRunner<'a> {
     /// Ensure the tracking table exists, then apply every pending migration.
     /// Already-applied migrations are skipped. Returns the number of newly
     /// applied migrations.
+    ///
+    /// Uses a PostgreSQL session-level advisory lock to serialize concurrent
+    /// invocations (e.g. multiple instances starting simultaneously). If another
+    /// instance already holds the lock, this call aborts with an error so the
+    /// caller can surface it and halt startup cleanly.
     pub async fn run(&self) -> anyhow::Result<usize> {
         self.ensure_tracking_table().await?;
 
+        // Stable lock key — chosen to be unique to this codebase.
+        const MIGRATION_LOCK_KEY: i64 = 0x7072_6564_6963_7471_u64 as i64;
+
+        let mut lock_conn = self
+            .pool
+            .acquire()
+            .await
+            .context("acquire advisory lock connection")?;
+
+        let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+            .bind(MIGRATION_LOCK_KEY)
+            .fetch_one(&mut *lock_conn)
+            .await
+            .context("acquire migration advisory lock")?;
+
+        if !locked {
+            bail!(
+                "another instance holds the migration advisory lock — \
+                 aborting to prevent concurrent migration execution"
+            );
+        }
+
+        let result = self.run_inner().await;
+
+        // Always release the lock, even on failure, before the connection
+        // returns to the pool (session-level locks survive pool reuse).
+        let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
+            .bind(MIGRATION_LOCK_KEY)
+            .execute(&mut *lock_conn)
+            .await;
+
+        result
+    }
+
+    async fn run_inner(&self) -> anyhow::Result<usize> {
         let mut applied = 0usize;
 
         for migration in MIGRATIONS {

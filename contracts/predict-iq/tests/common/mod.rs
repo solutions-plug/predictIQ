@@ -46,6 +46,7 @@ pub fn create_market(
         min_responses: Some(1),
         max_staleness_seconds: 3600,
         max_confidence_bps: 200,
+        strike_price: None,
     };
 
     client.create_market(
@@ -85,6 +86,7 @@ pub fn create_custom_market(
         min_responses: Some(1),
         max_staleness_seconds: 3600,
         max_confidence_bps: 200,
+        strike_price: None,
     };
 
     client.create_market(

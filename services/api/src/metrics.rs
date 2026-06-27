@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::Context;
-use prometheus::{Encoder, HistogramVec, IntCounterVec, Registry, TextEncoder};
+use prometheus::{Encoder, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec, Registry, TextEncoder};
 
 #[derive(Clone)]
 pub struct Metrics {
@@ -120,6 +120,7 @@ impl Metrics {
         }
     }
 
+
     pub fn observe_request(&self, route: &str, status_code: &str, duration: Duration) {
         self.request_latency
             .with_label_values(&[route, status_code])
@@ -153,6 +154,33 @@ impl Metrics {
                 .with_label_values(&["tx_watch_eviction"])
                 .inc_by(count);
         }
+    }
+
+
+    /// Update connection pool utilisation gauges.
+    /// Call this on each pool event (connection acquired, released, opened, closed).
+    pub fn observe_pool_connections(&self, pool: &str, active: i64, idle: i64) {
+        self.db_pool_connections_active
+            .with_label_values(&[pool])
+            .set(active);
+        self.db_pool_connections_idle
+            .with_label_values(&[pool])
+            .set(idle);
+    }
+
+    /// Record how long the caller waited to acquire a connection from the pool.
+    pub fn observe_pool_acquire(&self, pool: &str, duration: Duration) {
+        self.db_pool_acquire_duration
+            .with_label_values(&[pool])
+            .observe(duration.as_secs_f64());
+    }
+
+    /// Increment the rate-limit rejection counter for a route.
+    /// Call this whenever a request is rejected with 429 Too Many Requests.
+    pub fn observe_rate_limit_rejection(&self, route: &str) {
+        self.rate_limit_rejections
+            .with_label_values(&[route])
+            .inc();
     }
 
     pub fn render(&self) -> anyhow::Result<String> {

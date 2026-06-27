@@ -291,20 +291,25 @@
       },
       {
         "id": 7,
-        "title": "Database Connection Pool Utilization",
+        "title": "Database Connection Pool — Active vs Idle",
         "type": "graph",
         "gridPos": { "x": 0, "y": 24, "w": 12, "h": 8 },
         "targets": [
           {
-            "expr": "db_connections_active / db_connections_max",
-            "legendFormat": "Pool Utilization",
+            "expr": "db_pool_connections_active{pool=\"main\"}",
+            "legendFormat": "Active connections",
             "refId": "A"
+          },
+          {
+            "expr": "db_pool_connections_idle{pool=\"main\"}",
+            "legendFormat": "Idle connections",
+            "refId": "B"
           }
         ],
         "yaxes": [
           {
-            "format": "percentunit",
-            "label": "Utilization"
+            "format": "short",
+            "label": "Connections"
           }
         ],
         "alert": {
@@ -312,7 +317,7 @@
           "conditions": [
             {
               "evaluator": {
-                "params": [0.8],
+                "params": [80],
                 "type": "gt"
               },
               "operator": {
@@ -331,7 +336,59 @@
           "executionErrorState": "alerting",
           "frequency": "1m",
           "handler": 1,
-          "message": "Database connection pool utilization exceeded 80% threshold",
+          "message": "Database connection pool active connections exceeded 80",
+          "noDataState": "no_data",
+          "notifications": []
+        }
+      },
+      {
+        "id": 10,
+        "title": "Database Pool Acquire Duration (p95)",
+        "type": "graph",
+        "gridPos": { "x": 12, "y": 24, "w": 12, "h": 8 },
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(db_pool_acquire_duration_seconds_bucket{pool=\"main\"}[5m]))",
+            "legendFormat": "p95 acquire time",
+            "refId": "A"
+          },
+          {
+            "expr": "histogram_quantile(0.50, rate(db_pool_acquire_duration_seconds_bucket{pool=\"main\"}[5m]))",
+            "legendFormat": "p50 acquire time",
+            "refId": "B"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "s",
+            "label": "Acquire Duration"
+          }
+        ],
+        "alert": {
+          "name": "Slow DB Pool Acquire",
+          "conditions": [
+            {
+              "evaluator": {
+                "params": [0.1],
+                "type": "gt"
+              },
+              "operator": {
+                "type": "and"
+              },
+              "query": {
+                "params": ["A", "5m", "now"]
+              },
+              "reducer": {
+                "params": [],
+                "type": "avg"
+              },
+              "type": "query"
+            }
+          ],
+          "executionErrorState": "alerting",
+          "frequency": "1m",
+          "handler": 1,
+          "message": "p95 DB pool acquire time exceeded 100ms — pool may be exhausted",
           "noDataState": "no_data",
           "notifications": []
         }

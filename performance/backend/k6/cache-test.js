@@ -1,6 +1,7 @@
 import http from 'k6/http';
 import { check } from 'k6';
 import { Counter, Rate } from 'k6/metrics';
+import { getThresholdsForTest } from './slo-thresholds.js';
 
 const cacheHits = new Counter('cache_hits');
 const cacheMisses = new Counter('cache_misses');
@@ -9,9 +10,7 @@ const cacheHitRate = new Rate('cache_hit_rate');
 export const options = {
   vus: 50,
   duration: '2m',
-  thresholds: {
-    cache_hit_rate: ['rate>0.8'],  // Expect >80% cache hit rate
-  },
+  thresholds: getThresholdsForTest('cache'),
 };
 
 const BASE_URL = __ENV.API_URL || 'http://localhost:8080';

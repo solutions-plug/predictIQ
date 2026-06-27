@@ -17,6 +17,7 @@ import http from "k6/http";
 import { check, group, sleep } from "k6";
 import { Counter, Rate, Trend } from "k6/metrics";
 import { randomIntBetween } from "https://jslib.k6.io/k6-utils/1.2.0/index.js";
+import { getThresholdsForTest } from './slo-thresholds.js';
 
 // ---------------------------------------------------------------------------
 // Custom metrics
@@ -100,23 +101,21 @@ export const options = {
   },
 
   thresholds: {
-    // Overall error budget
-    blockchain_errors: ["rate<0.01"],
-
+    ...getThresholdsForTest('blockchain'),
     // Cache effectiveness — warmed traffic should hit cache >80% of the time
-    blockchain_cache_hit_rate: ["rate>0.8"],
+    blockchain_cache_hit_rate: ['rate>0.8'],
 
     // Per-group latency targets
-    blockchain_market_data_duration: ["p(95)<200", "p(99)<400"],
-    blockchain_stats_duration: ["p(95)<150", "p(99)<300"],
-    blockchain_user_bets_duration: ["p(95)<250", "p(99)<500"],
-    blockchain_outcome_stake_duration: ["p(95)<150", "p(99)<300"],
+    blockchain_market_data_duration: ['p(95)<200', 'p(99)<400'],
+    blockchain_stats_duration: ['p(95)<150', 'p(99)<300'],
+    blockchain_user_bets_duration: ['p(95)<250', 'p(99)<500'],
+    blockchain_outcome_stake_duration: ['p(95)<150', 'p(99)<300'],
 
     // Warmed-scenario latency should be tighter (cache serving responses)
-    "http_req_duration{scenario:cache_warmed}": ["p(95)<150"],
+    'http_req_duration{scenario:cache_warmed}': ['p(95)<150'],
 
     // Cold-scenario latency is allowed to be higher (cache miss penalty)
-    "http_req_duration{scenario:cold_cache}": ["p(95)<400"],
+    'http_req_duration{scenario:cold_cache}': ['p(95)<400'],
   },
 };
 
