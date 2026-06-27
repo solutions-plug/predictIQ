@@ -21,6 +21,7 @@ pub mod shutdown;
 pub mod tracing_config;
 pub mod validation;
 pub mod versioning;
+pub mod openapi_spec;
 
 // Re-export AppState so integration tests can construct it.
 pub use crate::app_state::AppState;

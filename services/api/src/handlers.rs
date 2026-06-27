@@ -17,11 +17,12 @@ use validator::ValidateEmail;
 
 use crate::{blockchain::HealthStatus, cache::{keys, InvalidationTag}, db::DbError, email::webhook::sendgrid_webhook_handler, pagination::{PaginatedResponse, PaginationQuery}, AppState};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ApiError {
     pub code: &'static str,
     pub message: String,
     #[serde(skip)]
+    #[schema(ignore)]
     pub status: StatusCode,
 }
 
@@ -100,7 +101,7 @@ fn into_api_error(err: anyhow::Error) -> ApiError {
     ApiError::internal(err)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct FeaturedMarketView {
     pub id: i64,
     pub title: String,
@@ -110,6 +111,14 @@ pub struct FeaturedMarketView {
     pub resolved_outcome: Option<u32>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/health",
+    tag = "health",
+    responses(
+        (status = 200, description = "Service is healthy or degraded"),
+    )
+)]
 pub async fn health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl IntoResponse {
     use crate::cache::CircuitState;
     use crate::correlation::REQUEST_ID_HEADER;
@@ -163,41 +172,42 @@ pub async fn health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> i
     (StatusCode::OK, Json(health_status))
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 pub struct NewsletterSubscribeRequest {
     pub email: String,
     pub source: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 pub struct NewsletterEmailRequest {
     pub email: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::IntoParams)]
 pub struct NewsletterConfirmQuery {
     pub token: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::IntoParams)]
 pub struct NewsletterUnsubscribeQuery {
     pub token: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::IntoParams)]
 pub struct NewsletterExportQuery {
     pub email: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct NewsletterResponse {
     pub success: bool,
     pub message: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct NewsletterExportResponse {
     pub success: bool,
+    #[schema(value_type = Object)]
     pub data: crate::db::NewsletterSubscriber,
 }
 
@@ -221,6 +231,16 @@ fn is_disposable_email(email: &str) -> bool {
 
 use crate::security::extract_client_ip_cidrs;
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/newsletter/subscribe",
+    tag = "newsletter",
+    request_body = NewsletterSubscribeRequest,
+    responses(
+        (status = 202, description = "Subscription request accepted", body = NewsletterResponse),
+        (status = 400, description = "Invalid email address", body = NewsletterResponse),
+    )
+)]
 pub async fn newsletter_subscribe(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -338,6 +358,17 @@ pub async fn newsletter_subscribe(
     ))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/newsletter/confirm",
+    tag = "newsletter",
+    params(NewsletterConfirmQuery),
+    responses(
+        (status = 200, description = "Subscription confirmed", body = NewsletterResponse),
+        (status = 400, description = "Missing or invalid token", body = NewsletterResponse),
+        (status = 404, description = "Token not found or expired", body = NewsletterResponse),
+    )
+)]
 pub async fn newsletter_confirm(
     State(state): State<Arc<AppState>>,
     Query(query): Query<NewsletterConfirmQuery>,
@@ -377,6 +408,16 @@ pub async fn newsletter_confirm(
     ))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/newsletter/unsubscribe",
+    tag = "newsletter",
+    params(NewsletterUnsubscribeQuery),
+    responses(
+        (status = 200, description = "Successfully unsubscribed", body = NewsletterResponse),
+        (status = 401, description = "Invalid unsubscribe token", body = NewsletterResponse),
+    )
+)]
 pub async fn newsletter_unsubscribe(
     State(state): State<Arc<AppState>>,
     Query(query): Query<NewsletterUnsubscribeQuery>,
@@ -424,6 +465,18 @@ pub async fn newsletter_unsubscribe(
     ))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/newsletter/gdpr/export",
+    tag = "newsletter",
+    params(NewsletterExportQuery),
+    responses(
+        (status = 200, description = "GDPR data export", body = NewsletterExportResponse),
+        (status = 400, description = "Invalid email", body = NewsletterResponse),
+        (status = 404, description = "No record found", body = NewsletterResponse),
+        (status = 429, description = "Rate limited", body = NewsletterResponse),
+    )
+)]
 pub async fn newsletter_gdpr_export(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -514,6 +567,16 @@ pub async fn newsletter_gdpr_export(
         .into_response())
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/v1/newsletter/gdpr/delete",
+    tag = "newsletter",
+    request_body = NewsletterEmailRequest,
+    responses(
+        (status = 200, description = "Data deleted", body = NewsletterResponse),
+        (status = 400, description = "Invalid email", body = NewsletterResponse),
+    )
+)]
 pub async fn newsletter_gdpr_delete(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<NewsletterEmailRequest>,
@@ -545,6 +608,14 @@ pub async fn newsletter_gdpr_delete(
     ))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/statistics",
+    tag = "markets",
+    responses(
+        (status = 200, description = "Platform statistics"),
+    )
+)]
 pub async fn statistics(State(state): State<Arc<AppState>>) -> Result<impl IntoResponse, ApiError> {
     let start = Instant::now();
     let cache_key = keys::api_statistics();
@@ -570,6 +641,15 @@ pub async fn statistics(State(state): State<Arc<AppState>>) -> Result<impl IntoR
     Ok((StatusCode::OK, Json(payload)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/markets/featured",
+    tag = "markets",
+    params(PaginationQuery),
+    responses(
+        (status = 200, description = "Paginated list of featured markets"),
+    )
+)]
 pub async fn featured_markets(
     State(state): State<Arc<AppState>>,
     Query(query): Query<PaginationQuery>,
@@ -638,6 +718,15 @@ pub async fn featured_markets(
     Ok((StatusCode::OK, Json(paginated)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/content",
+    tag = "markets",
+    params(PaginationQuery),
+    responses(
+        (status = 200, description = "Paginated content items"),
+    )
+)]
 pub async fn content(
     State(state): State<Arc<AppState>>,
     Query(query): Query<PaginationQuery>,
@@ -688,7 +777,7 @@ pub async fn content(
     Ok((StatusCode::OK, Json(paginated)))
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct InvalidationResult {
     pub invalidated_keys: usize,
 }
@@ -704,12 +793,27 @@ pub struct InvalidationResult {
 ///    because they are not affected by a single market resolution.
 /// 4. Cache invalidation only runs after a successful write — a failed DB update
 ///    leaves the cache untouched.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 pub struct ResolveMarketRequest {
     /// The winning outcome index (0-based).
     pub outcome_index: u32,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/markets/{market_id}/resolve",
+    tag = "markets",
+    params(
+        ("market_id" = i64, Path, description = "Market database ID"),
+    ),
+    request_body = ResolveMarketRequest,
+    responses(
+        (status = 200, description = "Market resolved and cache invalidated", body = InvalidationResult),
+        (status = 400, description = "Bad request", body = ApiError),
+        (status = 500, description = "Internal error", body = ApiError),
+    ),
+    security(("api_key" = []))
+)]
 pub async fn resolve_market(
     State(state): State<Arc<AppState>>,
     Path(market_id): Path<i64>,
@@ -757,6 +861,15 @@ pub async fn metrics(State(state): State<Arc<AppState>>) -> Result<impl IntoResp
     ))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/blockchain/health",
+    tag = "blockchain",
+    responses(
+        (status = 200, description = "Blockchain node is healthy"),
+        (status = 503, description = "Blockchain node is degraded or unreachable"),
+    )
+)]
 pub async fn blockchain_health(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -772,6 +885,18 @@ pub async fn blockchain_health(
     Ok((status_code, Json(data)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/blockchain/markets/{market_id}",
+    tag = "blockchain",
+    params(
+        ("market_id" = i64, Path, description = "Market database ID"),
+    ),
+    responses(
+        (status = 200, description = "On-chain market data"),
+        (status = 500, description = "Blockchain query failed", body = ApiError),
+    )
+)]
 pub async fn blockchain_market_data(
     State(state): State<Arc<AppState>>,
     Path(market_id): Path<i64>,
@@ -784,6 +909,15 @@ pub async fn blockchain_market_data(
     Ok((StatusCode::OK, Json(data)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/blockchain/stats",
+    tag = "blockchain",
+    responses(
+        (status = 200, description = "Platform-wide blockchain statistics"),
+        (status = 500, description = "Blockchain query failed", body = ApiError),
+    )
+)]
 pub async fn blockchain_platform_stats(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -795,6 +929,19 @@ pub async fn blockchain_platform_stats(
     Ok((StatusCode::OK, Json(data)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/blockchain/users/{user}/bets",
+    tag = "blockchain",
+    params(
+        ("user" = String, Path, description = "Stellar account address"),
+        PaginationQuery,
+    ),
+    responses(
+        (status = 200, description = "Paginated list of user bets"),
+        (status = 500, description = "Blockchain query failed", body = ApiError),
+    )
+)]
 pub async fn blockchain_user_bets(
     State(state): State<Arc<AppState>>,
     Path(user): Path<String>,
@@ -832,6 +979,18 @@ pub async fn blockchain_user_bets(
     Ok((StatusCode::OK, Json(paginated)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/blockchain/oracle/{market_id}",
+    tag = "blockchain",
+    params(
+        ("market_id" = i64, Path, description = "Market database ID"),
+    ),
+    responses(
+        (status = 200, description = "Oracle resolution result for the market"),
+        (status = 500, description = "Blockchain query failed", body = ApiError),
+    )
+)]
 pub async fn blockchain_oracle_result(
     State(state): State<Arc<AppState>>,
     Path(market_id): Path<i64>,
@@ -844,6 +1003,18 @@ pub async fn blockchain_oracle_result(
     Ok((StatusCode::OK, Json(data)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/blockchain/tx/{tx_hash}",
+    tag = "blockchain",
+    params(
+        ("tx_hash" = String, Path, description = "Stellar transaction hash"),
+    ),
+    responses(
+        (status = 200, description = "Transaction status"),
+        (status = 500, description = "Blockchain query failed", body = ApiError),
+    )
+)]
 pub async fn blockchain_tx_status(
     State(state): State<Arc<AppState>>,
     Path(tx_hash): Path<String>,
@@ -857,6 +1028,16 @@ pub async fn blockchain_tx_status(
     Ok((StatusCode::OK, Json(data)))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/blockchain/replay",
+    tag = "blockchain",
+    responses(
+        (status = 200, description = "Replay progress"),
+        (status = 500, description = "Replay failed", body = ApiError),
+    ),
+    security(("api_key" = []))
+)]
 pub async fn blockchain_replay(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<crate::blockchain::ReplayRequest>,
@@ -897,18 +1078,31 @@ pub async fn warm_critical_caches(state: Arc<AppState>) -> anyhow::Result<()> {
 
 // Email service handlers
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 pub struct EmailTestRequest {
     pub recipient: String,
     pub template_name: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::IntoParams)]
 pub struct EmailAnalyticsQuery {
     pub template_name: Option<String>,
     pub days: Option<i32>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/email/preview/{template_name}",
+    tag = "email",
+    params(
+        ("template_name" = String, Path, description = "Email template name"),
+    ),
+    responses(
+        (status = 200, description = "Rendered email HTML preview"),
+        (status = 500, description = "Template render error", body = ApiError),
+    ),
+    security(("api_key" = []))
+)]
 pub async fn email_preview(
     State(state): State<Arc<AppState>>,
     Path(template_name): Path<String>,
@@ -943,6 +1137,17 @@ pub async fn email_preview(
     Ok((StatusCode::OK, Json(preview)))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/email/test",
+    tag = "email",
+    request_body = EmailTestRequest,
+    responses(
+        (status = 200, description = "Test email sent"),
+        (status = 500, description = "Send failed", body = ApiError),
+    ),
+    security(("api_key" = []))
+)]
 pub async fn email_send_test(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<EmailTestRequest>,
@@ -963,6 +1168,17 @@ pub async fn email_send_test(
     ))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/email/analytics",
+    tag = "email",
+    params(EmailAnalyticsQuery),
+    responses(
+        (status = 200, description = "Email delivery analytics"),
+        (status = 500, description = "Query failed", body = ApiError),
+    ),
+    security(("api_key" = []))
+)]
 pub async fn email_analytics(
     State(state): State<Arc<AppState>>,
     Query(query): Query<EmailAnalyticsQuery>,
@@ -977,6 +1193,16 @@ pub async fn email_analytics(
     Ok((StatusCode::OK, Json(analytics)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/email/queue/stats",
+    tag = "email",
+    responses(
+        (status = 200, description = "Email queue statistics"),
+        (status = 500, description = "Query failed", body = ApiError),
+    ),
+    security(("api_key" = []))
+)]
 pub async fn email_queue_stats(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -991,6 +1217,16 @@ pub async fn email_queue_stats(
     Ok((StatusCode::OK, Json(stats)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/email/queue/dead-letter",
+    tag = "email",
+    responses(
+        (status = 200, description = "List of dead-letter email job IDs"),
+        (status = 500, description = "Query failed", body = ApiError),
+    ),
+    security(("api_key" = []))
+)]
 pub async fn email_dead_letter_list(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -1003,6 +1239,20 @@ pub async fn email_dead_letter_list(
     Ok((StatusCode::OK, Json(serde_json::json!({ "jobs": ids, "count": ids.len() }))))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/email/queue/dead-letter/{job_id}/requeue",
+    tag = "email",
+    params(
+        ("job_id" = String, Path, description = "Dead-letter job UUID"),
+    ),
+    responses(
+        (status = 200, description = "Job requeued"),
+        (status = 404, description = "Job not found in dead-letter set", body = ApiError),
+        (status = 500, description = "Requeue failed", body = ApiError),
+    ),
+    security(("api_key" = []))
+)]
 pub async fn email_dead_letter_requeue(
     State(state): State<Arc<AppState>>,
     Path(job_id): Path<Uuid>,
@@ -1020,6 +1270,15 @@ pub async fn email_dead_letter_requeue(
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/webhooks/sendgrid",
+    tag = "webhooks",
+    responses(
+        (status = 200, description = "Events processed"),
+        (status = 400, description = "Invalid signature or payload", body = ApiError),
+    )
+)]
 pub async fn sendgrid_webhook(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1034,7 +1293,17 @@ pub async fn sendgrid_webhook(
         })
 }
 
-/// Query audit logs with filters
+#[utoipa::path(
+    get,
+    path = "/api/v1/audit/logs",
+    tag = "audit",
+    params(AuditLogsQuery),
+    responses(
+        (status = 200, description = "Audit log entries"),
+        (status = 500, description = "Query failed", body = ApiError),
+    ),
+    security(("api_key" = []))
+)]
 pub async fn audit_logs(
     State(state): State<Arc<AppState>>,
     Query(params): Query<AuditLogsQuery>,
@@ -1063,7 +1332,17 @@ pub async fn audit_logs(
     Ok((StatusCode::OK, Json(logs)))
 }
 
-/// Get audit log statistics
+#[utoipa::path(
+    get,
+    path = "/api/v1/audit/statistics",
+    tag = "audit",
+    params(AuditStatisticsQuery),
+    responses(
+        (status = 200, description = "Audit log statistics for the requested period"),
+        (status = 500, description = "Query failed", body = ApiError),
+    ),
+    security(("api_key" = []))
+)]
 pub async fn audit_statistics(
     State(state): State<Arc<AppState>>,
     Query(params): Query<AuditStatisticsQuery>,
@@ -1089,7 +1368,7 @@ pub async fn audit_statistics(
     Ok((StatusCode::OK, Json(stats)))
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
 pub struct AuditLogsQuery {
     pub actor: Option<String>,
     pub action: Option<String>,
@@ -1100,7 +1379,7 @@ pub struct AuditLogsQuery {
     pub offset: Option<i64>,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
 pub struct AuditStatisticsQuery {
     pub from: Option<String>,
     pub to: Option<String>,

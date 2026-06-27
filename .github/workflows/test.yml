@@ -831,6 +831,79 @@ jobs:
           path: frontend/coverage/
           retention-days: 14
 
+  openapi-drift-check:
+    name: OpenAPI Spec Drift Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-api-openapi-${{ hashFiles('services/api/Cargo.lock') }}
+
+      - name: Build generate-openapi binary
+        run: cargo build --bin generate-openapi
+        working-directory: services/api
+
+      - name: Generate OpenAPI spec from code annotations
+        run: cargo run --bin generate-openapi > /tmp/generated-openapi.yaml
+        working-directory: services/api
+
+      - name: Compare path sets (committed vs generated)
+        run: |
+          python3 << 'EOF'
+          import yaml
+          import sys
+
+          with open('/tmp/generated-openapi.yaml') as f:
+              generated = yaml.safe_load(f)
+
+          with open('services/api/openapi.yaml') as f:
+              committed = yaml.safe_load(f)
+
+          gen_paths = set(generated.get('paths', {}).keys())
+          com_paths = set(committed.get('paths', {}).keys())
+
+          missing_in_committed = gen_paths - com_paths
+          extra_in_committed   = com_paths - gen_paths
+
+          failed = False
+
+          if missing_in_committed:
+              print('❌ Paths annotated in code but missing from openapi.yaml:')
+              for p in sorted(missing_in_committed):
+                  print(f'   {p}')
+              failed = True
+
+          if extra_in_committed:
+              print('⚠️  Paths in openapi.yaml with no matching code annotation (may be stale):')
+              for p in sorted(extra_in_committed):
+                  print(f'   {p}')
+
+          if failed:
+              print()
+              print('Run the following to regenerate and commit the spec:')
+              print('  cd services/api && cargo run --bin generate-openapi > openapi.yaml')
+              sys.exit(1)
+
+          print(f'✅ OpenAPI spec is in sync ({len(gen_paths)} paths)')
+          EOF
+
+      - name: Fail if out of sync
+        if: failure()
+        run: |
+          echo "openapi.yaml is out of sync with the code annotations."
+          echo "See the step above for the list of missing / extra paths."
+          exit 1
+
   all-tests-passed:
     name: All Tests Passed
     needs:
@@ -852,6 +925,7 @@ jobs:
       - api-cache-tests
       - e2e-market-creation
       - documentation-sync
+      - openapi-drift-check
       - validate-migration-rollbacks
       - api-criterion-benchmarks
       - frontend-unit-coverage

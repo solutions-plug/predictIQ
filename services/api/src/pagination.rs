@@ -77,6 +77,25 @@ pub fn validate_pagination(params: PaginationParams) -> Result<ValidatedPaginati
 
 pub struct ValidatedPaginationQuery(pub ValidatedPagination);
 
+/// Lightweight raw pagination query used by handlers that do their own
+/// bounds-checking or in-memory slicing.  Axum extracts this directly from
+/// the query string; call `.limit()` / `.cursor()` for the clamped values.
+#[derive(Debug, Clone, Deserialize, Default, utoipa::IntoParams)]
+pub struct PaginationQuery {
+    pub limit: Option<i64>,
+    pub cursor: Option<String>,
+}
+
+impl PaginationQuery {
+    pub fn limit(&self) -> i64 {
+        self.limit.unwrap_or(DEFAULT_LIMIT as i64).max(1).min(MAX_PAGE_LIMIT as i64)
+    }
+
+    pub fn cursor(&self) -> Option<String> {
+        self.cursor.clone()
+    }
+}
+
 #[axum::async_trait]
 impl<S> axum::extract::FromRequestParts<S> for ValidatedPaginationQuery
 where
