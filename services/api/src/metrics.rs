@@ -13,6 +13,7 @@ pub struct Metrics {
     rpc_errors: IntCounterVec,
     rpc_fallbacks: IntCounterVec,
     db_timeouts: IntCounterVec,
+    ledger_gaps: IntCounterVec,
 }
 
 impl Metrics {
@@ -70,6 +71,15 @@ impl Metrics {
         )
         .context("db_timeouts metric")?;
 
+        let ledger_gaps = IntCounterVec::new(
+            prometheus::Opts::new(
+                "blockchain_ledger_gaps_total",
+                "Ledger gap events detected during blockchain sync, labelled by network",
+            ),
+            &["network"],
+        )
+        .context("ledger_gaps metric")?;
+
         registry.register(Box::new(cache_hits.clone()))?;
         registry.register(Box::new(cache_misses.clone()))?;
         registry.register(Box::new(invalidations.clone()))?;
@@ -77,6 +87,7 @@ impl Metrics {
         registry.register(Box::new(rpc_errors.clone()))?;
         registry.register(Box::new(rpc_fallbacks.clone()))?;
         registry.register(Box::new(db_timeouts.clone()))?;
+        registry.register(Box::new(ledger_gaps.clone()))?;
 
         Ok(Self {
             registry,
@@ -87,6 +98,7 @@ impl Metrics {
             rpc_errors,
             rpc_fallbacks,
             db_timeouts,
+            ledger_gaps,
         })
     }
 
@@ -124,6 +136,15 @@ impl Metrics {
 
     pub fn observe_db_timeout(&self, operation: &str) {
         self.db_timeouts.with_label_values(&[operation]).inc();
+    }
+
+    /// Record a ledger-gap event on `network`, incrementing the counter by `gap_size` ledgers.
+    pub fn observe_ledger_gap(&self, network: &str, gap_size: u32) {
+        if gap_size > 0 {
+            self.ledger_gaps
+                .with_label_values(&[network])
+                .inc_by(u64::from(gap_size));
+        }
     }
 
     pub fn observe_tx_eviction(&self, count: u64) {
