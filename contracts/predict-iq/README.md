@@ -2,6 +2,55 @@
 
 Soroban smart contract for the PredictIQ prediction market platform.
 
+## Fuzzing
+
+The `fuzz/` directory contains [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz)
+targets for the three primary entry points. Fuzzing requires a nightly toolchain
+and the `cargo-fuzz` binary.
+
+### Setup
+
+```bash
+rustup toolchain install nightly
+cargo install cargo-fuzz
+```
+
+### Running a target
+
+```bash
+# From contracts/predict-iq/
+cargo +nightly fuzz run fuzz_place_bet
+cargo +nightly fuzz run fuzz_resolve_market
+cargo +nightly fuzz run fuzz_withdraw
+```
+
+Run with a time limit (CI uses 60 s):
+
+```bash
+cargo +nightly fuzz run fuzz_place_bet -- -max_total_time=60
+```
+
+### Targets
+
+| Target | Entry point | What it fuzzes |
+|--------|-------------|----------------|
+| `fuzz_place_bet` | `place_bet` | Arbitrary outcome, amount, timestamp |
+| `fuzz_resolve_market` | `resolve_market` | Arbitrary market ID and winning outcome |
+| `fuzz_withdraw` | `withdraw_refund` | Arbitrary market ID on a cancelled market |
+
+### Corpus and crashes
+
+Corpora are stored in `fuzz/corpus/<target>/` (gitignored). Crash-inducing
+inputs found during a run are written to `fuzz/artifacts/<target>/` and must be
+added as regression tests under `src/modules/` before the crash is considered
+fixed.
+
+### CI
+
+The `contract-fuzz` CI job (`.github/workflows/test.yml`) runs each target for
+**60 seconds** using libFuzzer on every push to `main` / `develop`. Crashes
+upload to the `fuzz-crashes` GitHub Actions artifact.
+
 ## WASM Size Limit
 
 The contract enforces a **64 KB (65,536 bytes)** WASM size limit. This is an internal budget target stricter than Soroban's actual limit, ensuring the contract remains performant and deployable across all networks. The limit is configured in `.github/workflows/test.yml` as `WASM_SIZE_LIMIT_BYTES` and checked during the build-optimized job.

@@ -580,6 +580,36 @@ jobs:
           fi
         working-directory: contracts/predict-iq
 
+  contract-fuzz:
+    name: Contract Fuzz Tests (libFuzzer, 60 s per target)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nightly Rust + cargo-fuzz
+        run: |
+          rustup toolchain install nightly
+          cargo +nightly install cargo-fuzz
+
+      - name: Fuzz fuzz_place_bet
+        run: cargo +nightly fuzz run fuzz_place_bet -- -max_total_time=60
+        working-directory: contracts/predict-iq
+
+      - name: Fuzz fuzz_resolve_market
+        run: cargo +nightly fuzz run fuzz_resolve_market -- -max_total_time=60
+        working-directory: contracts/predict-iq
+
+      - name: Fuzz fuzz_withdraw
+        run: cargo +nightly fuzz run fuzz_withdraw -- -max_total_time=60
+        working-directory: contracts/predict-iq
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: contracts/predict-iq/fuzz/artifacts/
+
   api-cache-tests:
     name: API Cache Tests (Redis)
     runs-on: ubuntu-latest
