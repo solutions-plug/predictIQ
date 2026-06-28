@@ -207,4 +207,117 @@ mod tests {
         let err = validate_string("desc", "&lt;script&gt;", 1, 200).unwrap_err();
         assert_eq!(err.error, "invalid_content");
     }
+
+    // ── Property-based tests ──────────────────────────────────────────────────
+    //
+    // Run with at least 1 000 cases in CI:
+    //   PROPTEST_CASES=1000 cargo test prop_
+    #[cfg(test)]
+    mod property_tests {
+        use super::*;
+        use proptest::prelude::*;
+
+        // Maximum field length used in the property tests below.
+        const MAX_LEN: usize = 200;
+
+        proptest! {
+            // Empty string should be accepted by sanitize_string (length checks
+            // happen in validate_string) and produce an empty result.
+            #[test]
+            fn prop_sanitize_empty_string_is_ok(_ignored in Just(())) {
+                let result = sanitize_string("field", "");
+                prop_assert!(result.is_ok());
+                prop_assert_eq!(result.unwrap(), "");
+            }
+
+            // Strings longer than MAX_LEN must be rejected by validate_string.
+            #[test]
+            fn prop_validate_rejects_over_max_len(
+                extra in 1usize..=256,
+                ch in '[' ..= '~', // printable ASCII, no injection chars
+            ) {
+                let s: String = std::iter::repeat(ch).take(MAX_LEN + extra).collect();
+                // Skip if the character happens to form an injection pattern — we're
+                // testing the length gate, not the injection gate.
+                prop_assume!(!contains_injection(&s));
+                let result = validate_string("field", &s, 1, MAX_LEN);
+                prop_assert!(result.is_err());
+                prop_assert_eq!(result.unwrap_err().error, "too_long");
+            }
+
+            // Zero-length input must be rejected by validate_string when min_len > 0.
+            #[test]
+            fn prop_validate_rejects_empty_when_min_len_positive(_ignored in Just(())) {
+                let result = validate_string("field", "", 1, MAX_LEN);
+                prop_assert!(result.is_err());
+                prop_assert_eq!(result.unwrap_err().error, "too_short");
+            }
+
+            // All-whitespace strings collapse to "" after trim and should fail
+            // the min-length gate when min_len > 0.
+            #[test]
+            fn prop_all_whitespace_is_rejected(
+                spaces in 1usize..=50,
+            ) {
+                let s: String = " ".repeat(spaces);
+                let result = validate_string("field", &s, 1, MAX_LEN);
+                prop_assert!(result.is_err());
+                prop_assert_eq!(result.unwrap_err().error, "too_short");
+            }
+
+            // Null bytes must never appear in sanitized output.
+            #[test]
+            fn prop_null_bytes_stripped_from_output(
+                prefix in "[a-zA-Z0-9 ]{0,20}",
+                suffix in "[a-zA-Z0-9 ]{0,20}",
+            ) {
+                let input = format!("{prefix}\0{suffix}");
+                prop_assume!(!contains_injection(&input));
+                if let Ok(out) = sanitize_string("field", &input) {
+                    prop_assert!(!out.contains('\0'), "null byte survived sanitization");
+                }
+            }
+
+            // Control characters (except tab/newline/CR) must not appear in output.
+            #[test]
+            fn prop_control_chars_stripped(
+                ctrl in 1u8..=8u8, // \x01–\x08 are stripped
+                filler in "[a-z]{1,10}",
+            ) {
+                let input = format!("{filler}{}{filler}", ctrl as char);
+                prop_assume!(!contains_injection(&input));
+                if let Ok(out) = sanitize_string("field", &input) {
+                    prop_assert!(
+                        !out.chars().any(|c| c.is_control() && c != '\t' && c != '\n' && c != '\r'),
+                        "control character survived sanitization"
+                    );
+                }
+            }
+
+            // Known-safe strings within length bounds must always pass.
+            #[test]
+            fn prop_valid_market_titles_pass(
+                // Alphanumeric + common punctuation; deliberately no HTML/script chars
+                title in "[a-zA-Z0-9 .,!?'\\-]{5,100}",
+            ) {
+                prop_assume!(!contains_injection(&title));
+                let result = validate_string("title", &title, 1, MAX_LEN);
+                prop_assert!(result.is_ok(), "valid title was rejected: {:?}", result.err());
+            }
+
+            // Unicode non-ASCII (including homograph characters) must never panic
+            // and must not produce null bytes in output.
+            #[test]
+            fn prop_unicode_does_not_panic_or_produce_null(
+                s in "\\PC{0,50}", // any non-control Unicode up to 50 chars
+            ) {
+                // Ignore inputs that trigger the injection guard — we test that
+                // separately; here we only care that the function doesn't panic or
+                // corrupt output.
+                if let Ok(out) = sanitize_string("field", &s) {
+                    prop_assert!(!out.contains('\0'));
+                }
+            }
+        }
+    }
 }

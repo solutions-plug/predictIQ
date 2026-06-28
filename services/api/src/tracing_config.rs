@@ -1,6 +1,6 @@
 use opentelemetry::{
     global,
-    trace::{TraceError, TracerProvider as _},
+    trace::TracerProvider as _,
     KeyValue,
 };
 use opentelemetry_otlp::WithExportConfig;
@@ -11,6 +11,7 @@ use opentelemetry_sdk::{
 };
 use opentelemetry_semantic_conventions::resource::{SERVICE_NAME, SERVICE_VERSION};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use url::Url;
 
 /// Resolve the trace sampling rate from OTel standard env vars, falling back to `default_rate`.
 ///
@@ -43,13 +44,89 @@ pub fn sample_rate_from_env(default_rate: f64) -> f64 {
     }
 }
 
-/// Initialize distributed tracing with OpenTelemetry
+/// Validate that `endpoint` is a parseable URL and that the host:port is
+/// reachable via a TCP dial.  Logs a WARNING if the check fails so the service
+/// starts normally but operators know traces are being lost.
+///
+/// Returns `true` when the endpoint is reachable, `false` otherwise.
+pub async fn check_otlp_connectivity(endpoint: &str) -> bool {
+    let parsed = match Url::parse(endpoint) {
+        Ok(u) => u,
+        Err(e) => {
+            tracing::warn!(
+                endpoint,
+                error = %e,
+                "OTLP endpoint URL is invalid — traces will not be exported"
+            );
+            return false;
+        }
+    };
+
+    let host = match parsed.host_str() {
+        Some(h) => h.to_string(),
+        None => {
+            tracing::warn!(
+                endpoint,
+                "OTLP endpoint URL has no host — traces will not be exported"
+            );
+            return false;
+        }
+    };
+
+    let port = parsed.port().unwrap_or(4317);
+    let addr = format!("{host}:{port}");
+
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        tokio::net::TcpStream::connect(&addr),
+    )
+    .await
+    {
+        Ok(Ok(_)) => {
+            tracing::info!(endpoint, "OTLP endpoint connectivity check passed");
+            true
+        }
+        Ok(Err(e)) => {
+            tracing::warn!(
+                endpoint,
+                error = %e,
+                "OTLP endpoint is not reachable — traces may be lost"
+            );
+            false
+        }
+        Err(_) => {
+            tracing::warn!(
+                endpoint,
+                "OTLP endpoint connectivity check timed out after 2 s — traces may be lost"
+            );
+            false
+        }
+    }
+}
+
+/// Initialize distributed tracing with OpenTelemetry.
+///
+/// Validates `otlp_endpoint` as a parseable URL; returns an error immediately
+/// if the value is set but cannot be parsed (prevents silent misconfiguration).
+/// A separate TCP reachability check is available via [`check_otlp_connectivity`].
 pub fn init_tracing(
     service_name: &str,
     service_version: &str,
     otlp_endpoint: Option<String>,
     sample_rate: f64,
-) -> Result<(), TraceError> {
+) -> anyhow::Result<()> {
+    // Fail fast on an unparseable endpoint URL so the error surfaces at startup
+    // rather than silently at the first export attempt.
+    if let Some(ref ep) = otlp_endpoint {
+        Url::parse(ep).map_err(|e| {
+            anyhow::anyhow!(
+                "OTEL_EXPORTER_OTLP_ENDPOINT '{}' is not a valid URL: {}",
+                ep,
+                e
+            )
+        })?;
+    }
+
     // OTel standard env vars take precedence over the passed-in rate.
     // OTEL_TRACES_SAMPLER / OTEL_TRACES_SAMPLER_ARG default to 10 % for production.
     let sample_rate = sample_rate_from_env(sample_rate);
@@ -138,6 +215,7 @@ pub fn init_tracing(
     Ok(())
 }
 
+
 /// Shutdown tracing and flush remaining spans
 pub fn shutdown_tracing() {
     tracing::info!("Shutting down tracing");
@@ -211,6 +289,43 @@ mod tests {
         // Test ratio-based
         let result = init_tracing("test-service", "0.1.0", None, 0.5);
         assert!(result.is_ok());
+        shutdown_tracing();
+    }
+
+    #[test]
+    fn invalid_otlp_url_is_rejected_at_startup() {
+        let result = init_tracing(
+            "test-service",
+            "0.1.0",
+            Some("not a valid url :::".to_string()),
+            0.1,
+        );
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("OTEL_EXPORTER_OTLP_ENDPOINT"),
+            "error message should mention the env var, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn valid_otlp_url_passes_parse_check() {
+        // URL parsing only — no TCP connection is attempted in init_tracing
+        let result = init_tracing(
+            "test-service",
+            "0.1.0",
+            Some("http://localhost:4317".to_string()),
+            0.0,
+        );
+        // init may fail later (e.g. already-initialized subscriber) but must not
+        // fail at URL validation, so we only check it's NOT a URL-parse error.
+        if let Err(e) = result {
+            let msg = format!("{e}");
+            assert!(
+                !msg.contains("not a valid URL"),
+                "init_tracing rejected a valid URL: {msg}"
+            );
+        }
         shutdown_tracing();
     }
 }

@@ -148,6 +148,63 @@ cd services/api
 cargo test
 ```
 
+### Integration Tests (API — requires backing services)
+
+Integration tests require PostgreSQL, Redis, and a Stellar RPC node.
+The easiest way to start them is via the provided Makefile target, which
+starts a Docker Compose stack, runs the tests, and tears the stack down:
+
+```bash
+make test-integration
+```
+
+You can also manage the services manually:
+
+```bash
+# Start services
+docker compose -f docker-compose.test.yml up -d --wait
+
+# Run tests
+cd services/api
+TEST_DATABASE_URL=postgres://predictiq_test:predictiq_test@localhost:5433/predictiq_test \
+TEST_REDIS_URL=redis://localhost:6380 \
+STELLAR_RPC_URL=http://localhost:8080 \
+cargo test --test '*' -- --test-threads=1
+
+# Tear down (always run, even on failure)
+docker compose -f docker-compose.test.yml down -v
+```
+
+If a previous run left the stack running, clean it up first:
+
+```bash
+make test-integration-down
+```
+
+#### Database fixture — transaction rollback
+
+Each integration test that touches the database should use the
+`with_test_transaction` helper from `tests/common/db_fixture.rs`.
+It wraps the test body in a database transaction that is **rolled back**
+at the end, so no test leaves rows that can affect subsequent tests:
+
+```rust
+use common::db_fixture::with_test_transaction;
+
+#[tokio::test]
+async fn my_test() {
+    let pool = common::db_fixture::test_pool().await;
+    with_test_transaction(&pool, |mut conn| async move {
+        // use conn for all DB operations in this test
+        sqlx::query("INSERT INTO ...").execute(&mut *conn).await.unwrap();
+        // transaction is automatically rolled back when this closure returns
+    }).await;
+}
+```
+
+Do **not** commit within the closure — the rollback guarantees a clean slate
+for the next test regardless of execution order.
+
 ### Frontend (Next.js)
 
 ```bash
@@ -220,6 +277,31 @@ npm test
 cd contracts/predict-iq
 make test
 ```
+
+---
+
+### Property-Based Tests
+
+Validation logic in `src/validation.rs` is covered by property-based tests
+using [`proptest`](https://github.com/proptest-rs/proptest).  These run as
+part of `cargo test` and are gated in CI with at least **1 000 cases per
+property** via `PROPTEST_CASES=1000`.
+
+To run them locally with the same case count:
+
+```bash
+cd services/api
+PROPTEST_CASES=1000 cargo test prop_
+```
+
+When adding a new validation function, add a corresponding `proptest!` block
+that at minimum covers:
+
+- Zero-length input
+- Input longer than `MAX_LEN + 1`
+- All-whitespace strings
+- Strings containing null bytes (`\0`)
+- Strings that must pass unchanged (valid inputs)
 
 ---
 
