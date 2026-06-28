@@ -63,6 +63,28 @@ groups:
           description: "Cache hit rate is {{ $value | humanizePercentage }}, below 80% threshold"
           runbook_url: "https://docs.predictiq.com/runbooks/low-cache-hit-rate"
 
+      - alert: CacheCircuitBreakerOpen
+        expr: cache_circuit_breaker_state{state="open"} == 1
+        for: 2m
+        labels:
+          severity: critical
+          component: cache
+        annotations:
+          summary: "Redis cache circuit breaker has been open for 2+ minutes"
+          description: "The Redis cache circuit breaker is open, causing cache bypass and degraded performance. Check Redis connectivity and health."
+          runbook_url: "https://docs.predictiq.com/runbooks/cache-circuit-breaker-open"
+
+      - alert: CacheCircuitBreakerHalfOpen
+        expr: cache_circuit_breaker_state{state="half_open"} == 1
+        for: 1m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "Redis cache circuit breaker is in half-open state"
+          description: "The Redis cache circuit breaker is probing for recovery. If this persists, Redis may be unstable."
+          runbook_url: "https://docs.predictiq.com/runbooks/cache-circuit-breaker-half-open"
+
   - name: database_performance
     interval: 30s
     rules:

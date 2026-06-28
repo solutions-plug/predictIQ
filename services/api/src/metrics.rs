@@ -18,6 +18,7 @@ pub struct Metrics {
     db_pool_connections_idle: IntGaugeVec,
     db_pool_acquire_duration: HistogramVec,
     rate_limit_rejections: IntCounterVec,
+    cache_circuit_breaker_state: IntGaugeVec,
 }
 
 impl Metrics {
@@ -120,6 +121,15 @@ impl Metrics {
         )
         .context("rate_limit_rejections metric")?;
 
+        let cache_circuit_breaker_state = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cache_circuit_breaker_state",
+                "Redis cache circuit breaker state (0=closed, 1=open, 2=half-open)",
+            ),
+            &["state"],
+        )
+        .context("cache_circuit_breaker_state metric")?;
+
         registry.register(Box::new(cache_hits.clone()))?;
         registry.register(Box::new(cache_misses.clone()))?;
         registry.register(Box::new(invalidations.clone()))?;
@@ -132,6 +142,7 @@ impl Metrics {
         registry.register(Box::new(db_pool_connections_idle.clone()))?;
         registry.register(Box::new(db_pool_acquire_duration.clone()))?;
         registry.register(Box::new(rate_limit_rejections.clone()))?;
+        registry.register(Box::new(cache_circuit_breaker_state.clone()))?;
 
         Ok(Self {
             registry,
@@ -147,6 +158,7 @@ impl Metrics {
             db_pool_connections_idle,
             db_pool_acquire_duration,
             rate_limit_rejections,
+            cache_circuit_breaker_state,
         })
     }
 
@@ -224,6 +236,42 @@ impl Metrics {
         self.rate_limit_rejections
             .with_label_values(&[route])
             .inc();
+    }
+
+    /// Update the cache circuit breaker state gauge.
+    /// Call this whenever the circuit breaker transitions state.
+    /// state: 0=closed, 1=open, 2=half-open
+    pub fn set_cache_circuit_breaker_state(&self, state: i64) {
+        // Reset all states to 0 first
+        self.cache_circuit_breaker_state
+            .with_label_values(&["closed"])
+            .set(0);
+        self.cache_circuit_breaker_state
+            .with_label_values(&["open"])
+            .set(0);
+        self.cache_circuit_breaker_state
+            .with_label_values(&["half_open"])
+            .set(0);
+
+        // Set the current state to 1
+        match state {
+            0 => {
+                self.cache_circuit_breaker_state
+                    .with_label_values(&["closed"])
+                    .set(1);
+            }
+            1 => {
+                self.cache_circuit_breaker_state
+                    .with_label_values(&["open"])
+                    .set(1);
+            }
+            2 => {
+                self.cache_circuit_breaker_state
+                    .with_label_values(&["half_open"])
+                    .set(1);
+            }
+            _ => {}
+        }
     }
 
     pub fn render(&self) -> anyhow::Result<String> {
