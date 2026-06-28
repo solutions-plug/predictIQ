@@ -18,6 +18,7 @@ pub struct Metrics {
     db_pool_connections_idle: IntGaugeVec,
     db_pool_acquire_duration: HistogramVec,
     rate_limit_rejections: IntCounterVec,
+    worker_status: IntGaugeVec,
 }
 
 impl Metrics {
@@ -120,6 +121,15 @@ impl Metrics {
         )
         .context("rate_limit_rejections metric")?;
 
+        let worker_status = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "worker_status",
+                "Background worker health status (1=running, 0=stopped)",
+            ),
+            &["name"],
+        )
+        .context("worker_status metric")?;
+
         registry.register(Box::new(cache_hits.clone()))?;
         registry.register(Box::new(cache_misses.clone()))?;
         registry.register(Box::new(invalidations.clone()))?;
@@ -132,6 +142,7 @@ impl Metrics {
         registry.register(Box::new(db_pool_connections_idle.clone()))?;
         registry.register(Box::new(db_pool_acquire_duration.clone()))?;
         registry.register(Box::new(rate_limit_rejections.clone()))?;
+        registry.register(Box::new(worker_status.clone()))?;
 
         Ok(Self {
             registry,
@@ -147,6 +158,7 @@ impl Metrics {
             db_pool_connections_idle,
             db_pool_acquire_duration,
             rate_limit_rejections,
+            worker_status,
         })
     }
 
@@ -224,6 +236,14 @@ impl Metrics {
         self.rate_limit_rejections
             .with_label_values(&[route])
             .inc();
+    }
+
+    /// Set worker status to running (1) or stopped (0).
+    /// Call this on worker startup (1), during heartbeats (1), and on shutdown (0).
+    pub fn set_worker_status(&self, name: &str, running: bool) {
+        self.worker_status
+            .with_label_values(&[name])
+            .set(if running { 1 } else { 0 });
     }
 
     pub fn render(&self) -> anyhow::Result<String> {

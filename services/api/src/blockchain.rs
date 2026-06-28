@@ -860,6 +860,13 @@ impl BlockchainClient {
         shutdown: tokio_util::sync::CancellationToken,
         coordinator: ShutdownCoordinator,
     ) {
+        const WORKER_NAME: &str = "blockchain_sync";
+        
+        // Set worker status to running
+        if let Some(ref m) = &self.metrics {
+            m.set_worker_status(WORKER_NAME, true);
+        }
+        
         tracing::info!("Blockchain sync worker started");
 
         let cursor_key = keys::chain_sync_cursor(&self.network);
@@ -871,7 +878,20 @@ impl BlockchainClient {
             .flatten()
             .unwrap_or(0);
 
+        let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(30));
+        heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         loop {
+            // Update heartbeat
+            tokio::select! {
+                _ = heartbeat_interval.tick() => {
+                    if let Some(ref m) = &self.metrics {
+                        m.set_worker_status(WORKER_NAME, true);
+                    }
+                }
+                else => {}
+            }
+            
             // Check for shutdown *before* picking up new work.
             if shutdown.is_cancelled() {
                 tracing::info!("Blockchain sync worker: shutdown signal received, stopping");
@@ -900,6 +920,11 @@ impl BlockchainClient {
             }
         }
 
+        // Set worker status to stopped
+        if let Some(ref m) = &self.metrics {
+            m.set_worker_status(WORKER_NAME, false);
+        }
+        
         tracing::info!("Blockchain sync worker stopped");
         coordinator.worker_completed();
     }
@@ -911,9 +936,29 @@ impl BlockchainClient {
         shutdown: tokio_util::sync::CancellationToken,
         coordinator: ShutdownCoordinator,
     ) {
+        const WORKER_NAME: &str = "blockchain_tx_monitor";
+        
+        // Set worker status to running
+        if let Some(ref m) = &self.metrics {
+            m.set_worker_status(WORKER_NAME, true);
+        }
+        
         tracing::info!("Blockchain transaction monitor started");
 
+        let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(30));
+        heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         loop {
+            // Update heartbeat
+            tokio::select! {
+                _ = heartbeat_interval.tick() => {
+                    if let Some(ref m) = &self.metrics {
+                        m.set_worker_status(WORKER_NAME, true);
+                    }
+                }
+                else => {}
+            }
+            
             if shutdown.is_cancelled() {
                 tracing::info!("Transaction monitor: shutdown signal received, stopping");
                 break;
@@ -945,6 +990,11 @@ impl BlockchainClient {
             }
         }
 
+        // Set worker status to stopped
+        if let Some(ref m) = &self.metrics {
+            m.set_worker_status(WORKER_NAME, false);
+        }
+        
         tracing::info!("Blockchain transaction monitor stopped");
         coordinator.worker_completed();
     }
