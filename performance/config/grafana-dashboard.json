@@ -484,6 +484,57 @@
           }
         }
       }
+      },
+      {
+        "id": 10,
+        "title": "DB Pool Utilisation (% of max_connections)",
+        "type": "graph",
+        "gridPos": { "x": 12, "y": 24, "w": 12, "h": 8 },
+        "targets": [
+          {
+            "expr": "db_pool_connections_active{pool=\"api\"} / (db_pool_connections_active{pool=\"api\"} + db_pool_connections_idle{pool=\"api\"}) * 100",
+            "legendFormat": "Pool Utilisation %",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "percent",
+            "label": "Utilisation"
+          }
+        ],
+        "alert": {
+          "name": "High DB Pool Utilisation",
+          "conditions": [
+            {
+              "evaluator": {
+                "params": [80],
+                "type": "gt"
+              },
+              "operator": {
+                "type": "and"
+              },
+              "query": {
+                "params": ["A", "5m", "now"]
+              },
+              "reducer": {
+                "params": [],
+                "type": "avg"
+              },
+              "type": "query"
+            }
+          ],
+          "executionErrorState": "alerting",
+          "frequency": "1m",
+          "handler": 1,
+          "message": "DB pool utilisation exceeded 80%",
+          "noDataState": "no_data",
+          "notifications": []
+        }
+      }
+    ]
+  }
+}
     ]
   }
 }
