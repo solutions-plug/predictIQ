@@ -7,11 +7,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use redis::redis_module::RedisResult;
-
-
 use anyhow::Context;
-use deadpool_redis::{Config as PoolConfig, Pool, Runtime};
+use deadpool_redis::{Config as PoolConfig, Pool};
 use redis::AsyncCommands;
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -245,8 +242,9 @@ impl RedisCache {
         }
 
         // Deterministically hash the tag so the metadata key is stable.
+        use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        std::hash::Hash::hash(&tag, &mut hasher);
+        tag.cache_keys().join("|").hash(&mut hasher);
         let tag_hash = format!("{:x}", hasher.finish());
 
         let zset_key = self.tag_cfg.tag_key(&tag_hash);
@@ -293,18 +291,19 @@ impl RedisCache {
             "#,
         );
 
-        let mut over_evicted: i64 = 0;
+        let script = std::sync::Arc::new(script);
         self.exec(|mut conn| {
             let zset_key = zset_key.clone();
             let seq_key = seq_key.clone();
             let keys = tag_keys.clone();
+            let script = script.clone();
             async move {
                 let mut argv: Vec<String> = Vec::with_capacity(2 + keys.len());
                 argv.push(tag_ttl_secs.to_string());
                 argv.push(cap.to_string());
                 argv.extend(keys);
 
-                over_evicted = script
+                let _: i64 = script
                     .key(&zset_key)
                     .key(&seq_key)
                     .arg(tag_ttl_secs)
@@ -316,7 +315,6 @@ impl RedisCache {
         })
         .await?;
 
-        // Note: we don't need the evicted count for correctness.
         Ok(())
     }
 
@@ -399,11 +397,14 @@ impl RedisCache {
         T: DeserializeOwned,
     {
         let key = key.to_owned();
-        self.exec(|mut conn| async move {
-            let val: Option<String> = conn.get(&key).await?;
-            match val {
-                Some(raw) => Ok(Some(serde_json::from_str(&raw)?)),
-                None => Ok(None),
+        self.exec(|mut conn| {
+            let key = key.clone();
+            async move {
+                let val: Option<String> = conn.get(&key).await?;
+                match val {
+                    Some(raw) => Ok(Some(serde_json::from_str(&raw)?)),
+                    None => Ok(None),
+                }
             }
         })
         .await
@@ -429,9 +430,12 @@ impl RedisCache {
 
     pub async fn del(&self, key: &str) -> anyhow::Result<()> {
         let key = key.to_owned();
-        self.exec(|mut conn| async move {
-            let _: usize = conn.del(&key).await?;
-            Ok(())
+        self.exec(|mut conn| {
+            let key = key.clone();
+            async move {
+                let _: usize = conn.del(&key).await?;
+                Ok(())
+            }
         })
         .await
     }
@@ -460,23 +464,25 @@ impl RedisCache {
         let pattern = pattern.to_owned();
 
         loop {
-            let pattern_clone = pattern.clone();
             let (next_cursor, batch_deleted) = self
-                .exec(|mut conn| async move {
-                    let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
-                        .arg(cursor)
-                        .arg("MATCH")
-                        .arg(&pattern_clone)
-                        .arg("COUNT")
-                        .arg(100u64)
-                        .query_async(&mut conn)
-                        .await?;
-                    let deleted = if keys.is_empty() {
-                        0
-                    } else {
-                        conn.del(keys).await?
-                    };
-                    Ok((next_cursor, deleted))
+                .exec(|mut conn| {
+                    let pattern_clone = pattern.clone();
+                    async move {
+                        let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                            .arg(cursor)
+                            .arg("MATCH")
+                            .arg(&pattern_clone)
+                            .arg("COUNT")
+                            .arg(100u64)
+                            .query_async(&mut conn)
+                            .await?;
+                        let deleted = if keys.is_empty() {
+                            0
+                        } else {
+                            conn.del(keys).await?
+                        };
+                        Ok((next_cursor, deleted))
+                    }
                 })
                 .await?;
 

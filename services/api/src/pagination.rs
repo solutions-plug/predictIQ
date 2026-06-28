@@ -77,6 +77,38 @@ pub fn validate_pagination(params: PaginationParams) -> Result<ValidatedPaginati
 
 pub struct ValidatedPaginationQuery(pub ValidatedPagination);
 
+/// Query parameters accepted by paginated API handlers.
+#[derive(Debug, Deserialize, Default)]
+pub struct PaginationQuery {
+    pub limit: Option<u32>,
+    pub cursor: Option<String>,
+}
+
+impl PaginationQuery {
+    pub fn limit(&self) -> u32 {
+        self.limit.unwrap_or(DEFAULT_LIMIT).min(MAX_PAGE_LIMIT)
+    }
+
+    pub fn cursor(&self) -> Option<String> {
+        self.cursor.clone()
+    }
+}
+
+/// A single page of results returned by paginated endpoints.
+#[derive(Debug, Serialize)]
+pub struct PaginatedResponse<T: Serialize> {
+    pub items: Vec<T>,
+    pub next_cursor: Option<String>,
+    pub limit: u32,
+    pub has_more: bool,
+}
+
+impl<T: Serialize> PaginatedResponse<T> {
+    pub fn new(items: Vec<T>, next_cursor: Option<String>, limit: u32, has_more: bool) -> Self {
+        Self { items, next_cursor, limit, has_more }
+    }
+}
+
 #[axum::async_trait]
 impl<S> axum::extract::FromRequestParts<S> for ValidatedPaginationQuery
 where

@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use redis::AsyncCommands as _;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::time::Duration;
@@ -139,7 +138,7 @@ impl EmailService {
         // --- idempotency check ---
         if let (Some(cache), Some(key)) = (&self.cache, idem_key) {
             let redis_key = format!("email:idem:{key}");
-            let mut conn = cache.manager.clone();
+            let mut conn = cache.get_connection().await.context("idempotency Redis connection failed")?;
 
             // Try SET NX — only succeeds for the first send.
             let acquired: Option<String> = redis::cmd("SET")

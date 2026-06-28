@@ -15,7 +15,7 @@
 use anyhow::{bail, Context};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
-use tracing::{info, warn};
+use tracing::info;
 
 /// A single migration file embedded at compile time.
 #[derive(Debug, Clone)]

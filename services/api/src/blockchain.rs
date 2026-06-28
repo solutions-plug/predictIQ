@@ -793,7 +793,7 @@ impl BlockchainClient {
                 total_events = all_events.len(),
                 "fetch_events_since paginated"
             );
-            self.metrics.observe_invalidation("events_pagination_pages", pages);
+            self.metrics.observe_invalidation("events_pagination_pages", pages as usize);
         }
 
         Ok(all_events)

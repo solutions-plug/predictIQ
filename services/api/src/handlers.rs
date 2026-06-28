@@ -1,4 +1,3 @@
-use crate::content_type::require_json_content_type;
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -565,7 +564,7 @@ pub async fn statistics(State(state): State<Arc<AppState>>) -> Result<impl IntoR
     } else {
         state.metrics.observe_miss("api", endpoint);
     }
-    state.metrics.observe_request(endpoint, start.elapsed());
+    state.metrics.observe_request(endpoint, "200", start.elapsed());
 
     Ok((StatusCode::OK, Json(payload)))
 }
@@ -633,7 +632,7 @@ pub async fn featured_markets(
     } else {
         state.metrics.observe_miss("api", endpoint);
     }
-    state.metrics.observe_request(endpoint, start.elapsed());
+    state.metrics.observe_request(endpoint, "200", start.elapsed());
 
     Ok((StatusCode::OK, Json(paginated)))
 }
@@ -647,13 +646,13 @@ pub async fn content(
     let cursor = query.cursor();
     let endpoint = "content";
 
-    let cache_key = keys::api_content(limit);
+    let cache_key = keys::api_content(limit.into());
     let ttl = Duration::from_secs(60 * 60);
 
     let (payload, hit) = state
         .cache
         .get_or_set_json(&cache_key, ttl, || async {
-            let data = state.db.content_cached(limit).await?;
+            let data = state.db.content_cached(limit.into()).await?;
             Ok(data)
         })
         .await
@@ -683,7 +682,7 @@ pub async fn content(
     } else {
         state.metrics.observe_miss("api", endpoint);
     }
-    state.metrics.observe_request(endpoint, start.elapsed());
+    state.metrics.observe_request(endpoint, "200", start.elapsed());
 
     Ok((StatusCode::OK, Json(paginated)))
 }
@@ -811,11 +810,11 @@ pub async fn blockchain_user_bets(
 
     let page_data = state
         .blockchain
-        .user_bets_page(&user, page, page_size)
+        .user_bets_page(&user, page, page_size.into())
         .await
         .map_err(into_api_error)?;
 
-    let has_more = (page + 1) * page_size < page_data.total;
+    let has_more = (page + 1) * (page_size as i64) < page_data.total;
     let next_cursor = if has_more {
         Some((page + 1).to_string())
     } else {
@@ -883,13 +882,13 @@ pub async fn warm_critical_caches(state: Arc<AppState>) -> anyhow::Result<()> {
 
     let (mut succeeded, mut failed) = (0usize, 0usize);
 
-    warm!("db.statistics",             state.db.statistics_cached().map(|r| r.map(|_| ())),                                                                                      succeeded, failed);
-    warm!("db.featured_markets",       state.db.featured_markets_cached(state.config.featured_limit).map(|r| r.map(|_| ())),                                                     succeeded, failed);
-    warm!("blockchain.health",         state.blockchain.health_check_cached().map(|r| r.map(|_| ())),                                                                             succeeded, failed);
-    warm!("blockchain.platform_stats", state.blockchain.platform_statistics_cached().map(|r| r.map(|_| ())),                                                                     succeeded, failed);
-    warm!("api.statistics",            statistics(State(state.clone())).map(|r| r.map(|_| ()).map_err(|e| anyhow::anyhow!("{e:?}"))),                                             succeeded, failed);
-    warm!("api.featured_markets",      featured_markets(State(state.clone()), Query(PaginationQuery::default())).map(|r| r.map(|_| ()).map_err(|e| anyhow::anyhow!("{e:?}"))),   succeeded, failed);
-    warm!("api.content",               content(State(state.clone()), Query(PaginationQuery::default())).map(|r| r.map(|_| ()).map_err(|e| anyhow::anyhow!("{e:?}"))),             succeeded, failed);
+    warm!("db.statistics",             state.db.statistics_cached(),                                                                                                                succeeded, failed);
+    warm!("db.featured_markets",       state.db.featured_markets_cached(state.config.featured_limit),                                                                               succeeded, failed);
+    warm!("blockchain.health",         state.blockchain.health_check_cached(),                                                                                                       succeeded, failed);
+    warm!("blockchain.platform_stats", state.blockchain.platform_statistics_cached(),                                                                                               succeeded, failed);
+    warm!("api.statistics",            async { statistics(State(state.clone())).await.map(|_| ()).map_err(|e| anyhow::anyhow!("{e:?}")) },                                          succeeded, failed);
+    warm!("api.featured_markets",      async { featured_markets(State(state.clone()), Query(PaginationQuery::default())).await.map(|_| ()).map_err(|e| anyhow::anyhow!("{e:?}")) }, succeeded, failed);
+    warm!("api.content",               async { content(State(state.clone()), Query(PaginationQuery::default())).await.map(|_| ()).map_err(|e| anyhow::anyhow!("{e:?}")) },          succeeded, failed);
 
     tracing::info!(succeeded, failed, total = succeeded + failed, "cache warming complete");
     Ok(())

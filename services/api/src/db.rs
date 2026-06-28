@@ -124,7 +124,7 @@ impl Database {
     /// Snapshot pool size/idle into Prometheus gauges.
     /// Call this just before rendering `/metrics` so the values are current.
     pub fn record_pool_metrics(&self) {
-        self.metrics.record_pool_metrics(self.pool.size(), self.pool.num_idle());
+        self.metrics.observe_pool_connections("primary", self.pool.size() as i64, self.pool.num_idle() as i64);
     }
 
     pub async fn new(
@@ -759,7 +759,6 @@ impl Database {
         .fetch_one(&self.pool)).await.unwrap_or(0);
         Ok(count > 0)
     }
-}
 }
 
 #[cfg(test)]

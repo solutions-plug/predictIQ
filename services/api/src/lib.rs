@@ -1,5 +1,8 @@
 pub mod audit;
 pub mod audit_middleware;
+pub mod body_redact;
+pub mod client_ip;
+pub mod content_type;
 #[cfg(test)]
 mod resolve_market_tests;
 pub mod blockchain;
