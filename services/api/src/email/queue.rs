@@ -496,7 +496,7 @@ impl EmailQueue {
         let idem = idempotency_key(
             &job.recipient_email,
             &job.template_name,
-            &job.template_data,
+            &service.idempotency_secret,
         );
 
         // Send email (deduplication handled inside send_email_idempotent)

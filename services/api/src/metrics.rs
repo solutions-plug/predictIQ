@@ -18,6 +18,12 @@ pub struct Metrics {
     db_pool_connections_idle: IntGaugeVec,
     db_pool_acquire_duration: HistogramVec,
     rate_limit_rejections: IntCounterVec,
+    /// #936: counts how many times the sync worker has been restarted after a panic.
+    sync_worker_restarts: prometheus::IntCounter,
+    /// #936: timestamp of last heartbeat from the sync worker (unix seconds).
+    sync_worker_heartbeat_ts: IntGauge,
+    /// #938: total ledger sequence gaps detected (by gap_type label).
+    ledger_gaps: IntCounterVec,
 }
 
 impl Metrics {
@@ -120,6 +126,27 @@ impl Metrics {
         )
         .context("rate_limit_rejections metric")?;
 
+        let sync_worker_restarts = prometheus::IntCounter::new(
+            "blockchain_sync_worker_restarts_total",
+            "Number of times the blockchain sync worker has been restarted after a panic",
+        )
+        .context("sync_worker_restarts metric")?;
+
+        let sync_worker_heartbeat_ts = IntGauge::new(
+            "blockchain_sync_worker_last_heartbeat_ts",
+            "Unix timestamp of the last heartbeat emitted by the sync worker",
+        )
+        .context("sync_worker_heartbeat_ts metric")?;
+
+        let ledger_gaps = IntCounterVec::new(
+            prometheus::Opts::new(
+                "blockchain_ledger_gaps_total",
+                "Total ledger sequence gaps detected, labelled by gap_type (restart|sync)",
+            ),
+            &["gap_type"],
+        )
+        .context("ledger_gaps metric")?;
+
         registry.register(Box::new(cache_hits.clone()))?;
         registry.register(Box::new(cache_misses.clone()))?;
         registry.register(Box::new(invalidations.clone()))?;
@@ -132,6 +159,9 @@ impl Metrics {
         registry.register(Box::new(db_pool_connections_idle.clone()))?;
         registry.register(Box::new(db_pool_acquire_duration.clone()))?;
         registry.register(Box::new(rate_limit_rejections.clone()))?;
+        registry.register(Box::new(sync_worker_restarts.clone()))?;
+        registry.register(Box::new(sync_worker_heartbeat_ts.clone()))?;
+        registry.register(Box::new(ledger_gaps.clone()))?;
 
         Ok(Self {
             registry,
@@ -147,6 +177,9 @@ impl Metrics {
             db_pool_connections_idle,
             db_pool_acquire_duration,
             rate_limit_rejections,
+            sync_worker_restarts,
+            sync_worker_heartbeat_ts,
+            ledger_gaps,
         })
     }
 
@@ -224,6 +257,30 @@ impl Metrics {
         self.rate_limit_rejections
             .with_label_values(&[route])
             .inc();
+    }
+
+    /// #936: Increment the sync worker restart counter.
+    pub fn observe_sync_worker_restart(&self) {
+        self.sync_worker_restarts.inc();
+    }
+
+    /// #936: Record a heartbeat from the sync worker (stores current unix timestamp).
+    pub fn observe_sync_worker_heartbeat(&self) {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        self.sync_worker_heartbeat_ts.set(ts);
+    }
+
+    /// #936: Return the last heartbeat unix timestamp (for /health/ready).
+    pub fn sync_worker_last_heartbeat_ts(&self) -> i64 {
+        self.sync_worker_heartbeat_ts.get()
+    }
+
+    /// #938: Record a ledger sequence gap.
+    pub fn observe_ledger_gap(&self, gap: u32) {
+        self.ledger_gaps.with_label_values(&["sync"]).inc_by(gap as u64);
     }
 
     pub fn render(&self) -> anyhow::Result<String> {
