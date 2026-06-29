@@ -167,17 +167,67 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // ── Email queue worker ────────────────────────────────────────────────────
-    let queue_worker = email_queue.clone();
-    let service_worker = email_service.clone();
-    let email_token = email_coordinator.token();
-    let email_coord = email_coordinator.clone();
-    let stale_threshold = state.config.email_stale_job_threshold_secs;
-    tokio::spawn(async move {
-        queue_worker
-            .start_worker(service_worker, email_token, email_coord, stale_threshold)
-            .await;
-    });
+    // ── Email queue worker (monitored restart loop) ────────────────────────────
+    // Wraps the worker in a panic-catching JoinHandle. If the task panics or
+    // exits unexpectedly it is restarted with exponential backoff (1s, 2s, 4s,
+    // 8s, 16s). After MAX_EMAIL_WORKER_RESTARTS consecutive crashes without a
+    // clean recovery the loop logs FATAL and increments worker_crash_total so
+    // the Prometheus alert fires.
+    {
+        const MAX_EMAIL_WORKER_RESTARTS: u32 = 5;
+
+        let queue_worker = email_queue.clone();
+        let service_worker = email_service.clone();
+        let email_token = email_coordinator.token();
+        let email_coord = email_coordinator.clone();
+        let stale_threshold = state.config.email_stale_job_threshold_secs;
+        let crash_counter = state.metrics.worker_crash_total.clone();
+
+        tokio::spawn(async move {
+            let mut restarts: u32 = 0;
+            loop {
+                let q = queue_worker.clone();
+                let s = service_worker.clone();
+                let token = email_token.clone();
+                let coord = email_coord.clone();
+
+                let handle = tokio::spawn(async move {
+                    q.start_worker(s, token, coord, stale_threshold).await;
+                });
+
+                match handle.await {
+                    Ok(_) => {
+                        // Clean exit (shutdown token was cancelled) — do not restart.
+                        tracing::info!("Email queue worker exited cleanly");
+                        break;
+                    }
+                    Err(e) => {
+                        restarts += 1;
+                        crash_counter.with_label_values(&["email_queue_worker"]).inc();
+
+                        if restarts >= MAX_EMAIL_WORKER_RESTARTS {
+                            tracing::error!(
+                                restarts,
+                                error = %e,
+                                "FATAL: email queue worker has crashed {} times — alerting and giving up",
+                                MAX_EMAIL_WORKER_RESTARTS,
+                            );
+                            break;
+                        }
+
+                        let backoff = Duration::from_secs(2_u64.pow(restarts - 1));
+                        tracing::error!(
+                            restarts,
+                            backoff_secs = backoff.as_secs(),
+                            error = %e,
+                            "Email queue worker crashed — restarting after backoff"
+                        );
+                        tokio::time::sleep(backoff).await;
+                    }
+                }
+            }
+        });
+    }
 
     if let Err(err) = handlers::warm_critical_caches(state.clone()).await {
         tracing::warn!("cache warming skipped: {err}");

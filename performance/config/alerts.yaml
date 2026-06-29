@@ -259,3 +259,28 @@ groups:
           summary: "Performance degradation alert threshold reached"
           description: "Response time has degraded by more than 5% compared to 24h ago (alert threshold)"
           runbook_url: "https://docs.predictiq.com/runbooks/significant-performance-degradation"
+
+  - name: email_worker
+    interval: 30s
+    rules:
+      - alert: EmailWorkerDown
+        expr: absent(up{job="predictiq-api"}) or increase(worker_crash_total{worker="email_queue_worker"}[60s]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: email
+        annotations:
+          summary: "Email queue worker has crashed"
+          description: "The email queue worker has crashed {{ $value }} time(s) in the last 60 seconds. Emails may not be delivered."
+          runbook_url: "https://docs.predictiq.com/runbooks/email-worker-down"
+
+      - alert: EmailWorkerCrashLooping
+        expr: increase(worker_crash_total{worker="email_queue_worker"}[5m]) >= 5
+        for: 0m
+        labels:
+          severity: critical
+          component: email
+        annotations:
+          summary: "Email queue worker is crash-looping"
+          description: "The email queue worker has crashed {{ $value }} times in the last 5 minutes and has been permanently stopped. Manual intervention required."
+          runbook_url: "https://docs.predictiq.com/runbooks/email-worker-down"

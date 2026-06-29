@@ -61,4 +61,8 @@ harness = false
 name = "invalidation_tags"
 harness = false
 
+[[bench]]
+name = "email_templates"
+harness = false
+
 [workspace]
