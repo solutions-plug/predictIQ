@@ -52,6 +52,7 @@ ipnet = "2"
 criterion = { version = "0.5", features = ["html_reports"] }
 testcontainers = { version = "0.23", features = ["tokio"] }
 testcontainers-modules = { version = "0.11", features = ["redis", "tokio"] }
+wiremock = "0.6"
 
 [[bench]]
 name = "api_key_auth"

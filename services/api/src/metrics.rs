@@ -18,6 +18,7 @@ pub struct Metrics {
     db_pool_connections_idle: IntGaugeVec,
     db_pool_acquire_duration: HistogramVec,
     rate_limit_rejections: IntCounterVec,
+    sendgrid_retries: IntCounterVec,
 }
 
 impl Metrics {
@@ -120,6 +121,12 @@ impl Metrics {
         )
         .context("rate_limit_rejections metric")?;
 
+        let sendgrid_retries = IntCounterVec::new(
+            prometheus::Opts::new("sendgrid_retries_total", "SendGrid send retries by reason"),
+            &["reason"],
+        )
+        .context("sendgrid_retries metric")?;
+
         registry.register(Box::new(cache_hits.clone()))?;
         registry.register(Box::new(cache_misses.clone()))?;
         registry.register(Box::new(invalidations.clone()))?;
@@ -132,6 +139,7 @@ impl Metrics {
         registry.register(Box::new(db_pool_connections_idle.clone()))?;
         registry.register(Box::new(db_pool_acquire_duration.clone()))?;
         registry.register(Box::new(rate_limit_rejections.clone()))?;
+        registry.register(Box::new(sendgrid_retries.clone()))?;
 
         Ok(Self {
             registry,
@@ -147,6 +155,7 @@ impl Metrics {
             db_pool_connections_idle,
             db_pool_acquire_duration,
             rate_limit_rejections,
+            sendgrid_retries,
         })
     }
 
@@ -224,6 +233,12 @@ impl Metrics {
         self.rate_limit_rejections
             .with_label_values(&[route])
             .inc();
+    }
+
+    /// Increment the SendGrid retry counter.
+    /// `reason` should be "rate_limited" (429) or "server_error" (5xx).
+    pub fn observe_sendgrid_retry(&self, reason: &str) {
+        self.sendgrid_retries.with_label_values(&[reason]).inc();
     }
 
     pub fn render(&self) -> anyhow::Result<String> {
