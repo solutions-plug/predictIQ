@@ -40,10 +40,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    // Allow form submission with Enter key
-    if (e.key === 'Enter' && e.currentTarget.tagName === 'FORM') {
-      handleSubmit(e as unknown as React.FormEvent);
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLFormElement>) => {
+    if (e.key === 'Enter') {
+      e.currentTarget.requestSubmit();
     }
   };
 
