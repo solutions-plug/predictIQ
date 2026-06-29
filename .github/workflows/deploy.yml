@@ -71,14 +71,29 @@ jobs:
           role-to-assume: ${{ secrets[format('AWS_ROLE_{0}', matrix.environment)] }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Resolve backend config
+        id: backend
+        run: |
+          case "${{ matrix.environment }}" in
+            staging) echo "file=environments/staging/backend.hcl" >> $GITHUB_OUTPUT ;;
+            prod)    echo "file=environments/production/backend.hcl" >> $GITHUB_OUTPUT ;;
+            *)       echo "file=backend-config.hcl" >> $GITHUB_OUTPUT ;;
+          esac
+
       - name: Terraform Init
         working-directory: infrastructure/terraform
-        run: terraform init
+        run: terraform init -backend-config="${{ steps.backend.outputs.file }}"
+
+      - name: Terraform Validate
+        working-directory: infrastructure/terraform
+        run: terraform validate -var-file="environments/ci-validate.tfvars"
 
       - name: Terraform Plan
         working-directory: infrastructure/terraform
         run: |
           terraform plan \
+            -lock=true \
+            -lock-timeout=5m \
             -var-file="environments/${{ matrix.environment }}.tfvars" \
             -out=tfplan-${{ matrix.environment }}
 
@@ -118,6 +133,15 @@ jobs:
         env:
           PROMETHEUS_URL: ${{ secrets.PROMETHEUS_URL }}
 
+      - name: Resolve backend config
+        id: backend
+        run: |
+          case "${{ matrix.environment }}" in
+            staging) echo "file=environments/staging/backend.hcl" >> $GITHUB_OUTPUT ;;
+            prod)    echo "file=environments/production/backend.hcl" >> $GITHUB_OUTPUT ;;
+            *)       echo "file=backend-config.hcl" >> $GITHUB_OUTPUT ;;
+          esac
+
       - name: Download plan
         uses: actions/download-artifact@v4
         with:
@@ -126,11 +150,11 @@ jobs:
 
       - name: Terraform Init
         working-directory: infrastructure/terraform
-        run: terraform init
+        run: terraform init -backend-config="${{ steps.backend.outputs.file }}"
 
       - name: Terraform Apply
         working-directory: infrastructure/terraform
-        run: terraform apply -auto-approve tfplan-${{ matrix.environment }}
+        run: terraform apply -lock=true -lock-timeout=5m -auto-approve tfplan-${{ matrix.environment }}
 
       - name: Output infrastructure details
         working-directory: infrastructure/terraform
