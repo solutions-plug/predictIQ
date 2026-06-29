@@ -5,6 +5,7 @@ import { type Locale } from '../lib/i18n';
 import { api } from '../lib/api/client';
 import { Statistics } from './Statistics';
 import { ErrorBoundary } from './ErrorBoundary';
+import { LoadingSpinner } from './LoadingSpinner';
 
 interface LandingPageProps {
   className?: string;
@@ -17,6 +18,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
   const [emailError, setEmailError] = React.useState('');
   const [isSubmitted, setIsSubmitted] = React.useState(false);
   const [apiError, setApiError] = React.useState('');
+  const [isLoading, setIsLoading] = React.useState(false);
   const formStatusRef = React.useRef<HTMLDivElement>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -34,6 +36,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
 
     setEmailError('');
     setApiError('');
+    setIsLoading(true);
 
     try {
       const result = await api.newsletterSubscribe({ email });
@@ -47,6 +50,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
       }
     } catch (err) {
       setApiError(err instanceof Error ? err.message : 'Network error occurred');
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -134,6 +139,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
             onSubmit={handleSubmit}
             onKeyDown={handleKeyDown}
             aria-labelledby="signup-heading"
+            aria-busy={isLoading}
             noValidate
           >
             <h2 id="signup-heading" className="visually-hidden">
@@ -152,12 +158,13 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
                 onChange={(e) => {
                   setEmail(e.target.value);
                   setEmailError('');
+                  setApiError('');
                 }}
                 aria-required="true"
                 aria-invalid={!!emailError}
                 aria-describedby={emailError ? 'email-error' : undefined}
                 placeholder={t('hero.emailPlaceholder')}
-                disabled={isSubmitted}
+                disabled={isSubmitted || isLoading}
               />
               {emailError && (
                 <span id="email-error" role="alert" className="error-message">
@@ -173,10 +180,22 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
 
             <button 
               type="submit" 
-              disabled={isSubmitted}
-              aria-label={isSubmitted ? t('hero.subscribedButton') : t('hero.submitButton')}
+              disabled={isSubmitted || isLoading}
+              aria-label={
+                isLoading 
+                  ? 'Submitting...' 
+                  : isSubmitted 
+                    ? t('hero.subscribedButton') 
+                    : t('hero.submitButton')
+              }
             >
-              {isSubmitted ? t('hero.subscribedButton') : t('hero.submitButton')}
+              {isLoading ? (
+                <LoadingSpinner size="small" aria-label="Submitting" />
+              ) : isSubmitted ? (
+                t('hero.subscribedButton')
+              ) : (
+                t('hero.submitButton')
+              )}
             </button>
 
             {/* Screen reader announcement */}

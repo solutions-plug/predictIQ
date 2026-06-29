@@ -300,6 +300,109 @@ describe('LandingPage Accessibility Tests', () => {
         expect(submitButton).toBeDisabled();
       });
     });
+
+    it('should disable submit button while request is in-flight', async () => {
+      let resolvePromise: (value: { success: boolean; message: string }) => void;
+      const promise = new Promise<{ success: boolean; message: string }>((resolve) => {
+        resolvePromise = resolve;
+      });
+      (global.fetch as jest.Mock).mockReturnValueOnce(
+        promise.then(() => ({
+          ok: true,
+          text: async () => JSON.stringify({ success: true, message: 'Subscribed' }),
+        }))
+      );
+
+      render(<LandingPage />);
+      
+      const emailInput = screen.getByLabelText(/email address/i);
+      const submitButton = screen.getByRole('button', { name: /get early access/i });
+      
+      await userEvent.type(emailInput, 'test@example.com');
+      await userEvent.click(submitButton);
+      
+      expect(submitButton).toBeDisabled();
+      expect(emailInput).toBeDisabled();
+      
+      resolvePromise!({ success: true, message: 'Subscribed' });
+      await waitFor(() => {
+        expect(submitButton).toBeDisabled();
+      });
+    });
+
+    it('should have aria-busy on form during submission', async () => {
+      let resolvePromise: (value: { success: boolean; message: string }) => void;
+      const promise = new Promise<{ success: boolean; message: string }>((resolve) => {
+        resolvePromise = resolve;
+      });
+      (global.fetch as jest.Mock).mockReturnValueOnce(
+        promise.then(() => ({
+          ok: true,
+          text: async () => JSON.stringify({ success: true, message: 'Subscribed' }),
+        }))
+      );
+
+      const { container } = render(<LandingPage />);
+      
+      const emailInput = screen.getByLabelText(/email address/i);
+      const submitButton = screen.getByRole('button', { name: /get early access/i });
+      
+      await userEvent.type(emailInput, 'test@example.com');
+      await userEvent.click(submitButton);
+      
+      const form = container.querySelector('form');
+      expect(form).toHaveAttribute('aria-busy', 'true');
+      
+      resolvePromise!({ success: true, message: 'Subscribed' });
+      await waitFor(() => {
+        expect(form).toHaveAttribute('aria-busy', 'false');
+      });
+    });
+
+    it('should call the newsletter API endpoint on submit', async () => {
+      (global.fetch as jest.Mock).mockResolvedValueOnce({
+        ok: true,
+        text: async () => JSON.stringify({ success: true, message: 'Subscribed' }),
+      });
+
+      render(<LandingPage />);
+      
+      const emailInput = screen.getByLabelText(/email address/i);
+      const submitButton = screen.getByRole('button', { name: /get early access/i });
+      
+      await userEvent.type(emailInput, 'test@example.com');
+      await userEvent.click(submitButton);
+      
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining('/api/v1/newsletter/subscribe'),
+        expect.objectContaining({
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: 'test@example.com' }),
+        })
+      );
+    });
+
+    it('should display API error message on subscription failure', async () => {
+      (global.fetch as jest.Mock).mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        text: async () => JSON.stringify({ message: 'Invalid email format' }),
+      });
+
+      render(<LandingPage />);
+      
+      const emailInput = screen.getByLabelText(/email address/i);
+      const submitButton = screen.getByRole('button', { name: /get early access/i });
+      
+      await userEvent.type(emailInput, 'test@example.com');
+      await userEvent.click(submitButton);
+      
+      await waitFor(() => {
+        expect(screen.getByRole('alert')).toHaveTextContent(/invalid email format/i);
+      });
+    });
   });
 
   describe('Image Alt Text', () => {
