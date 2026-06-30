@@ -16,6 +16,10 @@ rust-version = "1.75"
 name = "predictiq-api"
 path = "src/main.rs"
 
+[[bin]]
+name = "generate-openapi"
+path = "src/bin/generate_openapi.rs"
+
 [lib]
 name = "predictiq_api"
 path = "src/lib.rs"
@@ -56,6 +60,7 @@ base64 = "0.22"
 subtle = "2.5"
 rand = { version = "0.8", features = ["getrandom"] }
 ipnet = "2"
+utoipa = { version = "4", features = ["yaml"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
