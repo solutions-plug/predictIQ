@@ -12,6 +12,7 @@ output "rds_endpoint" {
 output "redis_endpoint" {
   description = "Redis endpoint"
   value       = module.redis.endpoint
+  sensitive   = true
 }
 
 output "ecs_cluster_name" {

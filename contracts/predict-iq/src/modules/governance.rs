@@ -115,6 +115,8 @@ pub fn remove_guardian(e: &Env, address: Address) -> Result<(), ErrorCode> {
 
 /// Vote on a pending guardian removal. Requires majority of other guardians.
 pub fn vote_on_guardian_removal(e: &Env, voter: Address, approve: bool) -> Result<(), ErrorCode> {
+    voter.require_auth();
+
     let guardians = get_guardians(e);
 
     // Verify voter is a guardian

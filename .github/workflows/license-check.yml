@@ -1,0 +1,130 @@
+name: License Compliance Check
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  rust-licenses-contracts:
+    name: Rust License Check — contracts/predict-iq
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-deny-contracts-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: Check licenses — contracts workspace
+        run: cargo deny check licenses
+        working-directory: contracts/predict-iq
+
+  rust-licenses-api:
+    name: Rust License Check — services/api
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-deny-api-${{ hashFiles('services/api/Cargo.lock') }}
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: Check licenses — services/api
+        run: cargo deny check licenses
+        working-directory: services/api
+
+  npm-licenses-frontend:
+    name: NPM License Check — frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "18"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Install license-checker
+        run: npm install -g license-checker
+
+      - name: Check licenses — frontend
+        run: |
+          license-checker \
+            --onlyAllow "$(node -e "
+              const cfg = require('./.license-checker.json');
+              process.stdout.write(cfg.onlyAllow.join(';'));
+            ")" \
+            --excludePrivatePackages \
+            --production
+        working-directory: frontend
+
+  npm-licenses-tts:
+    name: NPM License Check — services/tts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "18"
+          cache: "npm"
+          cache-dependency-path: services/tts/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: services/tts
+
+      - name: Install license-checker
+        run: npm install -g license-checker
+
+      - name: Check licenses — services/tts
+        run: |
+          license-checker \
+            --onlyAllow "$(node -e "
+              const cfg = require('./.license-checker.json');
+              process.stdout.write(cfg.onlyAllow.join(';'));
+            ")" \
+            --excludePrivatePackages \
+            --production
+        working-directory: services/tts
+
+  all-license-checks-passed:
+    name: All License Checks Passed
+    needs:
+      - rust-licenses-contracts
+      - rust-licenses-api
+      - npm-licenses-frontend
+      - npm-licenses-tts
+    runs-on: ubuntu-latest
+    steps:
+      - name: Success
+        run: echo "All dependency licenses are compliant."

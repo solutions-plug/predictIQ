@@ -67,11 +67,11 @@ groups:
         expr: cache_circuit_breaker_state{state="open"} == 1
         for: 2m
         labels:
-          severity: critical
+          severity: page
           component: cache
         annotations:
           summary: "Redis cache circuit breaker has been open for 2+ minutes"
-          description: "The Redis cache circuit breaker is open, causing cache bypass and degraded performance. Check Redis connectivity and health."
+          description: "The Redis cache circuit breaker has been open for more than 2 minutes. All cache reads are failing open, causing increased load on the database and RPC endpoints. Check Redis connectivity and health. Immediate operator response required."
           runbook_url: "https://docs.predictiq.com/runbooks/cache-circuit-breaker-open"
 
       - alert: CacheCircuitBreakerHalfOpen
@@ -84,6 +84,7 @@ groups:
           summary: "Redis cache circuit breaker is in half-open state"
           description: "The Redis cache circuit breaker is probing for recovery. If this persists, Redis may be unstable."
           runbook_url: "https://docs.predictiq.com/runbooks/cache-circuit-breaker-half-open"
+
 
   - name: database_performance
     interval: 30s
@@ -281,3 +282,17 @@ groups:
           summary: "Performance degradation alert threshold reached"
           description: "Response time has degraded by more than 5% compared to 24h ago (alert threshold)"
           runbook_url: "https://docs.predictiq.com/runbooks/significant-performance-degradation"
+
+  - name: email_queue
+    interval: 30s
+    rules:
+      - alert: EmailQueueDepthHigh
+        expr: email_queue_depth > 100
+        for: 5m
+        labels:
+          severity: warning
+          component: email
+        annotations:
+          summary: "Email queue depth is high"
+          description: "Email queue depth is {{ $value }}, exceeding 100 for more than 5 minutes"
+          runbook_url: "https://docs.predictiq.com/runbooks/email-queue-depth-high"
