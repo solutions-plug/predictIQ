@@ -44,6 +44,21 @@ variable "redis_url" {
   sensitive = true
 }
 
+# SendGrid API key stored in Secrets Manager.
+# Set this to the raw API key value; Terraform will create the secret version.
+variable "sendgrid_api_key" {
+  type      = string
+  sensitive = true
+}
+
+# ISO-8601 date (YYYY-MM-DD) recording when SENDGRID_API_KEY was last rotated.
+# Stored as Secrets Manager metadata so ops tooling and the startup check can
+# read it without touching the key itself.
+variable "sendgrid_key_rotated_at" {
+  type        = string
+  description = "Date the SendGrid API key was last rotated (YYYY-MM-DD, e.g. 2026-06-30)"
+}
+
 locals {
   common_tags = {
     Project   = "predictiq"
@@ -116,6 +131,14 @@ resource "aws_ecs_task_definition" "api" {
         {
           name      = "REDIS_URL"
           valueFrom = aws_secretsmanager_secret.redis_url.arn
+        },
+        {
+          name      = "SENDGRID_API_KEY"
+          valueFrom = aws_secretsmanager_secret.sendgrid_api_key.arn
+        },
+        {
+          name      = "SENDGRID_KEY_ROTATED_AT"
+          valueFrom = aws_secretsmanager_secret.sendgrid_key_rotated_at.arn
         }
       ]
       logConfiguration = {
@@ -307,6 +330,44 @@ resource "aws_secretsmanager_secret_version" "redis_url" {
   secret_string   = var.redis_url
 }
 
+# ── SendGrid ────────────────────────────────────────────────────────────────
+
+resource "aws_secretsmanager_secret" "sendgrid_api_key" {
+  name        = "predictiq/${var.environment}/sendgrid-api-key"
+  description = "SendGrid API key used by the predictIQ API for transactional email. Rotate every 90 days — see docs/runbooks/sendgrid-api-key-rotation.md."
+
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-sendgrid-api-key"
+    }
+  )
+}
+
+resource "aws_secretsmanager_secret_version" "sendgrid_api_key" {
+  secret_id     = aws_secretsmanager_secret.sendgrid_api_key.id
+  secret_string = var.sendgrid_api_key
+}
+
+# Stores only the rotation date (YYYY-MM-DD string) — not the key itself.
+# The application reads this at startup to warn if the key is older than 90 days.
+resource "aws_secretsmanager_secret" "sendgrid_key_rotated_at" {
+  name        = "predictiq/${var.environment}/sendgrid-key-rotated-at"
+  description = "ISO-8601 date (YYYY-MM-DD) when SENDGRID_API_KEY was last rotated. Update this alongside the key itself."
+
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-sendgrid-key-rotated-at"
+    }
+  )
+}
+
+resource "aws_secretsmanager_secret_version" "sendgrid_key_rotated_at" {
+  secret_id     = aws_secretsmanager_secret.sendgrid_key_rotated_at.id
+  secret_string = var.sendgrid_key_rotated_at
+}
+
 resource "aws_iam_role" "ecs_task_execution_role" {
   name = "predictiq-${var.environment}-ecs-task-execution-role"
 
@@ -350,7 +411,9 @@ resource "aws_iam_role_policy" "ecs_task_execution_secrets" {
         ]
         Resource = [
           aws_secretsmanager_secret.database_url.arn,
-          aws_secretsmanager_secret.redis_url.arn
+          aws_secretsmanager_secret.redis_url.arn,
+          aws_secretsmanager_secret.sendgrid_api_key.arn,
+          aws_secretsmanager_secret.sendgrid_key_rotated_at.arn
         ]
       }
     ]

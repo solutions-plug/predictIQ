@@ -94,6 +94,9 @@ async fn main() -> anyhow::Result<()> {
     // Validate required configuration before proceeding
     config.validate()?;
 
+    // Warn at startup if the SendGrid API key is older than 90 days.
+    config.warn_if_sendgrid_key_stale();
+
     let metrics = Metrics::new()?;
     let cache = RedisCache::new(&config.redis_url).await?;
     let db = Database::new(&config.database_url, cache.clone(), metrics.clone(), &config.db_pool).await?;

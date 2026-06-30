@@ -1,3 +1,4 @@
+use chrono;
 use ipnet::IpNet;
 use std::{
     env,
@@ -176,6 +177,11 @@ pub struct Config {
     pub content_default_page_size: i64,
     pub sendgrid_api_key: Option<String>,
     pub from_email: Option<String>,
+    /// ISO-8601 date (YYYY-MM-DD) recording when SENDGRID_API_KEY was last
+    /// rotated. Injected from Secrets Manager via `SENDGRID_KEY_ROTATED_AT`.
+    /// When set and the key is older than 90 days the server logs a warning at
+    /// startup so on-call engineers are notified before the key is revoked.
+    pub sendgrid_key_rotated_at: Option<String>,
     pub base_url: String,
     pub api_keys: Vec<String>,
     pub admin_whitelist_ips: Vec<IpAddr>,
@@ -380,6 +386,7 @@ impl Config {
                 .unwrap_or(20),
             sendgrid_api_key: env::var("SENDGRID_API_KEY").ok(),
             from_email: env::var("FROM_EMAIL").ok(),
+            sendgrid_key_rotated_at: env::var("SENDGRID_KEY_ROTATED_AT").ok(),
             base_url: env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:8080".to_string()),
             api_keys: env::var("API_KEYS")
                 .ok()
@@ -465,6 +472,65 @@ impl Config {
             BlockchainNetwork::Testnet => "testnet",
             BlockchainNetwork::Mainnet => "mainnet",
             BlockchainNetwork::Custom => "custom",
+        }
+    }
+
+    /// Emit a `tracing::warn!` if `SENDGRID_KEY_ROTATED_AT` is set and the key
+    /// is older than `max_age_days` days (default 90).
+    ///
+    /// The check is best-effort: if the date cannot be parsed the function logs
+    /// a warning and returns — it never hard-errors so a misconfigured date
+    /// doesn't prevent startup.
+    pub fn warn_if_sendgrid_key_stale(&self) {
+        const MAX_AGE_DAYS: i64 = 90;
+        let rotated_at = match self.sendgrid_key_rotated_at.as_deref() {
+            Some(s) if !s.is_empty() => s,
+            _ => {
+                tracing::warn!(
+                    "SENDGRID_KEY_ROTATED_AT is not set — cannot verify SendGrid API key age. \
+                     Set this to the ISO-8601 date (YYYY-MM-DD) when the key was last rotated. \
+                     See docs/runbooks/sendgrid-api-key-rotation.md."
+                );
+                return;
+            }
+        };
+
+        let rotated_date = match chrono::NaiveDate::parse_from_str(rotated_at, "%Y-%m-%d") {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!(
+                    rotated_at,
+                    error = %e,
+                    "SENDGRID_KEY_ROTATED_AT could not be parsed as YYYY-MM-DD; \
+                     skipping key-age check. See docs/runbooks/sendgrid-api-key-rotation.md."
+                );
+                return;
+            }
+        };
+
+        let today = chrono::Utc::now().date_naive();
+        let age_days = (today - rotated_date).num_days();
+
+        if age_days >= MAX_AGE_DAYS {
+            tracing::warn!(
+                age_days,
+                max_age_days = MAX_AGE_DAYS,
+                rotated_at,
+                "SECURITY WARNING: SendGrid API key is {} days old (limit: {} days). \
+                 Rotate the key now and update SENDGRID_KEY_ROTATED_AT. \
+                 Follow docs/runbooks/sendgrid-api-key-rotation.md.",
+                age_days,
+                MAX_AGE_DAYS,
+            );
+        } else {
+            tracing::info!(
+                age_days,
+                max_age_days = MAX_AGE_DAYS,
+                rotated_at,
+                "SendGrid API key age check passed ({}/{} days)",
+                age_days,
+                MAX_AGE_DAYS,
+            );
         }
     }
 
@@ -708,6 +774,7 @@ mod tests {
             content_default_page_size: 20,
             sendgrid_api_key: None,
             from_email: None,
+            sendgrid_key_rotated_at: None,
             base_url: "http://localhost:8080".to_string(),
             api_keys: vec![],
             admin_whitelist_ips: vec![],
@@ -779,6 +846,7 @@ mod tests {
             content_default_page_size: 20,
             sendgrid_api_key: None,
             from_email: None,
+            sendgrid_key_rotated_at: None,
             base_url: "http://localhost:8080".to_string(),
             api_keys: vec![],
             admin_whitelist_ips: vec![],
@@ -850,6 +918,7 @@ mod tests {
             content_default_page_size: 20,
             sendgrid_api_key: None,
             from_email: None,
+            sendgrid_key_rotated_at: None,
             base_url: "http://localhost:8080".to_string(),
             api_keys: vec![],
             admin_whitelist_ips: vec![],
@@ -921,6 +990,7 @@ mod tests {
             content_default_page_size: 20,
             sendgrid_api_key: None,
             from_email: None,
+            sendgrid_key_rotated_at: None,
             base_url: "http://localhost:8080".to_string(),
             api_keys: vec![],
             admin_whitelist_ips: vec![],
