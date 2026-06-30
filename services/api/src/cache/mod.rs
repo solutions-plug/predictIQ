@@ -444,6 +444,28 @@ impl RedisCache {
         .await
     }
 
+    /// Ping Redis directly, bypassing the circuit breaker, and return the
+    /// round-trip latency in milliseconds.  Used by health-check endpoints
+    /// that must report accurate Redis reachability regardless of circuit state.
+    pub async fn ping_direct_ms(&self) -> anyhow::Result<u128> {
+        let start = std::time::Instant::now();
+        let mut conn = tokio::time::timeout(
+            Duration::from_millis(500),
+            self.pool.get(),
+        )
+        .await
+        .context("Redis pool acquire timed out")?
+        .context("Redis pool acquire failed")?;
+        let _: String = tokio::time::timeout(
+            Duration::from_millis(500),
+            redis::cmd("PING").query_async(&mut conn),
+        )
+        .await
+        .context("Redis PING timed out")?
+        .context("Redis PING failed")?;
+        Ok(start.elapsed().as_millis())
+    }
+
     /// Delete all keys matching `pattern` using non-blocking cursor-based SCAN.
     ///
     /// Each SCAN+DEL batch acquires and releases its own pool connection so no

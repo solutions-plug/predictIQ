@@ -204,6 +204,26 @@ impl EmailQueue {
                     .await
                     .context("Failed to add job to dead-letter set")?;
 
+                // Dual-write to PostgreSQL for durability — Redis DLQ survives only
+                // as long as Redis data does; the DB copy survives restarts and flushes.
+                let dlq_payload = serde_json::json!({
+                    "job_type": job.job_type,
+                    "recipient_email": job.recipient_email,
+                    "template_name": job.template_name,
+                    "template_data": job.template_data,
+                });
+                if let Err(e) = self
+                    .db
+                    .email_create_dead_letter_job(job_id, dlq_payload, error, new_attempts)
+                    .await
+                {
+                    tracing::error!(
+                        job_id = %job_id,
+                        error = %e,
+                        "Failed to persist dead-letter job to PostgreSQL — Redis copy still exists"
+                    );
+                }
+
                 tracing::error!(
                     "Email job {} permanently failed after {} attempts: {}",
                     job_id,
@@ -304,6 +324,15 @@ impl EmailQueue {
             .zadd(EMAIL_QUEUE_KEY, job_id.to_string(), eligible_at as f64)
             .await
             .context("Failed to re-enqueue dead-letter job")?;
+
+        // Remove the durable DB copy now that the job is back in the queue.
+        if let Err(e) = self.db.email_delete_dead_letter_job(job_id).await {
+            tracing::warn!(
+                job_id = %job_id,
+                error = %e,
+                "Failed to remove dead-letter job from PostgreSQL — stale entry will remain"
+            );
+        }
 
         tracing::info!(
             job_id = %job_id,

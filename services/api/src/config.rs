@@ -230,6 +230,10 @@ pub struct Config {
     /// startup. Configured via `STELLAR_NETWORK_PASSPHRASE`; defaults to the
     /// canonical passphrase for the configured `BLOCKCHAIN_NETWORK`.
     pub network_passphrase: String,
+    /// Deployment environment name. Configured via `APP_ENV`; defaults to
+    /// `"development"`. When set to `"production"` certain checks (e.g. RPC
+    /// reachability) become fatal rather than warnings.
+    pub app_env: String,
 }
 
 impl Config {
@@ -457,6 +461,7 @@ impl Config {
             cors: CorsConfig::from_env(),
             contract_key_schema: ContractKeySchema::from_env(),
             network_passphrase,
+            app_env: env::var("APP_ENV").unwrap_or_else(|_| "development".to_string()),
         }
     }
 
@@ -466,6 +471,10 @@ impl Config {
             BlockchainNetwork::Mainnet => "mainnet",
             BlockchainNetwork::Custom => "custom",
         }
+    }
+
+    pub fn is_production(&self) -> bool {
+        self.app_env.eq_ignore_ascii_case("production")
     }
 
     /// Validate all required environment variables at startup.

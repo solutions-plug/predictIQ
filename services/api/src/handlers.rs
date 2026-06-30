@@ -163,6 +163,142 @@ pub async fn health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> i
     (StatusCode::OK, Json(health_status))
 }
 
+/// Liveness probe: just confirms the process is alive and serving requests.
+/// Never returns 503 — if this endpoint is reachable the process is up.
+pub async fn health_live() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "ok",
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        })),
+    )
+}
+
+/// Readiness probe: verifies all critical dependencies are reachable.
+///
+/// Returns 503 if the database or Redis is unavailable.  Blockchain RPC
+/// degradation is surfaced in the body but does not affect the status code
+/// because the API can continue to serve cached data without it.
+pub async fn health_ready(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    use crate::correlation::REQUEST_ID_HEADER;
+
+    let request_id = headers
+        .get(REQUEST_ID_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("-");
+
+    // ── Database ──────────────────────────────────────────────────────────────
+    let db_ok = state.db.ping().await.is_ok();
+
+    // ── Redis: direct PING bypassing circuit breaker, with latency ───────────
+    let redis_result = state.cache.ping_direct_ms().await;
+    let redis_latency_ms = redis_result.as_ref().ok().copied().unwrap_or(0);
+    let redis_ok = redis_result.is_ok();
+    let redis_degraded = redis_ok && redis_latency_ms > 100;
+
+    // ── Blockchain RPC (cached; does not block readiness) ─────────────────────
+    let rpc_health = state.blockchain.health_check_cached().await.ok();
+    let rpc_status = match &rpc_health {
+        Some(h) if h.is_healthy => "ok",
+        Some(_) => "degraded",
+        None => "unknown",
+    };
+
+    let all_critical_ok = db_ok && redis_ok;
+    let overall_status = if !all_critical_ok {
+        "unavailable"
+    } else if redis_degraded {
+        "degraded"
+    } else {
+        "ok"
+    };
+
+    let status_code = if all_critical_ok {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+
+    (
+        status_code,
+        Json(serde_json::json!({
+            "status": overall_status,
+            "request_id": request_id,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "dependencies": {
+                "database": {
+                    "status": if db_ok { "ok" } else { "unavailable" }
+                },
+                "redis": {
+                    "status": if !redis_ok { "unavailable" } else if redis_degraded { "degraded" } else { "ok" },
+                    "latency_ms": redis_latency_ms,
+                },
+                "blockchain_rpc": {
+                    "status": rpc_status,
+                }
+            }
+        })),
+    )
+}
+
+/// Dependency details endpoint: structured per-dependency health with latency.
+///
+/// Returns the same data as `/health/ready` but always returns 200 so
+/// Prometheus scrape targets and monitoring dashboards can always collect
+/// the data even when dependencies are degraded.
+pub async fn health_dependencies(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let db_start = Instant::now();
+    let db_ok = state.db.ping().await.is_ok();
+    let db_latency_ms = db_start.elapsed().as_millis();
+
+    let redis_result = state.cache.ping_direct_ms().await;
+    let redis_latency_ms = redis_result.as_ref().ok().copied().unwrap_or(0);
+    let redis_ok = redis_result.is_ok();
+    let redis_status = if !redis_ok {
+        "unavailable"
+    } else if redis_latency_ms > 100 {
+        "degraded"
+    } else {
+        "ok"
+    };
+
+    let rpc_health = state.blockchain.health_check_cached().await.ok();
+    let rpc_status = match &rpc_health {
+        Some(h) if h.is_healthy => "ok",
+        Some(_) => "degraded",
+        None => "unknown",
+    };
+    let rpc_latest_ledger = rpc_health.as_ref().map(|h| h.latest_ledger).unwrap_or(0);
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "dependencies": [
+                {
+                    "name": "database",
+                    "status": if db_ok { "ok" } else { "unavailable" },
+                    "latency_ms": db_latency_ms,
+                },
+                {
+                    "name": "redis",
+                    "status": redis_status,
+                    "latency_ms": redis_latency_ms,
+                },
+                {
+                    "name": "blockchain_rpc",
+                    "status": rpc_status,
+                    "latest_ledger": rpc_latest_ledger,
+                },
+            ]
+        })),
+    )
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct NewsletterSubscribeRequest {
     pub email: String,
@@ -565,7 +701,7 @@ pub async fn statistics(State(state): State<Arc<AppState>>) -> Result<impl IntoR
     } else {
         state.metrics.observe_miss("api", endpoint);
     }
-    state.metrics.observe_request(endpoint, start.elapsed());
+    state.metrics.observe_request(endpoint, "200", start.elapsed());
 
     Ok((StatusCode::OK, Json(payload)))
 }
@@ -633,7 +769,7 @@ pub async fn featured_markets(
     } else {
         state.metrics.observe_miss("api", endpoint);
     }
-    state.metrics.observe_request(endpoint, start.elapsed());
+    state.metrics.observe_request(endpoint, "200", start.elapsed());
 
     Ok((StatusCode::OK, Json(paginated)))
 }
@@ -683,7 +819,7 @@ pub async fn content(
     } else {
         state.metrics.observe_miss("api", endpoint);
     }
-    state.metrics.observe_request(endpoint, start.elapsed());
+    state.metrics.observe_request(endpoint, "200", start.elapsed());
 
     Ok((StatusCode::OK, Json(paginated)))
 }

@@ -92,6 +92,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "011_create_markets",
         sql: include_str!("../database/migrations/011_create_markets.sql"),
     },
+    Migration {
+        version: "017",
+        name: "017_create_email_dead_letter_jobs",
+        sql: include_str!("../database/migrations/017_create_email_dead_letter_jobs.sql"),
+    },
 ];
 
 // ---------------------------------------------------------------------------

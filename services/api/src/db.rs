@@ -759,6 +759,64 @@ impl Database {
         .fetch_one(&self.pool)).await.unwrap_or(0);
         Ok(count > 0)
     }
+
+    /// Persist a dead-letter job to PostgreSQL for durable audit and recovery.
+    ///
+    /// Called alongside the Redis ZADD so a Redis flush never loses the entry.
+    pub async fn email_create_dead_letter_job(
+        &self,
+        id: uuid::Uuid,
+        payload: serde_json::Value,
+        failure_reason: &str,
+        retry_count: i32,
+    ) -> anyhow::Result<()> {
+        self.with_timeout(
+            "email_create_dead_letter_job",
+            sqlx::query(
+                "INSERT INTO email_dead_letter_jobs (id, payload, failure_reason, retry_count)
+                 VALUES ($1, $2, $3, $4)
+                 ON CONFLICT (id) DO UPDATE
+                   SET failure_reason = EXCLUDED.failure_reason,
+                       retry_count    = EXCLUDED.retry_count",
+            )
+            .bind(id)
+            .bind(payload)
+            .bind(failure_reason)
+            .bind(retry_count)
+            .execute(&self.pool),
+        )
+        .await
+        .map_err(anyhow::Error::from)?;
+        Ok(())
+    }
+
+    /// List all dead-letter job IDs from PostgreSQL (oldest-failed first).
+    ///
+    /// Used as a fallback when Redis is unavailable or has been flushed.
+    pub async fn email_list_dead_letter_jobs(&self) -> anyhow::Result<Vec<uuid::Uuid>> {
+        let rows = self
+            .with_timeout(
+                "email_list_dead_letter_jobs",
+                sqlx::query("SELECT id FROM email_dead_letter_jobs ORDER BY failed_at ASC")
+                    .fetch_all(&self.pool),
+            )
+            .await
+            .map_err(anyhow::Error::from)?;
+        rows.iter().map(|r| r.try_get("id").map_err(anyhow::Error::from)).collect()
+    }
+
+    /// Remove a dead-letter entry from PostgreSQL when the job is re-queued.
+    pub async fn email_delete_dead_letter_job(&self, id: uuid::Uuid) -> anyhow::Result<()> {
+        self.with_timeout(
+            "email_delete_dead_letter_job",
+            sqlx::query("DELETE FROM email_dead_letter_jobs WHERE id = $1")
+                .bind(id)
+                .execute(&self.pool),
+        )
+        .await
+        .map_err(anyhow::Error::from)?;
+        Ok(())
+    }
 }
 }
 

@@ -13,7 +13,7 @@
 //! All four commands execute atomically via a Lua script.
 
 use axum::{
-    extract::State,
+    extract::{ConnectInfo, State},
     http::{HeaderMap, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -150,6 +150,77 @@ pub async fn rate_limit_middleware(
                 .into_response()
         }
     }
+}
+
+/// Rate-limit middleware for newsletter routes.
+///
+/// Uses the Redis-backed `IpRateLimiter` stored on `AppState`, sharing the
+/// counter across all API instances.  Fails open if Redis is unavailable so
+/// a Redis outage never blocks newsletter subscriptions.
+pub async fn newsletter_rate_limit_middleware(
+    State(state): State<std::sync::Arc<crate::AppState>>,
+    headers: HeaderMap,
+    connect_info: Option<ConnectInfo<std::net::SocketAddr>>,
+    req: axum::extract::Request,
+    next: Next,
+) -> Response {
+    use crate::security::extract_client_ip_cidrs;
+    let ip = extract_client_ip_cidrs(
+        &headers,
+        connect_info.as_ref(),
+        state.config.trust_proxy,
+        &state.config.trusted_proxy_cidrs,
+    );
+    let allowed = state
+        .newsletter_rate_limiter
+        .allow(
+            &format!("subscribe:ip:{ip}"),
+            state.config.newsletter_rate_limit_max,
+            std::time::Duration::from_secs(state.config.newsletter_rate_limit_window_secs),
+        )
+        .await;
+    if !allowed {
+        tracing::warn!(client_ip = %ip, "newsletter rate limit exceeded");
+        state.metrics.observe_rate_limit_rejection("newsletter");
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({
+                "code": "RATE_LIMITED",
+                "message": "Too many requests, please try again later."
+            })),
+        )
+            .into_response();
+    }
+    next.run(req).await
+}
+
+/// Rate-limit middleware for admin routes using the in-memory limiter.
+///
+/// Admin routes see far lower traffic than public routes, so the per-instance
+/// in-memory limiter is sufficient here — it still protects individual nodes
+/// from local abuse without requiring a Redis round-trip on every admin call.
+pub async fn admin_rate_limit_middleware(
+    State(limiter): State<std::sync::Arc<crate::security::RateLimiter>>,
+    headers: HeaderMap,
+    connect_info: Option<ConnectInfo<std::net::SocketAddr>>,
+    req: axum::extract::Request,
+    next: Next,
+) -> Response {
+    use crate::security::{extract_client_ip, RateLimitConfig};
+    let ip = extract_client_ip(&headers, connect_info.as_ref(), true);
+    let config = RateLimitConfig::new(30, std::time::Duration::from_secs(60));
+    if !limiter.check(&format!("admin:{ip}"), &config).await {
+        tracing::warn!(client_ip = %ip, "admin rate limit exceeded");
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({
+                "code": "RATE_LIMITED",
+                "message": "Too many requests, please try again later."
+            })),
+        )
+            .into_response();
+    }
+    next.run(req).await
 }
 
 fn client_key_from_headers(headers: &HeaderMap) -> String {

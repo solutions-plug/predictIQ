@@ -239,6 +239,33 @@ impl BlockchainClient {
         })
     }
 
+    /// Probe whether `BLOCKCHAIN_RPC_URL` is reachable within a 5-second window.
+    ///
+    /// Unlike `validate_network_passphrase`, this probe:
+    /// - Uses a hard 5-second timeout (no retry backoff)
+    /// - Succeeds on any HTTP response, including 4xx/5xx (server is up)
+    /// - Only fails on network-level errors (refused, timeout, DNS failure)
+    ///
+    /// In production (`APP_ENV=production`) callers should treat a non-Ok
+    /// result as fatal and refuse to start.  In other environments it is
+    /// logged as WARN so developers can work offline.
+    pub async fn probe_rpc_reachability(&self) -> anyhow::Result<()> {
+        let payload = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "startup-probe",
+            "method": "getHealth",
+            "params": {}
+        });
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            self.http.post(&self.rpc_url).json(&payload).send(),
+        )
+        .await
+        .context("RPC probe timed out after 5 seconds")?
+        .with_context(|| format!("RPC probe to {} failed", self.rpc_url))?;
+        Ok(())
+    }
+
     /// Query the RPC node for its network passphrase and verify it matches
     /// the configured `STELLAR_NETWORK_PASSPHRASE`. Startup must call this and
     /// fail fast if the passphrase does not match, preventing silently signed
@@ -793,7 +820,7 @@ impl BlockchainClient {
                 total_events = all_events.len(),
                 "fetch_events_since paginated"
             );
-            self.metrics.observe_invalidation("events_pagination_pages", pages);
+            self.metrics.observe_invalidation("events_pagination_pages", pages as usize);
         }
 
         Ok(all_events)

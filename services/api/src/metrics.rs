@@ -18,6 +18,7 @@ pub struct Metrics {
     db_pool_connections_idle: IntGaugeVec,
     db_pool_acquire_duration: HistogramVec,
     rate_limit_rejections: IntCounterVec,
+    deprecated_api_calls: IntCounterVec,
 }
 
 impl Metrics {
@@ -120,6 +121,15 @@ impl Metrics {
         )
         .context("rate_limit_rejections metric")?;
 
+        let deprecated_api_calls = IntCounterVec::new(
+            prometheus::Opts::new(
+                "deprecated_api_calls_total",
+                "API calls using deprecated versions, by version",
+            ),
+            &["version"],
+        )
+        .context("deprecated_api_calls metric")?;
+
         registry.register(Box::new(cache_hits.clone()))?;
         registry.register(Box::new(cache_misses.clone()))?;
         registry.register(Box::new(invalidations.clone()))?;
@@ -132,6 +142,7 @@ impl Metrics {
         registry.register(Box::new(db_pool_connections_idle.clone()))?;
         registry.register(Box::new(db_pool_acquire_duration.clone()))?;
         registry.register(Box::new(rate_limit_rejections.clone()))?;
+        registry.register(Box::new(deprecated_api_calls.clone()))?;
 
         Ok(Self {
             registry,
@@ -147,6 +158,7 @@ impl Metrics {
             db_pool_connections_idle,
             db_pool_acquire_duration,
             rate_limit_rejections,
+            deprecated_api_calls,
         })
     }
 
@@ -223,6 +235,12 @@ impl Metrics {
     pub fn observe_rate_limit_rejection(&self, route: &str) {
         self.rate_limit_rejections
             .with_label_values(&[route])
+            .inc();
+    }
+
+    pub fn observe_deprecated_api_call(&self, version: &str) {
+        self.deprecated_api_calls
+            .with_label_values(&[version])
             .inc();
     }
 

@@ -98,6 +98,27 @@ async fn main() -> anyhow::Result<()> {
     let cache = RedisCache::new(&config.redis_url).await?;
     let db = Database::new(&config.database_url, cache.clone(), metrics.clone(), &config.db_pool).await?;
     let blockchain = BlockchainClient::new(&config, cache.clone(), metrics.clone())?;
+
+    // ── RPC reachability probe (issue #918) ───────────────────────────────────
+    match blockchain.probe_rpc_reachability().await {
+        Ok(()) => tracing::info!(
+            url = %config.blockchain_rpc_url,
+            "RPC endpoint is reachable"
+        ),
+        Err(e) => {
+            if config.is_production() {
+                return Err(anyhow::anyhow!(
+                    "BLOCKCHAIN_RPC_URL is unreachable in production: {e}"
+                ));
+            }
+            tracing::warn!(
+                url = %config.blockchain_rpc_url,
+                error = %e,
+                "RPC endpoint unreachable — blockchain features will be unavailable"
+            );
+        }
+    }
+
     blockchain.validate_network_passphrase().await?;
 
     let email_service = EmailService::new(config.clone())?;
@@ -186,9 +207,15 @@ async fn main() -> anyhow::Result<()> {
     // ── CORS ──────────────────────────────────────────────────────────────────
     let cors_layer = build_cors_layer(&state.config.cors);
 
+    // ── Versioning state (issue #920) ─────────────────────────────────────────
+    let versioning_state = versioning::VersioningState::new(state.metrics.clone());
+
     // ── Routes ────────────────────────────────────────────────────────────────
     let public_routes = Router::new()
         .route("/health", get(handlers::health))
+        .route("/health/live", get(handlers::health_live))
+        .route("/health/ready", get(handlers::health_ready))
+        .route("/health/dependencies", get(handlers::health_dependencies))
         .route("/api/v1/blockchain/health", get(handlers::blockchain_health))
         .route("/api/v1/blockchain/markets/:market_id", get(handlers::blockchain_market_data))
         .route("/api/v1/blockchain/stats", get(handlers::blockchain_platform_stats))
@@ -200,7 +227,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/content", get(handlers::content))
         .layer(middleware::from_fn(correlation::correlation_id_middleware))
         .layer(TraceLayer::new_for_http())
-        .layer(middleware::from_fn(versioning::versioning_middleware))
+        .layer(middleware::from_fn_with_state(
+            versioning_state.clone(),
+            versioning::versioning_middleware,
+        ))
         .layer(middleware::from_fn_with_state(
             (rate_limiter.clone(), security::TrustProxy(config_trust_proxy)),
             security::global_rate_limit_middleware,
