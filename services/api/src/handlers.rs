@@ -27,7 +27,14 @@ pub struct ApiError {
 
 impl ApiError {
     pub fn internal(err: anyhow::Error) -> Self {
+        // Log the full error chain for debugging, then record it on the active OTel span
+        // so traces carry the root cause even though the HTTP response is sanitised.
         tracing::error!(error = %err, "internal server error");
+        {
+            use tracing_opentelemetry::OpenTelemetrySpanExt;
+            tracing::Span::current()
+                .set_status(opentelemetry::trace::Status::error(format!("{err:#}")));
+        }
         Self {
             code: "INTERNAL_ERROR",
             message: "An internal error occurred.".to_string(),
@@ -111,6 +118,8 @@ pub struct FeaturedMarketView {
     pub resolved_outcome: Option<u32>,
 }
 
+/// Legacy `/health` endpoint — retained for backward compatibility.
+/// Returns 200 when healthy and 503 when any dependency is down.
 #[utoipa::path(
     get,
     path = "/health",
@@ -146,6 +155,7 @@ pub async fn health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> i
             "circuit_breaker": cb_state,
             "pool_size": pool.size,
             "pool_available": pool.available,
+            "status": "ok",
         },
         "db": {
             "status": "ok",
@@ -154,16 +164,19 @@ pub async fn health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> i
             "blockchain_sync": "running",
             "blockchain_monitor": "running",
             "email_queue": "running",
-            "rate_limiter_cleanup": "running"
         }
     });
 
+    let mut degraded = false;
+
     if state.cache.ping().await.is_err() {
+        degraded = true;
         health_status["status"] = "degraded".into();
         health_status["redis"]["status"] = "unhealthy".into();
     }
 
     if state.db.ping().await.is_err() {
+        degraded = true;
         health_status["status"] = "degraded".into();
         health_status["db"]["status"] = "unhealthy".into();
     }
@@ -176,13 +189,28 @@ pub async fn health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> i
         Ok(()) => "ok",
         Err(e) => {
             tracing::warn!(error = %e, "SendGrid connectivity probe failed");
+            degraded = true;
             health_status["status"] = "degraded".into();
             "degraded"
         }
     };
     health_status["sendgrid"] = serde_json::json!({ "status": sendgrid_status });
 
-    (StatusCode::OK, Json(health_status))
+    let status_code = if degraded {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::OK
+    };
+    (status_code, Json(health_status))
+}
+
+/// `/health/live` — lightweight liveness probe.
+/// Returns 200 as long as the process is running; does not check dependencies.
+pub async fn health_live() -> impl IntoResponse {
+    Json(serde_json::json!({
+        "status": "ok",
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    }))
 }
 
 /// Liveness probe: just confirms the process is alive and serving requests.
@@ -1685,4 +1713,36 @@ pub async fn list_api_keys(
         .collect();
 
     Ok((StatusCode::OK, Json(items)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::StatusCode;
+
+    /// The HTTP response body from ApiError::internal must never contain the
+    /// underlying error message — only a generic sanitised string.
+    /// The root cause is emitted to tracing (and therefore OTel spans) instead.
+    #[test]
+    fn internal_error_response_body_does_not_leak_cause() {
+        let secret_detail = "secret db password at host db.internal:5432";
+        let err = anyhow::anyhow!(secret_detail);
+        let api_err = ApiError::internal(err);
+
+        let json = serde_json::to_string(&api_err).unwrap();
+        assert_eq!(api_err.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(api_err.message, "An internal error occurred.");
+        assert!(!json.contains("secret"), "response must not leak internal error details");
+        assert!(!json.contains("db.internal"), "response must not leak internal hostnames");
+    }
+
+    /// ApiError::internal should preserve the error code and HTTP status independently
+    /// of what the underlying error contains.
+    #[test]
+    fn internal_error_has_correct_code_and_status() {
+        let err = anyhow::anyhow!("something broke");
+        let api_err = ApiError::internal(err);
+        assert_eq!(api_err.code, "INTERNAL_ERROR");
+        assert_eq!(api_err.status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
 }

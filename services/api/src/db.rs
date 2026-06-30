@@ -850,6 +850,34 @@ impl Database {
         Ok(())
     }
 
+    /// Upsert a watched transaction record. Called when a new tx hash is added to the monitor.
+    pub async fn watched_tx_upsert(
+        &self,
+        tx_hash: &str,
+        market_id: Option<i64>,
+        expires_at: DateTime<Utc>,
+    ) -> anyhow::Result<()> {
+        self.with_timeout(
+            "watched_tx_upsert",
+            sqlx::query(
+                "INSERT INTO watched_transactions (tx_hash, market_id, expires_at, status)
+                 VALUES ($1, $2, $3, 'pending')
+                 ON CONFLICT (tx_hash) DO UPDATE
+                     SET expires_at = EXCLUDED.expires_at,
+                         status = CASE WHEN watched_transactions.status = 'pending'
+                                       THEN 'pending'
+                                       ELSE watched_transactions.status END",
+            )
+            .bind(tx_hash)
+            .bind(market_id)
+            .bind(expires_at)
+            .execute(&self.pool),
+        )
+        .await
+        .map_err(anyhow::Error::from)?;
+        Ok(())
+    }
+
     /// List all dead-letter job IDs from PostgreSQL (oldest-failed first).
     ///
     /// Used as a fallback when Redis is unavailable or has been flushed.
@@ -872,6 +900,41 @@ impl Database {
             sqlx::query("DELETE FROM email_dead_letter_jobs WHERE id = $1")
                 .bind(id)
                 .execute(&self.pool),
+        )
+        .await
+        .map_err(anyhow::Error::from)?;
+        Ok(())
+    }
+
+    /// Load all non-expired pending transaction hashes for in-memory restoration on startup.
+    pub async fn watched_tx_load_pending(&self) -> anyhow::Result<Vec<String>> {
+        let rows = self.with_timeout(
+            "watched_tx_load_pending",
+            sqlx::query_scalar::<_, String>(
+                "SELECT tx_hash FROM watched_transactions
+                 WHERE status = 'pending' AND expires_at > NOW()",
+            )
+            .fetch_all(&self.pool),
+        )
+        .await
+        .map_err(anyhow::Error::from)?;
+        Ok(rows)
+    }
+
+    /// Mark a watched transaction as confirmed or expired.
+    pub async fn watched_tx_mark_resolved(
+        &self,
+        tx_hash: &str,
+        status: &str,
+    ) -> anyhow::Result<()> {
+        self.with_timeout(
+            "watched_tx_mark_resolved",
+            sqlx::query(
+                "UPDATE watched_transactions SET status = $1 WHERE tx_hash = $2",
+            )
+            .bind(status)
+            .bind(tx_hash)
+            .execute(&self.pool),
         )
         .await
         .map_err(anyhow::Error::from)?;

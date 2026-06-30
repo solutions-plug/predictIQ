@@ -297,7 +297,7 @@ resource "aws_lb_target_group" "api" {
     healthy_threshold   = 2
     unhealthy_threshold = 3
     timeout             = 5
-    interval            = 45
+    interval            = 60
     path                = "/health/ready"
     matcher             = "200"
   }

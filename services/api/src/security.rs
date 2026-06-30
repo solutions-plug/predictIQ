@@ -1,8 +1,6 @@
 use std::{
-    collections::HashMap,
     net::IpAddr,
     sync::Arc,
-    time::{Duration, SystemTime},
 };
 
 use axum::{
@@ -15,99 +13,16 @@ use axum::{
 };
 use ipnet::IpNet;
 use serde::Serialize;
-use tokio::sync::RwLock;
 
 /// Newtype wrapper so `trust_proxy: bool` can be injected as Axum `State`.
 #[derive(Clone, Copy, Debug)]
 pub struct TrustProxy(pub bool);
-
-#[derive(Debug, Clone)]
-pub struct RateLimitConfig {
-    pub requests: u32,
-    pub window: Duration,
-}
-
-impl RateLimitConfig {
-    pub fn new(requests: u32, window: Duration) -> Self {
-        Self { requests, window }
-    }
-}
-
-/// Rate limiter state for tracking requests
-#[derive(Debug)]
-struct RateLimitEntry {
-    count: u32,
-    window_start: SystemTime,
-}
-
-/// Multi-tier rate limiter
-/// 
-/// Tracks request counts per key using fixed-size buckets with sliding windows.
-/// No allocation leaks: all keys and entries are properly managed in the HashMap,
-/// which is periodically cleaned to remove expired windows.
-#[derive(Clone)]
-pub struct RateLimiter {
-    limits: Arc<RwLock<HashMap<String, RateLimitEntry>>>,
-}
 
 /// Webhook signature verification config
 #[derive(Clone)]
 pub struct WebhookConfig {
     pub secret: Option<String>,
     pub replay_window_secs: u64,
-}
-
-impl RateLimiter {
-    pub fn new() -> Self {
-        Self {
-            limits: Arc::new(RwLock::new(HashMap::new())),
-        }
-    }
-
-    pub async fn check(&self, key: &str, config: &RateLimitConfig) -> bool {
-        let mut limits = self.limits.write().await;
-        let now = SystemTime::now();
-
-        let entry = limits.entry(key.to_string()).or_insert(RateLimitEntry {
-            count: 0,
-            window_start: now,
-        });
-
-        // Reset window if expired
-        if now
-            .duration_since(entry.window_start)
-            .unwrap_or(Duration::ZERO)
-            >= config.window
-        {
-            entry.count = 0;
-            entry.window_start = now;
-        }
-
-        // Check limit
-        if entry.count >= config.requests {
-            return false;
-        }
-
-        entry.count += 1;
-        true
-    }
-
-    /// Cleanup old entries periodically
-    pub async fn cleanup(&self) {
-        let mut limits = self.limits.write().await;
-        let now = SystemTime::now();
-        limits.retain(|_, entry| {
-            now.duration_since(entry.window_start)
-                .unwrap_or(Duration::ZERO)
-                < Duration::from_secs(3600)
-        });
-    }
-}
-
-impl Default for RateLimiter {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 /// Extract client IP with trusted proxy CIDR validation.
@@ -209,24 +124,6 @@ pub fn extract_client_ip_cidrs(
     }
 
     "unknown".to_string()
-}
-
-/// Global rate limiting middleware (100 req/min per IP)
-pub async fn global_rate_limit_middleware(
-    State((limiter, TrustProxy(trust_proxy))): State<(Arc<RateLimiter>, TrustProxy)>,
-    headers: HeaderMap,
-    connect_info: Option<ConnectInfo<std::net::SocketAddr>>,
-    request: Request,
-    next: Next,
-) -> Result<Response, StatusCode> {
-    let ip = extract_client_ip(&headers, connect_info.as_ref(), trust_proxy);
-    let config = RateLimitConfig::new(100, Duration::from_secs(60));
-
-    if !limiter.check(&format!("global:{}", ip), &config).await {
-        return Err(StatusCode::TOO_MANY_REQUESTS);
-    }
-
-    Ok(next.run(request).await)
 }
 
 /// Security headers middleware

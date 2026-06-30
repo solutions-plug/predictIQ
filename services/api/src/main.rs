@@ -114,7 +114,7 @@ async fn main() -> anyhow::Result<()> {
     let cache = RedisCache::new(&config.redis_url).await?;
     let db = Database::new(&config.database_url, cache.clone(), metrics.clone(), &config.db_pool).await?;
     let db_arc = Arc::new(db.clone());
-    let blockchain = BlockchainClient::new(&config, cache.clone(), metrics.clone())?;
+    let blockchain = BlockchainClient::new(&config, cache.clone(), db.clone(), metrics.clone())?;
 
     // ── RPC reachability probe (issue #918) ───────────────────────────────────
     match blockchain.probe_rpc_reachability().await {
@@ -135,7 +135,6 @@ async fn main() -> anyhow::Result<()> {
             );
         }
     }
-
     blockchain.validate_network_passphrase().await?;
 
     let email_service = EmailService::new(config.clone())?;
@@ -168,8 +167,7 @@ async fn main() -> anyhow::Result<()> {
     // delaying exit, so the email drain timeout defaults to 60 s.
     //
     // Blockchain workers (sync + tx-monitor) use the global coordinator.
-    // The rate-limiter cleanup and newsletter cleanup tasks are fire-and-forget
-    // (low-risk, no persistent state) so they are not tracked.
+    // The newsletter cleanup task is fire-and-forget (low-risk) so it is not tracked.
     let email_coordinator = ShutdownCoordinator::new(1);
     let coordinator = ShutdownCoordinator::new(2);
 
@@ -178,14 +176,13 @@ async fn main() -> anyhow::Result<()> {
     let metrics_rate_limiter = metrics.clone();
     tokio::spawn(async move {
         const WORKER_NAME: &str = "rate_limiter_cleanup";
-        
-        // Set worker status to running
+
         metrics_rate_limiter.set_worker_status(WORKER_NAME, true);
-        
+
         let mut interval = tokio::time::interval(Duration::from_secs(300));
         let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(30));
         heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        
+
         loop {
             tokio::select! {
                 _ = interval.tick() => {
@@ -197,6 +194,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     });
+
 
     let state = Arc::new(AppState {
         config,
@@ -212,6 +210,10 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // ── Blockchain background workers ─────────────────────────────────────────
+    // Restore watched transactions from the database before workers start polling.
+    if let Err(e) = state.blockchain.load_watched_transactions().await {
+        tracing::warn!(error = %e, "failed to restore watched transactions from database; starting with empty watch list");
+    }
     let _blockchain_handles = Arc::new(state.blockchain.clone())
         .start_background_tasks(&coordinator);
 
@@ -337,11 +339,15 @@ async fn main() -> anyhow::Result<()> {
     let versioning_state = versioning::VersioningState::new(state.metrics.clone());
 
     // ── Routes ────────────────────────────────────────────────────────────────
-    let public_routes = Router::new()
+    // Health probes bypass rate limiting so the load balancer is never gated.
+    let health_routes = Router::new()
         .route("/health", get(handlers::health))
         .route("/health/live", get(handlers::health_live))
         .route("/health/ready", get(handlers::health_ready))
         .route("/health/dependencies", get(handlers::health_dependencies))
+        .with_state(state.clone());
+
+    let public_routes = Router::new()
         .route("/api/v1/blockchain/health", get(handlers::blockchain_health))
         .route("/api/v1/blockchain/markets/:market_id", get(handlers::blockchain_market_data))
         .route("/api/v1/blockchain/stats", get(handlers::blockchain_platform_stats))
@@ -358,8 +364,8 @@ async fn main() -> anyhow::Result<()> {
             versioning::versioning_middleware,
         ))
         .layer(middleware::from_fn_with_state(
-            (rate_limiter.clone(), security::TrustProxy(config_trust_proxy)),
-            security::global_rate_limit_middleware,
+            state.clone(),
+            rate_limit::global_rate_limit_middleware,
         ))
         .with_state(state.clone());
 
@@ -492,7 +498,7 @@ async fn main() -> anyhow::Result<()> {
         ))
         .layer(middleware::from_fn_with_state(api_key_auth.clone(), security::api_key_middleware))
         .layer(middleware::from_fn_with_state(
-            rate_limiter.clone(),
+            state.clone(),
             rate_limit::admin_rate_limit_middleware,
         ))
         .layer(middleware::from_fn_with_state(state.clone(), audit_middleware::audit_logging_middleware))
@@ -501,6 +507,7 @@ async fn main() -> anyhow::Result<()> {
         .with_state(state.clone());
 
     let app = Router::new()
+        .merge(health_routes)
         .merge(public_routes)
         .merge(metrics_routes)
         .merge(newsletter_routes)

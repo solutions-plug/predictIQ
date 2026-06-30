@@ -397,6 +397,11 @@ impl RedisCache {
         self.cb.state()
     }
 
+    /// Clone the underlying deadpool-redis pool for direct use by rate limiters.
+    pub fn redis_pool(&self) -> deadpool_redis::Pool {
+        self.pool.clone()
+    }
+
     /// Pool status for metrics/health.
     pub fn pool_status(&self) -> deadpool_redis::Status {
         self.pool.status()

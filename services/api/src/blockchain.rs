@@ -4,6 +4,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use chrono::Utc;
+
 use anyhow::{anyhow, Context};
 use rand::Rng as _;
 use reqwest::Client;
@@ -14,6 +16,7 @@ use tokio::{sync::RwLock, time::sleep};
 use crate::{
     cache::{keys, RedisCache},
     config::{Config, ContractKeySchema},
+    db::Database,
     metrics::Metrics,
     shutdown::{ShutdownCoordinator, WorkerHandle},
 };
@@ -33,6 +36,7 @@ pub struct BlockchainClient {
     confirmation_ledger_lag: u32,
     sync_market_ids: Vec<i64>,
     cache: RedisCache,
+    db: Database,
     metrics: Metrics,
     monitor: Arc<MonitoringState>,
     expected_passphrase: String,
@@ -190,7 +194,7 @@ fn is_non_retryable_rpc_error(code: i64) -> bool {
 }
 
 impl BlockchainClient {
-    pub fn new(config: &Config, cache: RedisCache, metrics: Metrics) -> anyhow::Result<Self> {
+    pub fn new(config: &Config, cache: RedisCache, db: Database, metrics: Metrics) -> anyhow::Result<Self> {
         let http = Client::builder()
             .pool_max_idle_per_host(16)
             .pool_idle_timeout(Duration::from_secs(60))
@@ -236,6 +240,7 @@ impl BlockchainClient {
             confirmation_ledger_lag: config.confirmation_ledger_lag.max(1),
             sync_market_ids: config.sync_market_ids.clone(),
             cache,
+            db,
             metrics,
             monitor: Arc::new(MonitoringState::default()),
             expected_passphrase: config.network_passphrase.clone(),
@@ -1090,6 +1095,23 @@ impl BlockchainClient {
                 if let Ok(status) = self.transaction_status_cached(&hash).await {
                     if status.status != "NOT_FOUND" && status.status != "PENDING" {
                         self.monitor.watched_txs.write().await.remove(&hash);
+                        let db = self.db.clone();
+                        let resolved_status = if status.status == "SUCCESS" {
+                            "confirmed"
+                        } else {
+                            "expired"
+                        };
+                        let hash_owned = hash.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = db.watched_tx_mark_resolved(&hash_owned, resolved_status).await {
+                                tracing::warn!(
+                                    tx_hash = %hash_owned,
+                                    status = resolved_status,
+                                    error = %e,
+                                    "failed to mark watched tx resolved in database"
+                                );
+                            }
+                        });
                     }
                 }
             }
@@ -1110,6 +1132,22 @@ impl BlockchainClient {
         
         tracing::info!("Blockchain transaction monitor stopped");
         coordinator.worker_completed();
+    }
+
+    /// Load non-expired pending watched transactions from the database into the in-memory map.
+    /// Call once on startup before spawning background workers.
+    pub async fn load_watched_transactions(&self) -> anyhow::Result<()> {
+        let pending = self.db.watched_tx_load_pending().await?;
+        let count = pending.len();
+        if count > 0 {
+            let mut set = self.monitor.watched_txs.write().await;
+            let now = Instant::now();
+            for tx_hash in pending {
+                set.entry(tx_hash).or_insert(now);
+            }
+            tracing::info!(count, "restored watched transactions from database");
+        }
+        Ok(())
     }
 
     pub async fn watch_transaction(&self, hash: &str) {
@@ -1143,7 +1181,22 @@ impl BlockchainClient {
             }
         }
 
+        let is_new = !set.contains_key(hash);
         set.entry(hash.to_string()).or_insert(now);
+
+        if is_new {
+            // Newly inserted — persist to database so it survives a restart.
+            let expires_at = Utc::now()
+                + chrono::Duration::from_std(WATCHED_TX_TTL)
+                    .unwrap_or(chrono::Duration::minutes(30));
+            let db = self.db.clone();
+            let hash_owned = hash.to_string();
+            tokio::spawn(async move {
+                if let Err(e) = db.watched_tx_upsert(&hash_owned, None, expires_at).await {
+                    tracing::warn!(tx_hash = %hash_owned, error = %e, "failed to persist watched tx to database");
+                }
+            });
+        }
     }
 
     /// Replay missed events from `from_ledger` up to the current confirmed tip.
