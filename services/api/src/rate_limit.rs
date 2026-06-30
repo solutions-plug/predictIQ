@@ -19,7 +19,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use deadpool_redis::{Pool as RedisPool, redis::AsyncCommands};
+use deadpool_redis::Pool as RedisPool;
 use serde::Serialize;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::Arc;
@@ -150,6 +150,57 @@ pub async fn rate_limit_middleware(
                 .into_response()
         }
     }
+}
+
+pub async fn newsletter_rate_limit_middleware(
+    State(state): State<std::sync::Arc<crate::AppState>>,
+    headers: HeaderMap,
+    req: axum::extract::Request,
+    next: Next,
+) -> Response {
+    let client_key = client_key_from_headers(&headers);
+    if !state
+        .newsletter_rate_limiter
+        .allow(&client_key, 10, std::time::Duration::from_secs(3600))
+        .await
+    {
+        let body = RateLimitError {
+            error:       "rate_limit_exceeded",
+            message:     "Too many newsletter requests. Please try again later.".to_string(),
+            retry_after: 3600,
+        };
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [("Retry-After", "3600".to_string())],
+            Json(body),
+        )
+            .into_response();
+    }
+    next.run(req).await
+}
+
+pub async fn admin_rate_limit_middleware(
+    State(limiter): State<std::sync::Arc<crate::security::RateLimiter>>,
+    headers: HeaderMap,
+    req: axum::extract::Request,
+    next: Next,
+) -> Response {
+    let client_key = client_key_from_headers(&headers);
+    let config = crate::security::RateLimitConfig::new(50, std::time::Duration::from_secs(60));
+    if !limiter.check(&client_key, &config).await {
+        let body = RateLimitError {
+            error:       "rate_limit_exceeded",
+            message:     "Too many admin requests. Please try again later.".to_string(),
+            retry_after: 60,
+        };
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [("Retry-After", "60".to_string())],
+            Json(body),
+        )
+            .into_response();
+    }
+    next.run(req).await
 }
 
 fn client_key_from_headers(headers: &HeaderMap) -> String {

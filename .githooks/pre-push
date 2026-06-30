@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Pre-push hook: run gitleaks to detect secrets before pushing.
+# Install: git config core.hooksPath .githooks
+set -euo pipefail
+
+if ! command -v gitleaks &>/dev/null; then
+  echo "gitleaks not found — skipping secret scan (install from https://github.com/gitleaks/gitleaks)"
+  exit 0
+fi
+
+echo "Running gitleaks secret scan..."
+gitleaks protect --staged --config .gitleaks.toml --verbose

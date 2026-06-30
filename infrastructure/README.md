@@ -157,9 +157,11 @@ See `environments/README.md` for detailed environment management instructions.
 - Encryption at rest
 
 ### Redis Module
-- ElastiCache cluster
-- Automatic failover
-- Parameter group configuration
+- ElastiCache **replication group** (Multi-AZ)
+- `automatic_failover_enabled = true` and `multi_az_enabled = true` by default
+- Minimum 2 cache clusters to support failover
+- **Failover RTO**: AWS promotes a read replica to primary in approximately **60–120 seconds**. During this window, write operations will fail; read-only operations served by replicas remain available. Applications should implement retry logic with exponential backoff (recommended: 3 retries, starting at 200 ms) to handle the failover window gracefully.
+- At-rest and in-transit encryption enabled
 - Subnet group for VPC placement
 
 ### ECS Module

@@ -70,14 +70,44 @@ variable "db_password" {
   description = "PostgreSQL password for db_user. Store in your CI/CD secret store."
 }
 
+variable "acm_certificate_arn" {
+  type        = string
+  description = "ARN of the ACM certificate for HTTPS termination on the ALB."
+}
+
+variable "hmac_key" {
+  description = "HMAC secret key used to sign API payloads"
+  type        = string
+  sensitive   = true
+}
+
+variable "sendgrid_api_key" {
+  description = "SendGrid API key for transactional email"
+  type        = string
+  sensitive   = true
+}
+
+variable "api_signing_key" {
+  description = "Private key used to sign API responses"
+  type        = string
+  sensitive   = true
+}
+
+variable "ecs_tasks_sg_id" {
+  type        = string
+  description = "Security group ID of the ECS tasks (managed at root level)"
+}
+
 locals {
   common_tags = {
-    Project   = "predictiq"
+    Project     = "predictiq"
     Environment = var.environment
-    Owner     = "infrastructure-team"
-    ManagedBy = "terraform"
+    Owner       = "infrastructure-team"
+    ManagedBy   = "terraform"
   }
 }
+
+# ── ECS Cluster ────────────────────────────────────────────────────────────────
 
 resource "aws_ecs_cluster" "main" {
   name = "predictiq-${var.environment}"
@@ -87,25 +117,21 @@ resource "aws_ecs_cluster" "main" {
     value = "enabled"
   }
 
-  tags = merge(
-    local.common_tags,
-    {
-      Name = "predictiq-${var.environment}-cluster"
-    }
-  )
+  tags = merge(local.common_tags, {
+    Name = "predictiq-${var.environment}-cluster"
+  })
 }
 
 resource "aws_cloudwatch_log_group" "ecs" {
   name              = "/ecs/predictiq-${var.environment}"
   retention_in_days = var.environment == "prod" ? 30 : 7
 
-  tags = merge(
-    local.common_tags,
-    {
-      Name = "predictiq-${var.environment}-logs"
-    }
-  )
+  tags = merge(local.common_tags, {
+    Name = "predictiq-${var.environment}-logs"
+  })
 }
+
+# ── ECS Task Definition ────────────────────────────────────────────────────────
 
 resource "aws_ecs_task_definition" "api" {
   family                   = "predictiq-${var.environment}-api"
@@ -134,6 +160,8 @@ resource "aws_ecs_task_definition" "api" {
           value = var.environment
         }
       ]
+      # All secrets are injected from AWS Secrets Manager — no plaintext
+      # environment variables for sensitive values.
       secrets = [
         {
           name      = "DB_HOST"
@@ -158,6 +186,18 @@ resource "aws_ecs_task_definition" "api" {
         {
           name      = "REDIS_URL"
           valueFrom = aws_secretsmanager_secret.redis_url.arn
+        },
+        {
+          name      = "HMAC_KEY"
+          valueFrom = aws_secretsmanager_secret.hmac_key.arn
+        },
+        {
+          name      = "SENDGRID_API_KEY"
+          valueFrom = aws_secretsmanager_secret.sendgrid_api_key.arn
+        },
+        {
+          name      = "API_SIGNING_KEY"
+          valueFrom = aws_secretsmanager_secret.api_signing_key.arn
         }
       ]
       logConfiguration = {
@@ -171,18 +211,18 @@ resource "aws_ecs_task_definition" "api" {
     }
   ])
 
-  tags = merge(
-    local.common_tags,
-    {
-      Name = "predictiq-${var.environment}-api-task"
-    }
-  )
+  tags = merge(local.common_tags, {
+    Name = "predictiq-${var.environment}-api-task"
+  })
 }
+
+# ── Networking ─────────────────────────────────────────────────────────────────
 
 resource "aws_security_group" "alb" {
   name   = "predictiq-${var.environment}-alb-sg"
   vpc_id = var.vpc_id
 
+  # Allow inbound HTTP/HTTPS from the public internet
   ingress {
     from_port   = 80
     to_port     = 80
@@ -197,19 +237,28 @@ resource "aws_security_group" "alb" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  # Restrict egress to the container port on ECS tasks only
   egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    from_port       = var.api_container_port
+    to_port         = var.api_container_port
+    protocol        = "tcp"
+    security_groups = [var.ecs_tasks_sg_id]
   }
 
-  tags = merge(
-    local.common_tags,
-    {
-      Name = "predictiq-${var.environment}-alb-sg"
-    }
-  )
+  tags = merge(local.common_tags, {
+    Name = "predictiq-${var.environment}-alb-sg"
+  })
+}
+
+# Allow inbound from the ALB on the container port — added as a rule on the
+# externally-managed ecs_tasks SG to avoid a circular module dependency.
+resource "aws_security_group_rule" "ecs_tasks_ingress_alb" {
+  type                     = "ingress"
+  from_port                = var.api_container_port
+  to_port                  = var.api_container_port
+  protocol                 = "tcp"
+  security_group_id        = var.ecs_tasks_sg_id
+  source_security_group_id = aws_security_group.alb.id
 }
 
 resource "aws_lb" "main" {
@@ -219,12 +268,9 @@ resource "aws_lb" "main" {
   security_groups    = [aws_security_group.alb.id]
   subnets            = var.public_subnet_ids
 
-  tags = merge(
-    local.common_tags,
-    {
-      Name = "predictiq-${var.environment}-alb"
-    }
-  )
+  tags = merge(local.common_tags, {
+    Name = "predictiq-${var.environment}-alb"
+  })
 }
 
 resource "aws_lb_target_group" "api" {
@@ -243,18 +289,36 @@ resource "aws_lb_target_group" "api" {
     matcher             = "200"
   }
 
-  tags = merge(
-    local.common_tags,
-    {
-      Name = "predictiq-${var.environment}-api-tg"
-    }
-  )
+  tags = merge(local.common_tags, {
+    Name = "predictiq-${var.environment}-api-tg"
+  })
 }
 
-resource "aws_lb_listener" "api" {
+resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.main.arn
   port              = 80
   protocol          = "HTTP"
+
+  # Permanently redirect all plain-HTTP traffic to HTTPS (issue #889).
+  # The ALB is the TLS termination point; the API service receives only
+  # decrypted traffic from the ALB via the target group on port 80.
+  default_action {
+    type = "redirect"
+
+    redirect {
+      port        = "443"
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
+    }
+  }
+}
+
+resource "aws_lb_listener" "https" {
+  load_balancer_arn = aws_lb.main.arn
+  port              = 443
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+  certificate_arn   = var.acm_certificate_arn
 
   default_action {
     type             = "forward"
@@ -262,31 +326,7 @@ resource "aws_lb_listener" "api" {
   }
 }
 
-resource "aws_security_group" "ecs_tasks" {
-  name   = "predictiq-${var.environment}-ecs-tasks-sg"
-  vpc_id = var.vpc_id
-
-  ingress {
-    from_port       = var.api_container_port
-    to_port         = var.api_container_port
-    protocol        = "tcp"
-    security_groups = [aws_security_group.alb.id]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = merge(
-    local.common_tags,
-    {
-      Name = "predictiq-${var.environment}-ecs-tasks-sg"
-    }
-  )
-}
+# ── ECS Service ────────────────────────────────────────────────────────────────
 
 resource "aws_ecs_service" "api" {
   name            = "predictiq-${var.environment}-api"
@@ -295,9 +335,19 @@ resource "aws_ecs_service" "api" {
   desired_count   = var.api_desired_count
   launch_type     = "FARGATE"
 
+  # Zero-downtime rolling deploy: always keep 100 % capacity during updates,
+  # allow up to 200 % so new tasks start before old ones are drained.
+  deployment_minimum_healthy_percent = 100
+  deployment_maximum_percent         = 200
+
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
   network_configuration {
     subnets          = var.private_subnet_ids
-    security_groups  = [aws_security_group.ecs_tasks.id]
+    security_groups  = [var.ecs_tasks_sg_id]
     assign_public_ip = false
   }
 
@@ -307,30 +357,33 @@ resource "aws_ecs_service" "api" {
     container_port   = var.api_container_port
   }
 
-  depends_on = [aws_lb_listener.api]
+  depends_on = [aws_lb_listener.https]
 
-  tags = merge(
-    local.common_tags,
-    {
-      Name = "predictiq-${var.environment}-api-service"
-    }
-  )
+  tags = merge(local.common_tags, {
+    Name = "predictiq-${var.environment}-api-service"
+  })
 }
 
-resource "aws_secretsmanager_secret" "redis_url" {
-  name = "predictiq/${var.environment}/redis-url"
+# ── AWS Secrets Manager — secrets inventory ────────────────────────────────────
+#
+# All application secrets are stored in Secrets Manager and injected into the
+# ECS task via the `secrets` block above.  No plaintext secrets are passed
+# through Terraform environment variables or ECS `environment` blocks.
 
-  tags = merge(
-    local.common_tags,
-    {
-      Name = "predictiq-${var.environment}-redis-url"
-    }
-  )
+resource "aws_secretsmanager_secret" "redis_url" {
+  name        = "predictiq/${var.environment}/redis-url"
+  description = "Redis connection URL for the predictIQ API"
+
+  tags = merge(local.common_tags, {
+    Name            = "predictiq-${var.environment}-redis-url"
+    SecretType      = "connection-string"
+    RotationEnabled = "false"
+  })
 }
 
 resource "aws_secretsmanager_secret_version" "redis_url" {
-  secret_id       = aws_secretsmanager_secret.redis_url.id
-  secret_string   = var.redis_url
+  secret_id     = aws_secretsmanager_secret.redis_url.id
+  secret_string = var.redis_url
 }
 
 # ── Database credentials (individual secrets) ────────────────────────────────
@@ -391,6 +444,59 @@ resource "aws_secretsmanager_secret_version" "db_password" {
   secret_string = var.db_password
 }
 
+resource "aws_secretsmanager_secret" "hmac_key" {
+  name        = "predictiq/${var.environment}/hmac-key"
+  description = "HMAC secret key used to sign API payloads and webhook signatures"
+
+  tags = merge(local.common_tags, {
+    Name            = "predictiq-${var.environment}-hmac-key"
+    SecretType      = "signing-key"
+    RotationEnabled = "true"
+    RotationSchedule = "90-days"
+  })
+}
+
+resource "aws_secretsmanager_secret_version" "hmac_key" {
+  secret_id     = aws_secretsmanager_secret.hmac_key.id
+  secret_string = var.hmac_key
+}
+
+resource "aws_secretsmanager_secret" "sendgrid_api_key" {
+  name        = "predictiq/${var.environment}/sendgrid-api-key"
+  description = "SendGrid API key for sending transactional email"
+
+  tags = merge(local.common_tags, {
+    Name            = "predictiq-${var.environment}-sendgrid-api-key"
+    SecretType      = "api-key"
+    RotationEnabled = "true"
+    RotationSchedule = "180-days"
+  })
+}
+
+resource "aws_secretsmanager_secret_version" "sendgrid_api_key" {
+  secret_id     = aws_secretsmanager_secret.sendgrid_api_key.id
+  secret_string = var.sendgrid_api_key
+}
+
+resource "aws_secretsmanager_secret" "api_signing_key" {
+  name        = "predictiq/${var.environment}/api-signing-key"
+  description = "Private key used to sign API responses"
+
+  tags = merge(local.common_tags, {
+    Name            = "predictiq-${var.environment}-api-signing-key"
+    SecretType      = "signing-key"
+    RotationEnabled = "true"
+    RotationSchedule = "90-days"
+  })
+}
+
+resource "aws_secretsmanager_secret_version" "api_signing_key" {
+  secret_id     = aws_secretsmanager_secret.api_signing_key.id
+  secret_string = var.api_signing_key
+}
+
+# ── IAM — ECS Task Execution Role ─────────────────────────────────────────────
+
 resource "aws_iam_role" "ecs_task_execution_role" {
   name = "predictiq-${var.environment}-ecs-task-execution-role"
 
@@ -407,12 +513,9 @@ resource "aws_iam_role" "ecs_task_execution_role" {
     ]
   })
 
-  tags = merge(
-    local.common_tags,
-    {
-      Name = "predictiq-${var.environment}-ecs-task-execution-role"
-    }
-  )
+  tags = merge(local.common_tags, {
+    Name = "predictiq-${var.environment}-ecs-task-execution-role"
+  })
 }
 
 resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy" {
@@ -420,6 +523,7 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
+# Grant the execution role access to all five Secrets Manager secrets.
 resource "aws_iam_role_policy" "ecs_task_execution_secrets" {
   name = "predictiq-${var.environment}-ecs-task-execution-secrets"
   role = aws_iam_role.ecs_task_execution_role.id
@@ -438,12 +542,17 @@ resource "aws_iam_role_policy" "ecs_task_execution_secrets" {
           aws_secretsmanager_secret.db_name.arn,
           aws_secretsmanager_secret.db_user.arn,
           aws_secretsmanager_secret.db_password.arn,
-          aws_secretsmanager_secret.redis_url.arn
+          aws_secretsmanager_secret.redis_url.arn,
+          aws_secretsmanager_secret.hmac_key.arn,
+          aws_secretsmanager_secret.sendgrid_api_key.arn,
+          aws_secretsmanager_secret.api_signing_key.arn,
         ]
       }
     ]
   })
 }
+
+# ── IAM — ECS Task Role ────────────────────────────────────────────────────────
 
 resource "aws_iam_role" "ecs_task_role" {
   name = "predictiq-${var.environment}-ecs-task-role"
@@ -461,13 +570,12 @@ resource "aws_iam_role" "ecs_task_role" {
     ]
   })
 
-  tags = merge(
-    local.common_tags,
-    {
-      Name = "predictiq-${var.environment}-ecs-task-role"
-    }
-  )
+  tags = merge(local.common_tags, {
+    Name = "predictiq-${var.environment}-ecs-task-role"
+  })
 }
+
+# ── Data sources / Outputs ─────────────────────────────────────────────────────
 
 data "aws_region" "current" {}
 
@@ -481,4 +589,17 @@ output "service_name" {
 
 output "alb_dns_name" {
   value = aws_lb.main.dns_name
+}
+
+# Expose secret ARNs so other modules or CI/CD pipelines can reference them.
+output "secret_arns" {
+  description = "Map of secret name → ARN for all Secrets Manager secrets managed by this module"
+  value = {
+    database_url     = aws_secretsmanager_secret.database_url.arn
+    redis_url        = aws_secretsmanager_secret.redis_url.arn
+    hmac_key         = aws_secretsmanager_secret.hmac_key.arn
+    sendgrid_api_key = aws_secretsmanager_secret.sendgrid_api_key.arn
+    api_signing_key  = aws_secretsmanager_secret.api_signing_key.arn
+  }
+  sensitive = true
 }
