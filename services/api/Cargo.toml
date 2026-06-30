@@ -46,6 +46,7 @@ hmac = "0.12"
 hex = "0.4"
 base64 = "0.22"
 subtle = "2.5"
+rand = { version = "0.8", features = ["getrandom"] }
 ipnet = "2"
 
 [dev-dependencies]

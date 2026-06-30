@@ -825,6 +825,57 @@ jobs:
             echo "✅ $f"
           done
 
+  # ── #906: verify rollback scripts are idempotent (run each twice) ────────────
+  rollback-idempotency:
+    name: Rollback Idempotency Check
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: predictiq_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/predictiq_test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply all forward migrations
+        run: |
+          for f in $(ls services/api/database/migrations/*.sql | sort); do
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+          done
+
+      - name: Run every rollback script twice and verify second run exits 0
+        run: |
+          FAILED=0
+          for f in $(ls services/api/database/migrations/rollbacks/*_down.sql | sort -r); do
+            echo "--- First run: $f ---"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f" || { echo "❌ First run failed: $f"; FAILED=1; continue; }
+            echo "--- Second run (idempotency check): $f ---"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+            RC=$?
+            if [ $RC -ne 0 ]; then
+              echo "❌ Second run of $f exited with code $RC (not idempotent)"
+              FAILED=1
+            else
+              echo "✅ $f is idempotent"
+            fi
+          done
+          if [ "$FAILED" -eq 1 ]; then
+            echo "One or more rollback scripts are not idempotent."
+            exit 1
+          fi
+          echo "All rollback scripts passed the idempotency check."
+
   # ── #741: API Criterion benchmarks ───────────────────────────────────────────
   api-criterion-benchmarks:
     name: API Criterion Benchmarks
@@ -1082,6 +1133,7 @@ jobs:
       - bundle-size
       - documentation-sync
       - validate-migration-rollbacks
+      - rollback-idempotency
       - api-criterion-benchmarks
       - frontend-unit-coverage
       - schema-drift-check

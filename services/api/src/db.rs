@@ -215,7 +215,8 @@ impl Database {
                         COUNT(*) FILTER (WHERE status = 'active')::BIGINT AS active_markets, \
                         COUNT(*) FILTER (WHERE status = 'resolved')::BIGINT AS resolved_markets, \
                         COALESCE(SUM(total_volume), 0)::DOUBLE PRECISION AS total_volume \
-                    FROM markets",
+                    FROM markets \
+                    WHERE deleted_at IS NULL",
                 )
                 .fetch_one(&self.pool)).await.map_err(anyhow::Error::from)?;
 
@@ -247,7 +248,7 @@ impl Database {
                 let rows = self.with_timeout("featured_markets", sqlx::query(
                     "SELECT id, title, total_volume, ends_at \
                     FROM markets \
-                    WHERE status = 'active' \
+                    WHERE status = 'active' AND deleted_at IS NULL \
                     ORDER BY total_volume DESC, ends_at ASC \
                     LIMIT $1",
                 )
@@ -710,6 +711,40 @@ impl Database {
         Ok(analytics)
     }
 
+    /// Soft-delete a market by setting `deleted_at = NOW()`.
+    /// Returns `true` if the market existed and was not already deleted.
+    pub async fn soft_delete_market(&self, market_id: i64) -> anyhow::Result<bool> {
+        let rows = self
+            .with_timeout(
+                "soft_delete_market",
+                sqlx::query(
+                    "UPDATE markets \
+                     SET deleted_at = NOW() \
+                     WHERE id = $1 AND deleted_at IS NULL",
+                )
+                .bind(market_id)
+                .execute(&self.pool),
+            )
+            .await
+            .map_err(anyhow::Error::from)?
+            .rows_affected();
+        Ok(rows > 0)
+    }
+
+    /// Hard-delete markets that have been soft-deleted for more than 30 days
+    /// by invoking the `cleanup_soft_deleted_markets` database function.
+    /// Returns the number of rows permanently removed.
+    pub async fn cleanup_soft_deleted_markets(&self) -> anyhow::Result<i32> {
+        let count: i32 = self
+            .with_timeout(
+                "cleanup_soft_deleted_markets",
+                sqlx::query_scalar("SELECT cleanup_soft_deleted_markets()").fetch_one(&self.pool),
+            )
+            .await
+            .map_err(anyhow::Error::from)?;
+        Ok(count)
+    }
+
     /// Resolve a market by persisting the winning outcome to the database.
     ///
     /// Returns an error if the market does not exist or is not in `active` status.
@@ -720,7 +755,7 @@ impl Database {
                 sqlx::query(
                     "UPDATE markets \
                      SET status = 'resolved', outcome_index = $1, resolved_at = NOW() \
-                     WHERE id = $2 AND status = 'active'",
+                     WHERE id = $2 AND status = 'active' AND deleted_at IS NULL",
                 )
                 .bind(outcome_index as i32)
                 .bind(market_id)

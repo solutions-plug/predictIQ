@@ -99,6 +99,16 @@ const MIGRATIONS: &[Migration] = &[
         name: "011_create_markets",
         sql: include_str!("../database/migrations/011_create_markets.sql"),
     },
+    Migration {
+        version: "017",
+        name: "017_add_soft_delete_markets",
+        sql: include_str!("../database/migrations/017_add_soft_delete_markets.sql"),
+    },
+    Migration {
+        version: "018",
+        name: "018_add_varchar_constraints",
+        sql: include_str!("../database/migrations/018_add_varchar_constraints.sql"),
+    },
 ];
 
 // ---------------------------------------------------------------------------
@@ -190,6 +200,8 @@ impl<'a> MigrationRunner<'a> {
     }
 
     async fn run_inner(&self) -> anyhow::Result<usize> {
+        self.verify_checksums().await?;
+
         let mut applied = 0usize;
 
         for migration in MIGRATIONS {
@@ -207,6 +219,58 @@ impl<'a> MigrationRunner<'a> {
 
         info!(applied, "migration run complete");
         Ok(applied)
+    }
+
+    /// Compare the SHA-256 of each embedded migration against the stored
+    /// checksum in `schema_migrations`. Bail with a FATAL error on any mismatch
+    /// so a manually edited migration file is caught before it can run.
+    async fn verify_checksums(&self) -> anyhow::Result<()> {
+        let applied = sqlx::query_as::<_, AppliedMigration>(
+            "SELECT version, name, applied_at, checksum
+             FROM schema_migrations
+             ORDER BY version ASC",
+        )
+        .fetch_all(self.pool)
+        .await
+        .context("failed to query schema_migrations for checksum verification")?;
+
+        for record in &applied {
+            let Some(migration) = MIGRATIONS.iter().find(|m| m.version == record.version) else {
+                // Migration applied in a previous version of the binary; skip.
+                warn!(
+                    version = %record.version,
+                    "applied migration not found in current binary — skipping checksum check"
+                );
+                continue;
+            };
+
+            let expected = hex::encode(Sha256::digest(migration.sql.as_bytes()));
+            if expected != record.checksum {
+                tracing::error!(
+                    version = %record.version,
+                    name = %record.name,
+                    stored_checksum = %record.checksum,
+                    computed_checksum = %expected,
+                    "FATAL: migration checksum mismatch — the embedded SQL differs from what \
+                     was applied. The migration file must not be modified after being applied."
+                );
+                bail!(
+                    "migration checksum mismatch for version {} ({}): \
+                     stored={}, computed={}",
+                    record.version,
+                    record.name,
+                    record.checksum,
+                    expected
+                );
+            }
+
+            info!(
+                version = %record.version,
+                "checksum verified"
+            );
+        }
+
+        Ok(())
     }
 
     /// Return the list of applied migrations from the tracking table.
