@@ -18,6 +18,9 @@ pub struct Metrics {
     db_pool_connections_idle: IntGaugeVec,
     db_pool_acquire_duration: HistogramVec,
     rate_limit_rejections: IntCounterVec,
+    /// Counts authentication failures by failure reason.
+    /// Labels: `reason` — one of: "invalid_api_key", "expired_token", "missing_credentials".
+    auth_failures: IntCounterVec,
 }
 
 impl Metrics {
@@ -120,6 +123,15 @@ impl Metrics {
         )
         .context("rate_limit_rejections metric")?;
 
+        let auth_failures = IntCounterVec::new(
+            prometheus::Opts::new(
+                "auth_failures_total",
+                "Authentication failures by reason (invalid_api_key, expired_token, missing_credentials)",
+            ),
+            &["reason"],
+        )
+        .context("auth_failures metric")?;
+
         registry.register(Box::new(cache_hits.clone()))?;
         registry.register(Box::new(cache_misses.clone()))?;
         registry.register(Box::new(invalidations.clone()))?;
@@ -132,6 +144,7 @@ impl Metrics {
         registry.register(Box::new(db_pool_connections_idle.clone()))?;
         registry.register(Box::new(db_pool_acquire_duration.clone()))?;
         registry.register(Box::new(rate_limit_rejections.clone()))?;
+        registry.register(Box::new(auth_failures.clone()))?;
 
         Ok(Self {
             registry,
@@ -147,6 +160,7 @@ impl Metrics {
             db_pool_connections_idle,
             db_pool_acquire_duration,
             rate_limit_rejections,
+            auth_failures,
         })
     }
 
@@ -224,6 +238,16 @@ impl Metrics {
         self.rate_limit_rejections
             .with_label_values(&[route])
             .inc();
+    }
+
+    /// Increment the auth_failures_total counter.
+    ///
+    /// `reason` should be one of:
+    /// - `"invalid_api_key"` — key present but not recognized
+    /// - `"expired_token"`   — token present but expired/invalid
+    /// - `"missing_credentials"` — no key or token supplied at all
+    pub fn observe_auth_failure(&self, reason: &str) {
+        self.auth_failures.with_label_values(&[reason]).inc();
     }
 
     pub fn render(&self) -> anyhow::Result<String> {
