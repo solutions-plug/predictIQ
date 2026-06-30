@@ -183,6 +183,17 @@ groups:
           description: "{{ $labels.job }} has been down for more than 1 minute"
           runbook_url: "https://docs.predictiq.com/runbooks/service-down"
 
+      - alert: BackgroundWorkerDown
+        expr: worker_status == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: background_workers
+        annotations:
+          summary: "Background worker {{ $labels.name }} is down"
+          description: "Worker {{ $labels.name }} has been stopped or crashed for more than 60 seconds"
+          runbook_url: "https://docs.predictiq.com/runbooks/background-worker-down"
+
       - alert: HighMemoryUsage
         expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes > 0.9
         for: 5m

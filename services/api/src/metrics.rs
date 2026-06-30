@@ -40,6 +40,7 @@ pub struct Metrics {
     db_pool_connections_idle: IntGaugeVec,
     db_pool_acquire_duration: HistogramVec,
     rate_limit_rejections: IntCounterVec,
+    worker_status: IntGaugeVec,
     cache_circuit_breaker_state: IntGaugeVec,
 }
 
@@ -158,6 +159,15 @@ impl Metrics {
         )
         .context("rate_limit_rejections metric")?;
 
+        let worker_status = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "worker_status",
+                "Background worker health status (1=running, 0=stopped)",
+            ),
+            &["name"],
+        )
+        .context("worker_status metric")?;
+
         let cache_circuit_breaker_state = IntGaugeVec::new(
             prometheus::Opts::new(
                 "cache_circuit_breaker_state",
@@ -181,6 +191,7 @@ impl Metrics {
         registry.register(Box::new(db_pool_connections_idle.clone()))?;
         registry.register(Box::new(db_pool_acquire_duration.clone()))?;
         registry.register(Box::new(rate_limit_rejections.clone()))?;
+        registry.register(Box::new(worker_status.clone()))?;
         registry.register(Box::new(cache_circuit_breaker_state.clone()))?;
 
         Ok(Self {
@@ -199,6 +210,7 @@ impl Metrics {
             db_pool_connections_idle,
             db_pool_acquire_duration,
             rate_limit_rejections,
+            worker_status,
             cache_circuit_breaker_state,
         })
     }
@@ -312,6 +324,14 @@ impl Metrics {
             .inc();
     }
 
+    /// Set worker status to running (1) or stopped (0).
+    /// Call this on worker startup (1), during heartbeats (1), and on shutdown (0).
+    pub fn set_worker_status(&self, name: &str, running: bool) {
+        self.worker_status
+            .with_label_values(&[name])
+            .set(if running { 1 } else { 0 });
+    }
+
     /// Update the cache circuit breaker state gauge.
     /// Call this whenever the circuit breaker transitions state.
     /// state: 0=closed, 1=open, 2=half-open
@@ -416,6 +436,7 @@ mod tests {
         m.set_dlq_size(7);
         m.set_email_queue_depth(12);
         m.set_circuit_breaker_state(0);
+        m.set_worker_status("test_worker", true);
         let rendered = m.render().expect("render must not fail");
         assert!(rendered.contains("cache_hits_total"));
         assert!(rendered.contains("http_request_duration_seconds"));

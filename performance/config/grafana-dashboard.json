@@ -736,6 +736,111 @@
             "values": false
           }
         }
+      },
+      {
+        "id": 13,
+        "title": "Background Worker Status",
+        "type": "stat",
+        "gridPos": { "x": 0, "y": 40, "w": 24, "h": 4 },
+        "targets": [
+          {
+            "expr": "worker_status{name=\"email_queue\"}",
+            "legendFormat": "Email Queue",
+            "refId": "A"
+          },
+          {
+            "expr": "worker_status{name=\"blockchain_sync\"}",
+            "legendFormat": "Blockchain Sync",
+            "refId": "B"
+          },
+          {
+            "expr": "worker_status{name=\"blockchain_tx_monitor\"}",
+            "legendFormat": "TX Monitor",
+            "refId": "C"
+          },
+          {
+            "expr": "worker_status{name=\"rate_limiter_cleanup\"}",
+            "legendFormat": "Rate Limiter Cleanup",
+            "refId": "D"
+          },
+          {
+            "expr": "worker_status{name=\"newsletter_cleanup\"}",
+            "legendFormat": "Newsletter Cleanup",
+            "refId": "E"
+          }
+        ],
+        "options": {
+          "colorMode": "background",
+          "graphMode": "none",
+          "justifyMode": "auto",
+          "orientation": "horizontal",
+          "reduceOptions": {
+            "calcs": ["lastNotNull"],
+            "fields": "",
+            "values": false
+          },
+          "textMode": "value_and_name"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "mappings": [
+              {
+                "type": "value",
+                "options": {
+                  "0": {
+                    "text": "STOPPED",
+                    "color": "red"
+                  },
+                  "1": {
+                    "text": "RUNNING",
+                    "color": "green"
+                  }
+                }
+              }
+            ],
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": null,
+                  "color": "red"
+                },
+                {
+                  "value": 1,
+                  "color": "green"
+                }
+              ]
+            }
+          }
+        },
+        "alert": {
+          "name": "Background Worker Down",
+          "conditions": [
+            {
+              "evaluator": {
+                "params": [1],
+                "type": "lt"
+              },
+              "operator": {
+                "type": "and"
+              },
+              "query": {
+                "params": ["A", "1m", "now"]
+              },
+              "reducer": {
+                "params": [],
+                "type": "avg"
+              },
+              "type": "query"
+            }
+          ],
+          "executionErrorState": "alerting",
+          "frequency": "1m",
+          "handler": 1,
+          "message": "One or more background workers are down for more than 60 seconds",
+          "noDataState": "alerting",
+          "notifications": []
+        }
       }
     ]
   }
