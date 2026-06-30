@@ -3,10 +3,22 @@ name = "predictiq-api"
 version = "0.1.0"
 edition = "2021"
 publish = false
+# Minimum Supported Rust Version (MSRV).
+# Determined by the most-restrictive dependency in this crate:
+#   - axum 0.7 requires Rust ≥ 1.75
+#   - sqlx 0.8 requires Rust ≥ 1.75
+#   - tower-http 0.6 requires Rust ≥ 1.75
+# The root Dockerfile already pins rust:1.75-slim for production builds.
+# See CONTRIBUTING.md for the MSRV policy.
+rust-version = "1.75"
 
 [[bin]]
 name = "predictiq-api"
 path = "src/main.rs"
+
+[[bin]]
+name = "generate-openapi"
+path = "src/bin/generate_openapi.rs"
 
 [lib]
 name = "predictiq_api"
@@ -25,8 +37,9 @@ async-trait = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync", "net"] }
+url = "2"
 tokio-util = { version = "0.7", features = ["rt"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["trace", "cors", "compression-gzip", "compression-br"] }
@@ -43,15 +56,28 @@ tower_governor = "0.8"
 sha2 = "0.10"
 argon2 = "0.5"
 hmac = "0.12"
+rand = "0.8"
 hex = "0.4"
 base64 = "0.22"
 subtle = "2.5"
+rand = { version = "0.8", features = ["getrandom"] }
 ipnet = "2"
+fastrand = "2.4.1"
+utoipa = { version = "4", features = ["yaml"] }
+
+[features]
+# Gate tests that require a live Redis instance (testcontainers or external).
+# Run with: cargo test --features redis-integration
+redis-integration = []
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 testcontainers = { version = "0.23", features = ["tokio"] }
-testcontainers-modules = { version = "0.11", features = ["redis", "tokio"] }
+testcontainers-modules = { version = "0.11", features = ["redis", "postgres", "tokio"] }
+wiremock = "0.6"
+proptest = "1"
+axum = { version = "0.7", features = ["macros"] }
+serde_json = "1"
 
 [[bench]]
 name = "api_key_auth"
@@ -59,6 +85,14 @@ harness = false
 
 [[bench]]
 name = "invalidation_tags"
+harness = false
+
+[[bench]]
+name = "email_templates"
+harness = false
+
+[[bench]]
+name = "email_queue"
 harness = false
 
 [workspace]

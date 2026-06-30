@@ -33,7 +33,18 @@ variable "allocated_storage" {
 }
 
 variable "backup_retention" {
-  type = number
+  type    = number
+  default = 7
+}
+
+variable "deletion_protection" {
+  type    = bool
+  default = false
+}
+
+variable "ecs_tasks_sg_id" {
+  type        = string
+  description = "Security group ID of the ECS tasks that are allowed to connect"
 }
 
 locals {
@@ -61,18 +72,12 @@ resource "aws_security_group" "rds" {
   name   = "predictiq-${var.environment}-rds-sg"
   vpc_id = var.vpc_id
 
+  # Inbound PostgreSQL from ECS tasks only
   ingress {
-    from_port   = 5432
-    to_port     = 5432
-    protocol    = "tcp"
-    cidr_blocks = ["10.0.0.0/8"]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [var.ecs_tasks_sg_id]
   }
 
   tags = merge(
@@ -99,7 +104,8 @@ resource "aws_db_instance" "main" {
   backup_retention_period = var.backup_retention
   backup_window           = "03:00-04:00"
   maintenance_window      = "mon:04:00-mon:05:00"
-  
+  deletion_protection     = var.deletion_protection
+
   multi_az               = var.environment == "prod" ? true : false
   publicly_accessible    = false
   skip_final_snapshot    = var.environment != "prod"
@@ -111,6 +117,10 @@ resource "aws_db_instance" "main" {
       Name = "predictiq-${var.environment}-db"
     }
   )
+}
+
+output "sg_id" {
+  value = aws_security_group.rds.id
 }
 
 output "endpoint" {
