@@ -10,13 +10,36 @@ This service implements distributed tracing using OpenTelemetry to track request
 - Automatic span creation at service boundaries
 - Request correlation with trace IDs
 
+## Endpoint Validation
+
+`OTEL_EXPORTER_OTLP_ENDPOINT` is validated as a parseable URL at startup.
+An invalid value (e.g. `not-a-url`) causes the service to **exit immediately**
+with a clear error rather than failing silently during the first export.
+
+After the tracing subscriber is initialised, a **TCP connectivity check**
+(2-second timeout) is attempted against the configured endpoint.
+If the endpoint is unreachable the service **continues to start** but:
+
+- Logs a `WARN` message referencing the endpoint and error.
+- Increments `otel_export_errors_total{reason="unreachable"}`.
+
+Monitor that counter to detect collector outages before they cause silent
+data loss in production.
+
+## Prometheus Metrics
+
+| Metric | Labels | Description |
+|---|---|---|
+| `otel_export_errors_total` | `reason` | Export failures — `unreachable` (startup TCP check), `export_failed` (runtime) |
+
 ## Configuration
 
 Configure tracing via environment variables:
 
 ```bash
 # OTLP endpoint (leave unset to disable trace export)
-OTLP_ENDPOINT=http://localhost:4317
+# Must be a valid URL — invalid values fail the service at startup.
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
 
 # ── Sampling (OTel standard env vars — preferred) ────────────────────────────
 # OTEL_TRACES_SAMPLER selects the sampler strategy.
@@ -219,17 +242,20 @@ Tracing adds minimal overhead:
 
 ### Traces not appearing
 
-1. Check OTLP endpoint is reachable:
+1. Check `otel_export_errors_total` in `/metrics` — any non-zero value means
+   the startup connectivity check failed.
+
+2. Check OTLP endpoint is reachable:
 ```bash
 curl http://localhost:4317
 ```
 
-2. Check API logs for tracing initialization:
+3. Check API logs for tracing initialization:
 ```
 Distributed tracing initialized service_name="predictiq-api"
 ```
 
-3. Verify sampling rate is > 0:
+4. Verify sampling rate is > 0:
 ```bash
 echo $OTEL_TRACES_SAMPLER_ARG   # OTel standard
 echo $TRACE_SAMPLE_RATE          # legacy fallback

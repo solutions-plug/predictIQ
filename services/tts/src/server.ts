@@ -17,6 +17,7 @@
  */
 
 import express, { Express, Request, Response, NextFunction } from "express";
+import rateLimit from "express-rate-limit";
 import { TTSService, TTSConfig, VOICES, AuthError } from "./TTSService";
 import {
   HealthChecker,
@@ -58,6 +59,10 @@ const config: TTSConfig = {
   cache: {
     ttlMs: parseInt(process.env.TTS_CACHE_TTL_MS || "86400000", 10),
     maxEntries: parseInt(process.env.TTS_CACHE_MAX_ENTRIES || "1000", 10),
+  },
+  retry: {
+    maxRetries: parseInt(process.env.TTS_MAX_RETRIES || "3", 10),
+    maxDelayMs: parseInt(process.env.TTS_MAX_DELAY_MS || "60000", 10),
   },
 };
 
@@ -101,6 +106,29 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     });
   });
 });
+
+// Issue #995: Express-level rate limiting (IP-based for anonymous, API-key-based for authenticated)
+const ttsRateLimitPerMinute = parseInt(process.env.TTS_RATE_LIMIT_PER_MINUTE || "60", 10);
+const ttsRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: ttsRateLimitPerMinute,
+  // Use API key as bucket key when present, otherwise fall back to client IP
+  keyGenerator: (req: Request): string => {
+    const authHeader = req.headers.authorization;
+    if (authHeader) {
+      return `apikey:${authHeader.replace(/^Bearer\s+/i, "")}`;
+    }
+    return `ip:${req.ip ?? "unknown"}`;
+  },
+  handler: (_req: Request, res: Response): void => {
+    res.setHeader("Retry-After", "60");
+    res.status(429).json({ error: "Too Many Requests" });
+  },
+  standardHeaders: false,
+  legacyHeaders: false,
+  skip: (req: Request) => req.path.startsWith("/health"),
+});
+app.use(ttsRateLimiter);
 
 // Issue #723: Authentication middleware
 app.use((req: Request, res: Response, next: NextFunction) => {

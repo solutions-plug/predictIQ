@@ -57,6 +57,18 @@ The table below maps each code to its variant name and a human-readable descript
 | 146 | `GovernanceTokenNotSet` | No governance token contract address has been configured. |
 | 147 | `MarketNotResolved` | The market has not been resolved yet; payout or post-resolution operations are unavailable. |
 | 148 | `InvalidDeadline` | The provided deadline is in the past or otherwise invalid. |
+| 149 | `PendingTransferNotFound` | No pending transfer was found for the given identifier. |
+| 150 | `NotPendingOwner` | The caller is not the pending owner of the asset being transferred. |
+| 151 | `TokenFrozen` | The token account is frozen and cannot participate in transfers or operations. |
+| 152 | `MigrationValidationError` | The migration data failed validation; the migration cannot proceed. |
+| 153 | `AssetClawedBack` | The asset has been clawed back by the issuer and is no longer available. |
+| 154 | `ArithmeticOverflow` | A numeric operation produced a value outside the representable range. |
+| 155 | `AlreadyClaimed` | The reward or asset has already been claimed by this address. |
+| 156 | `NoWinnings` | The caller has no winnings available to claim for this market. |
+| 157 | `InvalidReferrer` | The provided referrer address is invalid or not registered. |
+| 158 | `ResolutionDeadlinePassed` | The resolution deadline for this market has passed without a resolution. |
+| 159 | `Overflow` | An arithmetic overflow occurred during calculation. |
+| 160 | `InvalidTimeRange` | The provided time range is invalid (e.g. start is after end, or range is zero-length). |
 
 ## Error Groups
 
@@ -64,13 +76,13 @@ The table below maps each code to its variant name and a human-readable descript
 100 `AlreadyInitialized`, 101 `NotAuthorized`, 120 `AdminNotSet`, 121 `ContractPaused`, 122 `GuardianNotSet`, 146 `GovernanceTokenNotSet`
 
 ### Market Lifecycle
-102 `MarketNotFound`, 103 `MarketClosed`, 104 `MarketStillActive`, 115 `MarketNotActive`, 116 `DeadlinePassed`, 148 `InvalidDeadline`
+102 `MarketNotFound`, 103 `MarketClosed`, 104 `MarketStillActive`, 115 `MarketNotActive`, 116 `DeadlinePassed`, 148 `InvalidDeadline`, 160 `InvalidTimeRange`
 
 ### Betting
-105 `InvalidOutcome`, 106 `InvalidBetAmount`, 107 `InsufficientBalance`, 126 `InsufficientDeposit`, 142 `BetNotFound`, 145 `InvalidAmount`
+105 `InvalidOutcome`, 106 `InvalidBetAmount`, 107 `InsufficientBalance`, 126 `InsufficientDeposit`, 142 `BetNotFound`, 145 `InvalidAmount`, 155 `AlreadyClaimed`, 156 `NoWinnings`, 157 `InvalidReferrer`
 
 ### Resolution & Disputes
-108 `OracleFailure`, 110 `DisputeWindowClosed`, 117 `CannotChangeOutcome`, 118 `MarketNotDisputed`, 119 `MarketNotPendingResolution`, 133 `ParentMarketNotResolved`, 134 `ParentMarketInvalidOutcome`, 135 `ResolutionNotReady`, 136 `DisputeWindowStillOpen`, 137 `NoMajorityReached`, 138 `StalePrice`, 139 `ConfidenceTooLow`, 141 `MarketNotCancelled`, 147 `MarketNotResolved`
+108 `OracleFailure`, 110 `DisputeWindowClosed`, 117 `CannotChangeOutcome`, 118 `MarketNotDisputed`, 119 `MarketNotPendingResolution`, 133 `ParentMarketNotResolved`, 134 `ParentMarketInvalidOutcome`, 135 `ResolutionNotReady`, 136 `DisputeWindowStillOpen`, 137 `NoMajorityReached`, 138 `StalePrice`, 139 `ConfidenceTooLow`, 141 `MarketNotCancelled`, 147 `MarketNotResolved`, 158 `ResolutionDeadlinePassed`
 
 ### Voting & Governance
 111 `VotingNotStarted`, 112 `VotingEnded`, 113 `AlreadyVoted`, 114 `FeeTooHigh`, 129 `InsufficientVotes`, 130 `AlreadyVotedOnUpgrade`, 140 `InsufficientVotingWeight`
@@ -78,5 +90,8 @@ The table below maps each code to its variant name and a human-readable descript
 ### Upgrades
 127 `TimelockActive`, 128 `UpgradeNotInitiated`, 131 `InvalidWasmHash`, 132 `UpgradeFailed`, 143 `UpgradeAlreadyPending`, 144 `UpgradeHashInCooldown`
 
+### Ownership & Token Operations
+149 `PendingTransferNotFound`, 150 `NotPendingOwner`, 151 `TokenFrozen`, 153 `AssetClawedBack`
+
 ### System
-109 `CircuitBreakerOpen`, 123 `TooManyOutcomes`, 124 `TooManyWinners`, 125 `PayoutModeNotSupported`
+109 `CircuitBreakerOpen`, 123 `TooManyOutcomes`, 124 `TooManyWinners`, 125 `PayoutModeNotSupported`, 152 `MigrationValidationError`, 154 `ArithmeticOverflow`, 159 `Overflow`
