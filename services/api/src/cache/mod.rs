@@ -59,12 +59,25 @@ impl CircuitBreaker {
         }
     }
 
-    fn record_success(&self) {
+    fn record_success(&self, metrics: &Option<crate::metrics::Metrics>) {
+        let prev_state = self.state();
         self.failure_count.store(0, Ordering::Release);
         self.opened_at_ms.store(0, Ordering::Release);
+        let new_state = self.state();
+        
+        // Only update metrics if state actually changed
+        if prev_state != new_state {
+            if let Some(m) = metrics {
+                m.set_cache_circuit_breaker_state(new_state as i64);
+            }
+            if prev_state != CircuitState::Closed {
+                tracing::info!("Redis circuit breaker closed after successful operation");
+            }
+        }
     }
 
-    fn record_failure(&self) {
+    fn record_failure(&self, metrics: &Option<crate::metrics::Metrics>) {
+        let prev_state = self.state();
         let prev = self.failure_count.fetch_add(1, Ordering::AcqRel);
         if prev + 1 >= self.threshold && self.opened_at_ms.load(Ordering::Acquire) == 0 {
             let now_ms = std::time::SystemTime::now()
@@ -77,15 +90,32 @@ impl CircuitBreaker {
                 "Redis circuit breaker opened after {} failures",
                 prev + 1
             );
+            
+            // Update metrics to reflect open state
+            if let Some(m) = metrics {
+                m.set_cache_circuit_breaker_state(CircuitState::Open as i64);
+            }
         }
     }
 
     /// Returns `true` if the call is allowed (Closed or HalfOpen).
-    fn allow(&self) -> bool {
-        match self.state() {
+    fn allow(&self, metrics: &Option<crate::metrics::Metrics>) -> bool {
+        let prev_state = self.state();
+        let allowed = match prev_state {
             CircuitState::Closed | CircuitState::HalfOpen => true,
             CircuitState::Open => false,
+        };
+        
+        // Update metrics when transitioning to HalfOpen
+        let current_state = self.state();
+        if prev_state != current_state && current_state == CircuitState::HalfOpen {
+            if let Some(m) = metrics {
+                m.set_cache_circuit_breaker_state(CircuitState::HalfOpen as i64);
+            }
+            tracing::info!("Redis circuit breaker transitioned to half-open, allowing probe request");
         }
+        
+        allowed
     }
 }
 
@@ -165,6 +195,7 @@ pub struct RedisCache {
     cb: Arc<CircuitBreaker>,
     cfg: RedisCacheConfig,
     tag_cfg: TagStoreConfig,
+    metrics: Option<crate::metrics::Metrics>,
 }
 
 
@@ -325,7 +356,19 @@ impl RedisCache {
     }
 
     pub async fn new_with_config(redis_url: &str, cfg: RedisCacheConfig) -> anyhow::Result<Self> {
+        Self::new_with_config_and_metrics(redis_url, cfg, None).await
+    }
 
+    pub async fn new_with_metrics(redis_url: &str, metrics: crate::metrics::Metrics) -> anyhow::Result<Self> {
+        let cfg = RedisCacheConfig::from_env();
+        Self::new_with_config_and_metrics(redis_url, cfg, Some(metrics)).await
+    }
+
+    pub async fn new_with_config_and_metrics(
+        redis_url: &str,
+        cfg: RedisCacheConfig,
+        metrics: Option<crate::metrics::Metrics>,
+    ) -> anyhow::Result<Self> {
         let pool_cfg = PoolConfig::from_url(redis_url);
         let pool = pool_cfg
             .builder()
@@ -337,7 +380,15 @@ impl RedisCache {
 
         let cb = Arc::new(CircuitBreaker::new(cfg.cb_threshold, cfg.cb_reset_timeout));
         let tag_cfg = TagStoreConfig::from_env();
-        Ok(Self { pool, cb, cfg, tag_cfg })
+        
+        let cache = Self { pool, cb, cfg, tag_cfg, metrics: metrics.clone() };
+        
+        // Initialize circuit breaker state metric to closed (0)
+        if let Some(ref m) = metrics {
+            m.set_cache_circuit_breaker_state(0);
+        }
+        
+        Ok(cache)
     }
 
 
@@ -360,7 +411,7 @@ impl RedisCache {
         F: Fn(deadpool_redis::Connection) -> Fut,
         Fut: Future<Output = anyhow::Result<T>>,
     {
-        if !self.cb.allow() {
+        if !self.cb.allow(&self.metrics) {
             anyhow::bail!("Redis circuit breaker is open");
         }
 
@@ -373,16 +424,16 @@ impl RedisCache {
             match self.pool.get().await {
                 Err(e) => {
                     last_err = anyhow::anyhow!("pool acquire: {e}");
-                    self.cb.record_failure();
+                    self.cb.record_failure(&self.metrics);
                 }
                 Ok(conn) => match op(conn).await {
                     Ok(v) => {
-                        self.cb.record_success();
+                        self.cb.record_success(&self.metrics);
                         return Ok(v);
                     }
                     Err(e) => {
                         last_err = e;
-                        self.cb.record_failure();
+                        self.cb.record_failure(&self.metrics);
                     }
                 },
             }
@@ -455,7 +506,7 @@ impl RedisCache {
     /// The circuit breaker is checked once before the loop; individual batch
     /// errors are propagated immediately.
     pub async fn del_by_pattern(&self, pattern: &str) -> anyhow::Result<usize> {
-        if !self.cb.allow() {
+        if !self.cb.allow(&self.metrics) {
             anyhow::bail!("Redis circuit breaker is open");
         }
 
@@ -521,7 +572,7 @@ impl RedisCache {
         Fut: Future<Output = anyhow::Result<T>>,
     {
         // If circuit is open, skip cache entirely and call fetcher directly.
-        if !self.cb.allow() {
+        if !self.cb.allow(&self.metrics) {
             tracing::warn!(key, "Redis unavailable, bypassing cache");
             let value = fetcher().await?;
             return Ok((value, false));
@@ -627,7 +678,7 @@ impl RedisCache {
     /// Prefer `exec` for most use cases; use this only when you need to hold
     /// a connection across multiple commands (e.g. pipelined operations).
     pub async fn get_connection(&self) -> anyhow::Result<deadpool_redis::Connection> {
-        if !self.cb.allow() {
+        if !self.cb.allow(&self.metrics) {
             anyhow::bail!("Redis circuit breaker is open");
         }
         self.pool.get().await.context("failed to acquire Redis connection")

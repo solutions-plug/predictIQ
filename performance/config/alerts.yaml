@@ -64,15 +64,27 @@ groups:
           runbook_url: "https://docs.predictiq.com/runbooks/low-cache-hit-rate"
 
       - alert: CacheCircuitBreakerOpen
-        expr: cache_circuit_breaker_state == 1
+        expr: cache_circuit_breaker_state{state="open"} == 1
         for: 2m
         labels:
           severity: page
           component: cache
         annotations:
-          summary: "Redis cache circuit breaker is open"
-          description: "The Redis cache circuit breaker has been open for more than 2 minutes. All cache reads are failing open, causing increased load on the database and RPC endpoints. Immediate operator response required."
+          summary: "Redis cache circuit breaker has been open for 2+ minutes"
+          description: "The Redis cache circuit breaker has been open for more than 2 minutes. All cache reads are failing open, causing increased load on the database and RPC endpoints. Check Redis connectivity and health. Immediate operator response required."
           runbook_url: "https://docs.predictiq.com/runbooks/cache-circuit-breaker-open"
+
+      - alert: CacheCircuitBreakerHalfOpen
+        expr: cache_circuit_breaker_state{state="half_open"} == 1
+        for: 1m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "Redis cache circuit breaker is in half-open state"
+          description: "The Redis cache circuit breaker is probing for recovery. If this persists, Redis may be unstable."
+          runbook_url: "https://docs.predictiq.com/runbooks/cache-circuit-breaker-half-open"
+
 
   - name: database_performance
     interval: 30s
@@ -98,6 +110,17 @@ groups:
           summary: "Critical database query performance"
           description: "Database p99 query time is {{ $value }}s, exceeding 100ms critical threshold"
           runbook_url: "https://docs.predictiq.com/runbooks/critical-database-queries"
+
+      - alert: DBPoolExhaustion
+        expr: rate(db_pool_exhaustion_total[5m]) > 0.0167
+        for: 1m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "Database connection pool exhaustion detected"
+          description: "Pool exhaustion rate is {{ $value }} per second, exceeding 1/minute threshold"
+          runbook_url: "https://docs.predictiq.com/runbooks/db-pool-exhaustion"
 
       - alert: HighDBConnectionPoolUtilization
         expr: db_connections_active / db_connections_max > 0.8
@@ -171,6 +194,17 @@ groups:
           description: "{{ $labels.job }} has been down for more than 1 minute"
           runbook_url: "https://docs.predictiq.com/runbooks/service-down"
 
+      - alert: BackgroundWorkerDown
+        expr: worker_status == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: background_workers
+        annotations:
+          summary: "Background worker {{ $labels.name }} is down"
+          description: "Worker {{ $labels.name }} has been stopped or crashed for more than 60 seconds"
+          runbook_url: "https://docs.predictiq.com/runbooks/background-worker-down"
+
       - alert: HighMemoryUsage
         expr: (node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes > 0.9
         for: 5m
@@ -192,6 +226,65 @@ groups:
           summary: "High CPU usage"
           description: "CPU usage is {{ $value }}%, exceeding 80% threshold"
           runbook_url: "https://docs.predictiq.com/runbooks/high-cpu-usage"
+
+      - alert: APIOutage
+        expr: up{job="predictiq-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: api
+        annotations:
+          summary: "API is completely unreachable"
+          description: "predictiq-api has been down for more than 2 minutes — all client traffic is failing"
+          runbook_url: "https://docs.predictiq.com/runbooks/api-outage"
+
+      - alert: RedisFailure
+        expr: redis_up{job="predictiq-redis"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: cache
+        annotations:
+          summary: "Redis instance is down"
+          description: "Redis has been unreachable for more than 1 minute — cache is unavailable and API latency will spike"
+          runbook_url: "https://docs.predictiq.com/runbooks/redis-failure"
+
+      - alert: EmailQueueBackup
+        expr: email_queue_depth > 100
+        for: 5m
+        labels:
+          severity: warning
+          component: email
+        annotations:
+          summary: "Email queue depth is elevated"
+          description: "Email queue depth is {{ $value }} messages — delivery may be delayed"
+          runbook_url: "https://docs.predictiq.com/runbooks/email-queue-backup"
+
+      - alert: StellarRPCUnavailable
+        expr: stellar_rpc_up == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: blockchain
+        annotations:
+          summary: "Stellar RPC endpoint is unreachable"
+          description: "The Stellar RPC provider has been unreachable for 2 minutes — blockchain event indexing is stalled"
+          runbook_url: "https://docs.predictiq.com/runbooks/stellar-rpc-unavailable"
+
+      - alert: ECSTaskCrashLoop
+        expr: |
+          (
+            aws_ecs_service_running_task_count{cluster="predictiq-prod"}
+            < aws_ecs_service_desired_task_count{cluster="predictiq-prod"}
+          ) == 1
+        for: 3m
+        labels:
+          severity: critical
+          component: infrastructure
+        annotations:
+          summary: "ECS service task is crash-looping"
+          description: "Service {{ $labels.service }} has been below desired task count for 3+ minutes"
+          runbook_url: "https://docs.predictiq.com/runbooks/ecs-task-crash-loop"
 
   - name: tts_quota
     interval: 1m

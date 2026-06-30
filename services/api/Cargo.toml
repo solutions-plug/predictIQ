@@ -3,10 +3,22 @@ name = "predictiq-api"
 version = "0.1.0"
 edition = "2021"
 publish = false
+# Minimum Supported Rust Version (MSRV).
+# Determined by the most-restrictive dependency in this crate:
+#   - axum 0.7 requires Rust ≥ 1.75
+#   - sqlx 0.8 requires Rust ≥ 1.75
+#   - tower-http 0.6 requires Rust ≥ 1.75
+# The root Dockerfile already pins rust:1.75-slim for production builds.
+# See CONTRIBUTING.md for the MSRV policy.
+rust-version = "1.75"
 
 [[bin]]
 name = "predictiq-api"
 path = "src/main.rs"
+
+[[bin]]
+name = "generate-openapi"
+path = "src/bin/generate_openapi.rs"
 
 [lib]
 name = "predictiq_api"
@@ -49,11 +61,19 @@ subtle = "2.5"
 rand = { version = "0.8", features = ["getrandom"] }
 ipnet = "2"
 fastrand = "2.4.1"
+utoipa = { version = "4", features = ["yaml"] }
+
+[features]
+# Gate tests that require a live Redis instance (testcontainers or external).
+# Run with: cargo test --features redis-integration
+redis-integration = []
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 testcontainers = { version = "0.23" }
 testcontainers-modules = { version = "0.11", features = ["redis", "postgres"] }
+axum = { version = "0.7", features = ["macros"] }
+serde_json = "1"
 
 [[bench]]
 name = "api_key_auth"
