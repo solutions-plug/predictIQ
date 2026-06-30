@@ -1,8 +1,9 @@
 use anyhow::{anyhow, Result};
 use axum::{extract::State, http::{HeaderMap, StatusCode}, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
+use crate::cache::RedisCache;
 use crate::db::Database;
 use crate::email::types::SuppressionType;
 
@@ -174,11 +175,13 @@ pub fn parse_and_sanitize_events(raw_bytes: &[u8]) -> Result<Vec<SendGridEvent>>
 #[derive(Clone)]
 pub struct WebhookHandler {
     db: Database,
+    cache: RedisCache,
+    replay_window_secs: u64,
 }
 
 impl WebhookHandler {
-    pub fn new(db: Database) -> Self {
-        Self { db }
+    pub fn new(db: Database, cache: RedisCache, replay_window_secs: u64) -> Self {
+        Self { db, cache, replay_window_secs }
     }
 
     /// Process a list of already-sanitized SendGrid webhook events.
@@ -213,7 +216,6 @@ impl WebhookHandler {
         let event_type = event.event.as_str();
         let email = event.email.as_str();
         let message_id = event.message_id.as_deref();
-        let timestamp = event.timestamp;
 
         tracing::info!(
             event_type,
@@ -222,18 +224,34 @@ impl WebhookHandler {
             "Processing SendGrid event"
         );
 
-        // Check for replay attack
-        if self
-            .db
-            .email_event_exists(message_id, event_type, email, timestamp)
-            .await?
-        {
+        // Primary replay guard: atomic Redis nonce using server-side received_at.
+        // The SendGrid-supplied timestamp is NOT used here — it originates from an
+        // external source and can be forged to bypass window-based checks.
+        let nonce_key = format!(
+            "webhook_nonce:{}:{}:{}",
+            message_id.unwrap_or(""),
+            event_type,
+            email
+        );
+        let ttl = Duration::from_secs(self.replay_window_secs);
+        let seen_count = self.cache.incr_with_ttl(&nonce_key, ttl).await.unwrap_or(1);
+        if seen_count > 1 {
             tracing::warn!(
-                message_id,
+                "Replay attack detected (Redis nonce) for event: {} {} {}",
+                message_id.unwrap_or(""),
                 event_type,
-                email,
-                timestamp,
-                "Replay attack detected for SendGrid event"
+                email
+            );
+            return Ok(());
+        }
+
+        // Secondary guard: DB dedup for events that arrive after the Redis TTL expires.
+        if self.db.email_event_exists(message_id, event_type, email).await? {
+            tracing::warn!(
+                "Duplicate event detected (DB) for event: {} {} {}",
+                message_id.unwrap_or(""),
+                event_type,
+                email
             );
             return Ok(());
         }

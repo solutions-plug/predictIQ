@@ -64,7 +64,7 @@ The following Prometheus gauges are exported on `/metrics` and updated on each s
 | `ADMIN_WHITELIST_IPS` | _(none)_ | Comma-separated IPs allowed to hit admin routes |
 | `TRUST_PROXY` | `true` | Trust `X-Forwarded-For` header |
 | `METRICS_PUBLIC` | `false` | Expose `/metrics` without auth |
-| `HMAC_KEY` | _(required)_ | Current HMAC secret key for signing tokens |
+| `HMAC_KEY` | _(required)_ | Current HMAC secret key for signing tokens — **must be at least 32 bytes (256 bits) after decoding**. The value may be a raw string, hex-encoded, or base64-encoded; the server decodes before measuring length. Generate with: `openssl rand -hex 32` |
 | `HMAC_KEY_PREVIOUS` | _(none)_ | Previous HMAC key for zero-downtime key rotation |
 | `HMAC_KEY_ROTATION_GRACE_SECONDS` | `3600` | Grace period (seconds) for accepting tokens signed with the previous key |
 

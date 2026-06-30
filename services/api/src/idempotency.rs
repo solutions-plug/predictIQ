@@ -18,6 +18,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::AppState;
 
@@ -44,7 +45,10 @@ fn extract_user_identity(req: &Request) -> String {
     req.headers()
         .get("x-api-key")
         .and_then(|v| v.to_str().ok())
-        .map(|k| format!("api:{}", &k[..16.min(k.len())]))
+        .map(|k| {
+            let hash = hex::encode(Sha256::digest(k.as_bytes()));
+            format!("api:{}", hash)
+        })
         .or_else(|| {
             req.headers()
                 .get("authorization")
