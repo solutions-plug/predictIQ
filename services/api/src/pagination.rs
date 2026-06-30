@@ -136,6 +136,22 @@ impl PaginationQuery {
     }
 }
 
+/// A single page of results returned by paginated endpoints.
+#[derive(Debug, Serialize)]
+pub struct PaginatedResponse<T: Serialize> {
+    pub items: Vec<T>,
+    pub next_cursor: Option<String>,
+    pub limit: u32,
+    pub has_more: bool,
+}
+
+impl<T: Serialize> PaginatedResponse<T> {
+    pub fn new(items: Vec<T>, next_cursor: Option<String>, limit: u32, has_more: bool) -> Self {
+        Self { items, next_cursor, limit, has_more }
+    }
+}
+
+
 #[axum::async_trait]
 impl<S> axum::extract::FromRequestParts<S> for ValidatedPaginationQuery
 where

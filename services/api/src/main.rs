@@ -92,7 +92,7 @@ async fn main() -> anyhow::Result<()> {
     )?;
 
     // Validate required configuration before proceeding
-    config.validate()?;
+    config.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let metrics = Metrics::new()?;
     let cache = RedisCache::new(&config.redis_url).await?;
