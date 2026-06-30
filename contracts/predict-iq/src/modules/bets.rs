@@ -118,7 +118,7 @@ pub fn place_bet(
     let net_amount = amount - fee;
 
     if fee > 0 {
-        crate::modules::fees::collect_fee(e, token_address.clone(), fee);
+        crate::modules::fees::collect_fee(e, token_address.clone(), fee)?;
     }
 
     let bet_key = DataKey::Bet(market_id, bettor.clone(), outcome);
@@ -135,7 +135,10 @@ pub fn place_bet(
         .amount
         .checked_add(net_amount)
         .ok_or(ErrorCode::ArithmeticOverflow)?;
-    existing_bet.fee_paid += fee;
+    existing_bet.fee_paid = existing_bet
+        .fee_paid
+        .checked_add(fee)
+        .ok_or(ErrorCode::ArithmeticOverflow)?;
     existing_bet.outcome = outcome;
     market.total_staked = market
         .total_staked

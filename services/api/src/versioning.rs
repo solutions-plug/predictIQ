@@ -121,6 +121,12 @@ pub async fn versioning_middleware(
 
 /// Adds `Deprecation` and `Sunset` headers to responses for v1 routes per RFC 8594.
 pub async fn v1_deprecation_middleware(req: Request, next: Next) -> Response {
+    tracing::warn!(
+        version = "v1",
+        sunset = "Sat, 31 Dec 2026 00:00:00 GMT",
+        "Deprecated API version v1 called; clients must migrate before sunset"
+    );
+
     let mut response = next.run(req).await;
     let headers = response.headers_mut();
     headers.insert(
@@ -129,7 +135,7 @@ pub async fn v1_deprecation_middleware(req: Request, next: Next) -> Response {
     );
     headers.insert(
         "Sunset",
-        HeaderValue::from_static("Sat, 25 Apr 2026 00:00:00 GMT"),
+        HeaderValue::from_static("Sat, 31 Dec 2026 00:00:00 GMT"),
     );
     headers.insert(
         header::LINK,

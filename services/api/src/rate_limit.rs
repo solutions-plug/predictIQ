@@ -19,7 +19,7 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use deadpool_redis::{Pool as RedisPool, redis::AsyncCommands};
+use deadpool_redis::Pool as RedisPool;
 use serde::Serialize;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::sync::Arc;
@@ -182,12 +182,16 @@ pub async fn newsletter_rate_limit_middleware(
     if !allowed {
         tracing::warn!(client_ip = %ip, "newsletter rate limit exceeded");
         state.metrics.observe_rate_limit_rejection("newsletter");
+        let retry_after = state.config.newsletter_rate_limit_window_secs;
+        let body = RateLimitError {
+            error: "rate_limit_exceeded",
+            message: "Too many newsletter requests. Please try again later.".to_string(),
+            retry_after,
+        };
         return (
             StatusCode::TOO_MANY_REQUESTS,
-            Json(serde_json::json!({
-                "code": "RATE_LIMITED",
-                "message": "Too many requests, please try again later."
-            })),
+            [("Retry-After", retry_after.to_string())],
+            Json(body),
         )
             .into_response();
     }
@@ -211,12 +215,15 @@ pub async fn admin_rate_limit_middleware(
     let config = RateLimitConfig::new(30, std::time::Duration::from_secs(60));
     if !limiter.check(&format!("admin:{ip}"), &config).await {
         tracing::warn!(client_ip = %ip, "admin rate limit exceeded");
+        let body = RateLimitError {
+            error: "rate_limit_exceeded",
+            message: "Too many admin requests. Please try again later.".to_string(),
+            retry_after: 60,
+        };
         return (
             StatusCode::TOO_MANY_REQUESTS,
-            Json(serde_json::json!({
-                "code": "RATE_LIMITED",
-                "message": "Too many requests, please try again later."
-            })),
+            [("Retry-After", "60".to_string())],
+            Json(body),
         )
             .into_response();
     }
