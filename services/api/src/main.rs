@@ -92,9 +92,18 @@ async fn main() -> anyhow::Result<()> {
     )?;
 
     // Validate required configuration before proceeding
-    config.validate()?;
+    config.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let metrics = Metrics::new()?;
+
+    // Warn at startup if the OTLP endpoint is unreachable so operators know
+    // that traces are being dropped before any export attempt is made.
+    if let Some(ref endpoint) = config.otlp_endpoint {
+        if !tracing_config::check_otlp_connectivity(endpoint).await {
+            metrics.observe_otel_export_error("unreachable");
+        }
+    }
+
     let cache = RedisCache::new(&config.redis_url).await?;
     let db = Database::new(&config.database_url, cache.clone(), metrics.clone(), &config.db_pool).await?;
     let blockchain = BlockchainClient::new(&config, cache.clone(), metrics.clone())?;
@@ -126,11 +135,26 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Rate-limiter cleanup (fire-and-forget) ────────────────────────────────
     let rate_limiter_cleanup = rate_limiter.clone();
+    let metrics_rate_limiter = metrics.clone();
     tokio::spawn(async move {
+        const WORKER_NAME: &str = "rate_limiter_cleanup";
+        
+        // Set worker status to running
+        metrics_rate_limiter.set_worker_status(WORKER_NAME, true);
+        
         let mut interval = tokio::time::interval(Duration::from_secs(300));
+        let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(30));
+        heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        
         loop {
-            interval.tick().await;
-            rate_limiter_cleanup.cleanup().await;
+            tokio::select! {
+                _ = interval.tick() => {
+                    rate_limiter_cleanup.cleanup().await;
+                }
+                _ = heartbeat_interval.tick() => {
+                    metrics_rate_limiter.set_worker_status(WORKER_NAME, true);
+                }
+            }
         }
     });
 
@@ -153,32 +177,98 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Newsletter cleanup (fire-and-forget) ──────────────────────────────────
     let db_cleanup = state.clone();
+    let metrics_newsletter = state.metrics.clone();
     tokio::spawn(async move {
+        const WORKER_NAME: &str = "newsletter_cleanup";
+        
+        // Set worker status to running
+        metrics_newsletter.set_worker_status(WORKER_NAME, true);
+        
         let mut interval = tokio::time::interval(Duration::from_secs(3600));
+        let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(30));
+        heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        
         loop {
-            interval.tick().await;
-            let ttl = db_cleanup.config.newsletter_token_ttl_secs;
-            let batch = db_cleanup.config.newsletter_cleanup_batch_size;
-            match db_cleanup.db.newsletter_delete_expired_pending(ttl, batch).await {
-                Ok(n) if n > 0 => tracing::info!("[newsletter] cleaned up {n} expired pending subscriptions"),
-                Err(e) => tracing::warn!("[newsletter] cleanup error: {e}"),
-                _ => {}
+            tokio::select! {
+                _ = interval.tick() => {
+                    let ttl = db_cleanup.config.newsletter_token_ttl_secs;
+                    let batch = db_cleanup.config.newsletter_cleanup_batch_size;
+                    match db_cleanup.db.newsletter_delete_expired_pending(ttl, batch).await {
+                        Ok(n) if n > 0 => tracing::info!("[newsletter] cleaned up {n} expired pending subscriptions"),
+                        Err(e) => tracing::warn!("[newsletter] cleanup error: {e}"),
+                        _ => {}
+                    }
+                }
+                _ = heartbeat_interval.tick() => {
+                    metrics_newsletter.set_worker_status(WORKER_NAME, true);
+                }
             }
         }
     });
 
-    // ── Email queue worker ────────────────────────────────────────────────────
-    let queue_worker = email_queue.clone();
-    let service_worker = email_service.clone();
-    let email_token = email_coordinator.token();
-    let email_coord = email_coordinator.clone();
-    let stale_threshold = state.config.email_stale_job_threshold_secs;
-    let metrics_worker = metrics.clone();
-    tokio::spawn(async move {
-        queue_worker
-            .start_worker(service_worker, email_token, email_coord, stale_threshold, Some(metrics_worker))
-            .await;
-    });
+    // ── Email queue worker (monitored restart loop) ────────────────────────────
+    // Wraps the worker in a panic-catching JoinHandle. If the task panics or
+    // exits unexpectedly it is restarted with exponential backoff (1s, 2s, 4s,
+    // 8s, 16s). After MAX_EMAIL_WORKER_RESTARTS consecutive crashes without a
+    // clean recovery the loop logs FATAL and increments worker_crash_total so
+    // the Prometheus alert fires.
+    {
+        const MAX_EMAIL_WORKER_RESTARTS: u32 = 5;
+
+        let queue_worker = email_queue.clone();
+        let service_worker = email_service.clone();
+        let email_token = email_coordinator.token();
+        let email_coord = email_coordinator.clone();
+        let stale_threshold = state.config.email_stale_job_threshold_secs;
+        let crash_counter = state.metrics.worker_crash_total.clone();
+        let metrics_worker = state.metrics.clone();
+
+        tokio::spawn(async move {
+            let mut restarts: u32 = 0;
+            loop {
+                let q = queue_worker.clone();
+                let s = service_worker.clone();
+                let token = email_token.clone();
+                let coord = email_coord.clone();
+                let mw = metrics_worker.clone();
+
+                let handle = tokio::spawn(async move {
+                    q.start_worker(s, token, coord, stale_threshold, Some(mw)).await;
+                });
+
+                match handle.await {
+                    Ok(_) => {
+                        // Clean exit (shutdown token was cancelled) — do not restart.
+                        tracing::info!("Email queue worker exited cleanly");
+                        break;
+                    }
+                    Err(e) => {
+                        restarts += 1;
+                        crash_counter.with_label_values(&["email_queue_worker"]).inc();
+
+                        if restarts >= MAX_EMAIL_WORKER_RESTARTS {
+                            tracing::error!(
+                                restarts,
+                                error = %e,
+                                "FATAL: email queue worker has crashed {} times — alerting and giving up",
+                                MAX_EMAIL_WORKER_RESTARTS,
+                            );
+                            break;
+                        }
+
+                        let backoff = Duration::from_secs(2_u64.pow(restarts - 1));
+                        tracing::error!(
+                            restarts,
+                            backoff_secs = backoff.as_secs(),
+                            error = %e,
+                            "Email queue worker crashed — restarting after backoff"
+                        );
+                        tokio::time::sleep(backoff).await;
+                    }
+                }
+            }
+        });
+    }
 
     if let Err(err) = handlers::warm_critical_caches(state.clone()).await {
         tracing::warn!("cache warming skipped: {err}");
@@ -190,6 +280,7 @@ async fn main() -> anyhow::Result<()> {
     // ── Routes ────────────────────────────────────────────────────────────────
     let public_routes = Router::new()
         .route("/health", get(handlers::health))
+        .route("/health/ready", get(handlers::health_ready))
         .route("/api/v1/blockchain/health", get(handlers::blockchain_health))
         .route("/api/v1/blockchain/markets/:market_id", get(handlers::blockchain_market_data))
         .route("/api/v1/blockchain/stats", get(handlers::blockchain_platform_stats))

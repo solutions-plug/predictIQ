@@ -32,7 +32,10 @@ pub struct Metrics {
     request_latency: HistogramVec,
     rpc_errors: IntCounterVec,
     rpc_fallbacks: IntCounterVec,
+    db_query_duration: HistogramVec,
     db_timeouts: IntCounterVec,
+    db_pool_exhaustion: IntCounterVec,
+    ledger_gaps: IntCounterVec,
     email_dlq_size: IntGauge,
     email_queue_depth: IntGauge,
     db_pool_connections_active: IntGaugeVec,
@@ -42,7 +45,17 @@ pub struct Metrics {
     /// Counts authentication failures by failure reason.
     /// Labels: `reason` — one of: "invalid_api_key", "expired_token", "missing_credentials".
     auth_failures: IntCounterVec,
-    cache_circuit_breaker_state: IntGauge,
+    /// #936: counts how many times the sync worker has been restarted after a panic.
+    sync_worker_restarts: prometheus::IntCounter,
+    /// #936: timestamp of last heartbeat from the sync worker (unix seconds).
+    sync_worker_heartbeat_ts: IntGauge,
+    /// #938: total ledger sequence gaps detected (by gap_type label).
+    ledger_gaps: IntCounterVec,
+    sendgrid_retries: IntCounterVec,
+    pub worker_crash_total: IntCounterVec,
+    otel_export_errors: IntCounterVec,
+    worker_status: IntGaugeVec,
+    cache_circuit_breaker_state: IntGaugeVec,
 }
 
 impl Metrics {
@@ -94,11 +107,41 @@ impl Metrics {
         )
         .context("rpc_fallbacks metric")?;
 
+        let db_query_duration = HistogramVec::new(
+            prometheus::HistogramOpts::new(
+                "db_query_duration_seconds",
+                "Database query duration in seconds by query name",
+            )
+            .buckets(vec![
+                0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
+            ]),
+            &["query_name"],
+        )
+        .context("db_query_duration metric")?;
+
         let db_timeouts = IntCounterVec::new(
             prometheus::Opts::new("db_timeouts_total", "DB queries that exceeded the timeout, by operation"),
             &["operation"],
         )
         .context("db_timeouts metric")?;
+
+        let db_pool_exhaustion = IntCounterVec::new(
+            prometheus::Opts::new(
+                "db_pool_exhaustion_total",
+                "Number of times the connection pool was exhausted, by pool name",
+            ),
+            &["pool"],
+        )
+        .context("db_pool_exhaustion metric")?;
+
+        let ledger_gaps = IntCounterVec::new(
+            prometheus::Opts::new(
+                "blockchain_ledger_gaps_total",
+                "Ledger gap events detected during blockchain sync, labelled by network",
+            ),
+            &["network"],
+        )
+        .context("ledger_gaps metric")?;
 
         let email_dlq_size = IntGauge::new(
             "email_dlq_size",
@@ -160,9 +203,66 @@ impl Metrics {
         )
         .context("auth_failures metric")?;
 
-        let cache_circuit_breaker_state = IntGauge::new(
-            "cache_circuit_breaker_state",
-            "Current Redis cache circuit breaker state (0=closed, 1=open, 2=half_open)",
+        let sync_worker_restarts = prometheus::IntCounter::new(
+            "blockchain_sync_worker_restarts_total",
+            "Number of times the blockchain sync worker has been restarted after a panic",
+        )
+        .context("sync_worker_restarts metric")?;
+
+        let sync_worker_heartbeat_ts = IntGauge::new(
+            "blockchain_sync_worker_last_heartbeat_ts",
+            "Unix timestamp of the last heartbeat emitted by the sync worker",
+        )
+        .context("sync_worker_heartbeat_ts metric")?;
+
+        let ledger_gaps = IntCounterVec::new(
+            prometheus::Opts::new(
+                "blockchain_ledger_gaps_total",
+                "Total ledger sequence gaps detected, labelled by gap_type (restart|sync)",
+            ),
+            &["gap_type"],
+        )
+        .context("ledger_gaps metric")?;
+
+        let sendgrid_retries = IntCounterVec::new(
+            prometheus::Opts::new("sendgrid_retries_total", "SendGrid send retries by reason"),
+            &["reason"],
+        )
+        .context("sendgrid_retries metric")?;
+
+        let worker_crash_total = IntCounterVec::new(
+            prometheus::Opts::new(
+                "worker_crash_total",
+                "Number of times a background worker has crashed and been restarted, by worker",
+            ),
+            &["worker"],
+        )
+        .context("worker_crash_total metric")?;
+
+        let otel_export_errors = IntCounterVec::new(
+            prometheus::Opts::new(
+                "otel_export_errors_total",
+                "OpenTelemetry trace export failures, by reason",
+            ),
+            &["reason"],
+        )
+        .context("otel_export_errors metric")?;
+
+        let worker_status = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "worker_status",
+                "Background worker health status (1=running, 0=stopped)",
+            ),
+            &["name"],
+        )
+        .context("worker_status metric")?;
+
+        let cache_circuit_breaker_state = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cache_circuit_breaker_state",
+                "Redis cache circuit breaker state (0=closed, 1=open, 2=half-open)",
+            ),
+            &["state"],
         )
         .context("cache_circuit_breaker_state metric")?;
 
@@ -172,7 +272,10 @@ impl Metrics {
         registry.register(Box::new(request_latency.clone()))?;
         registry.register(Box::new(rpc_errors.clone()))?;
         registry.register(Box::new(rpc_fallbacks.clone()))?;
+        registry.register(Box::new(db_query_duration.clone()))?;
         registry.register(Box::new(db_timeouts.clone()))?;
+        registry.register(Box::new(db_pool_exhaustion.clone()))?;
+        registry.register(Box::new(ledger_gaps.clone()))?;
         registry.register(Box::new(email_dlq_size.clone()))?;
         registry.register(Box::new(email_queue_depth.clone()))?;
         registry.register(Box::new(db_pool_connections_active.clone()))?;
@@ -180,6 +283,13 @@ impl Metrics {
         registry.register(Box::new(db_pool_acquire_duration.clone()))?;
         registry.register(Box::new(rate_limit_rejections.clone()))?;
         registry.register(Box::new(auth_failures.clone()))?;
+        registry.register(Box::new(sync_worker_restarts.clone()))?;
+        registry.register(Box::new(sync_worker_heartbeat_ts.clone()))?;
+        registry.register(Box::new(ledger_gaps.clone()))?;
+        registry.register(Box::new(sendgrid_retries.clone()))?;
+        registry.register(Box::new(worker_crash_total.clone()))?;
+        registry.register(Box::new(otel_export_errors.clone()))?;
+        registry.register(Box::new(worker_status.clone()))?;
         registry.register(Box::new(cache_circuit_breaker_state.clone()))?;
 
         Ok(Self {
@@ -190,7 +300,10 @@ impl Metrics {
             request_latency,
             rpc_errors,
             rpc_fallbacks,
+            db_query_duration,
             db_timeouts,
+            db_pool_exhaustion,
+            ledger_gaps,
             email_dlq_size,
             email_queue_depth,
             db_pool_connections_active,
@@ -198,6 +311,13 @@ impl Metrics {
             db_pool_acquire_duration,
             rate_limit_rejections,
             auth_failures,
+            sync_worker_restarts,
+            sync_worker_heartbeat_ts,
+            ledger_gaps,
+            sendgrid_retries,
+            worker_crash_total,
+            otel_export_errors,
+            worker_status,
             cache_circuit_breaker_state,
         })
     }
@@ -240,9 +360,30 @@ impl Metrics {
         self.rpc_fallbacks.with_label_values(&[&labels[0]]).inc();
     }
 
+    pub fn observe_db_query_duration(&self, query_name: &str, duration: Duration) {
+        self.db_query_duration
+            .with_label_values(&[query_name])
+            .observe(duration.as_secs_f64());
+    }
+
     pub fn observe_db_timeout(&self, operation: &str) {
         let labels = normalize_label_values(&[operation]);
         self.db_timeouts.with_label_values(&[&labels[0]]).inc();
+    }
+
+    pub fn observe_db_pool_exhaustion(&self, pool: &str) {
+        self.db_pool_exhaustion
+            .with_label_values(&[pool])
+            .inc();
+    }
+
+    /// Record a ledger-gap event on `network`, incrementing the counter by `gap_size` ledgers.
+    pub fn observe_ledger_gap(&self, network: &str, gap_size: u32) {
+        if gap_size > 0 {
+            self.ledger_gaps
+                .with_label_values(&[network])
+                .inc_by(u64::from(gap_size));
+        }
     }
 
     pub fn set_dlq_size(&self, n: i64) {
@@ -312,8 +453,91 @@ impl Metrics {
         self.auth_failures.with_label_values(&[reason]).inc();
     }
 
+    /// #936: Increment the sync worker restart counter.
+    pub fn observe_sync_worker_restart(&self) {
+        self.sync_worker_restarts.inc();
+    }
+
+    /// #936: Record a heartbeat from the sync worker (stores current unix timestamp).
+    pub fn observe_sync_worker_heartbeat(&self) {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        self.sync_worker_heartbeat_ts.set(ts);
+    }
+
+    /// #936: Return the last heartbeat unix timestamp (for /health/ready).
+    pub fn sync_worker_last_heartbeat_ts(&self) -> i64 {
+        self.sync_worker_heartbeat_ts.get()
+    }
+
+    /// #938: Record a ledger sequence gap.
+    pub fn observe_ledger_gap(&self, gap: u32) {
+        self.ledger_gaps.with_label_values(&["sync"]).inc_by(gap as u64);
+    }
+
+    /// Increment the SendGrid retry counter.
+    /// `reason` should be "rate_limited" (429) or "server_error" (5xx).
+    pub fn observe_sendgrid_retry(&self, reason: &str) {
+        self.sendgrid_retries.with_label_values(&[reason]).inc();
+    }
+
+    /// Increment the OTEL export error counter.
+    /// Pass `reason = "unreachable"` for startup connectivity failures,
+    /// `reason = "export_failed"` for runtime export errors.
+    pub fn observe_otel_export_error(&self, reason: &str) {
+        self.otel_export_errors.with_label_values(&[reason]).inc();
+    }
+
+    /// Set worker status to running (1) or stopped (0).
+    /// Call this on worker startup (1), during heartbeats (1), and on shutdown (0).
+    pub fn set_worker_status(&self, name: &str, running: bool) {
+        self.worker_status
+            .with_label_values(&[name])
+            .set(if running { 1 } else { 0 });
+    }
+
+    /// Update the cache circuit breaker state gauge.
+    /// Call this whenever the circuit breaker transitions state.
+    /// state: 0=closed, 1=open, 2=half-open
+    pub fn set_cache_circuit_breaker_state(&self, state: i64) {
+        // Reset all states to 0 first
+        self.cache_circuit_breaker_state
+            .with_label_values(&["closed"])
+            .set(0);
+        self.cache_circuit_breaker_state
+            .with_label_values(&["open"])
+            .set(0);
+        self.cache_circuit_breaker_state
+            .with_label_values(&["half_open"])
+            .set(0);
+
+        // Set the current state to 1
+        match state {
+            0 => {
+                self.cache_circuit_breaker_state
+                    .with_label_values(&["closed"])
+                    .set(1);
+            }
+            1 => {
+                self.cache_circuit_breaker_state
+                    .with_label_values(&["open"])
+                    .set(1);
+            }
+            2 => {
+                self.cache_circuit_breaker_state
+                    .with_label_values(&["half_open"])
+                    .set(1);
+            }
+            _ => {}
+        }
+    }
+
+    /// Convenience alias that maps a numeric state to the labelled gauge vec.
+    /// Delegates to set_cache_circuit_breaker_state; kept for backward compatibility.
     pub fn set_circuit_breaker_state(&self, state: i64) {
-        self.cache_circuit_breaker_state.set(state);
+        self.set_cache_circuit_breaker_state(state);
     }
 
     pub fn render(&self) -> anyhow::Result<String> {
@@ -328,6 +552,25 @@ impl Metrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn observe_db_query_duration_records_histogram() {
+        let metrics = Metrics::new().unwrap();
+        metrics.observe_db_query_duration("test_query", Duration::from_millis(100));
+        let output = metrics.render().unwrap();
+        assert!(output.contains("db_query_duration_seconds"));
+        assert!(output.contains("query_name=\"test_query\""));
+    }
+
+    #[test]
+    fn observe_db_pool_exhaustion_increments_counter() {
+        let metrics = Metrics::new().unwrap();
+        metrics.observe_db_pool_exhaustion("api");
+        let output = metrics.render().unwrap();
+        assert!(output.contains("db_pool_exhaustion_total"));
+        assert!(output.contains("pool=\"api\""));
+        assert!(output.contains("1"));
+    }
 
     // ── normalize_label ────────────────────────────────────────────────────────
 
@@ -379,6 +622,7 @@ mod tests {
         m.set_email_queue_depth(12);
         m.observe_auth_failure("invalid_api_key");
         m.set_circuit_breaker_state(0);
+        m.set_worker_status("test_worker", true);
         let rendered = m.render().expect("render must not fail");
         assert!(rendered.contains("cache_hits_total"));
         assert!(rendered.contains("http_request_duration_seconds"));
@@ -439,4 +683,3 @@ mod tests {
         assert!(rendered.contains("endpoint=\"oracle_result\""));
     }
 }
-
