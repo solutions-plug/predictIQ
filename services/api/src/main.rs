@@ -98,6 +98,9 @@ async fn main() -> anyhow::Result<()> {
     // Warn if production environment does not enforce HTTPS.
     config.check_https_config();
 
+    // Warn at startup if the SendGrid API key is older than 90 days.
+    config.warn_if_sendgrid_key_stale();
+
     let metrics = Metrics::new()?;
 
     // Warn at startup if the OTLP endpoint is unreachable so operators know

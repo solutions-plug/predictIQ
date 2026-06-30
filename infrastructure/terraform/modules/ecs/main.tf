@@ -70,6 +70,21 @@ variable "db_password" {
   description = "PostgreSQL password for db_user. Store in your CI/CD secret store."
 }
 
+# SendGrid API key stored in Secrets Manager.
+# Set this to the raw API key value; Terraform will create the secret version.
+variable "sendgrid_api_key" {
+  type      = string
+  sensitive = true
+}
+
+# ISO-8601 date (YYYY-MM-DD) recording when SENDGRID_API_KEY was last rotated.
+# Stored as Secrets Manager metadata so ops tooling and the startup check can
+# read it without touching the key itself.
+variable "sendgrid_key_rotated_at" {
+  type        = string
+  description = "Date the SendGrid API key was last rotated (YYYY-MM-DD, e.g. 2026-06-30)"
+}
+
 variable "acm_certificate_arn" {
   type        = string
   description = "ARN of the ACM certificate for HTTPS termination on the ALB."
@@ -77,12 +92,6 @@ variable "acm_certificate_arn" {
 
 variable "hmac_key" {
   description = "HMAC secret key used to sign API payloads"
-  type        = string
-  sensitive   = true
-}
-
-variable "sendgrid_api_key" {
-  description = "SendGrid API key for transactional email"
   type        = string
   sensitive   = true
 }
@@ -194,6 +203,10 @@ resource "aws_ecs_task_definition" "api" {
         {
           name      = "SENDGRID_API_KEY"
           valueFrom = aws_secretsmanager_secret.sendgrid_api_key.arn
+        },
+        {
+          name      = "SENDGRID_KEY_ROTATED_AT"
+          valueFrom = aws_secretsmanager_secret.sendgrid_key_rotated_at.arn
         },
         {
           name      = "API_SIGNING_KEY"
@@ -444,6 +457,8 @@ resource "aws_secretsmanager_secret_version" "db_password" {
   secret_string = var.db_password
 }
 
+# ── SendGrid ────────────────────────────────────────────────────────────────
+
 resource "aws_secretsmanager_secret" "hmac_key" {
   name        = "predictiq/${var.environment}/hmac-key"
   description = "HMAC secret key used to sign API payloads and webhook signatures"
@@ -463,19 +478,38 @@ resource "aws_secretsmanager_secret_version" "hmac_key" {
 
 resource "aws_secretsmanager_secret" "sendgrid_api_key" {
   name        = "predictiq/${var.environment}/sendgrid-api-key"
-  description = "SendGrid API key for sending transactional email"
+  description = "SendGrid API key used by the predictIQ API for transactional email. Rotate every 90 days — see docs/runbooks/sendgrid-api-key-rotation.md."
 
-  tags = merge(local.common_tags, {
-    Name            = "predictiq-${var.environment}-sendgrid-api-key"
-    SecretType      = "api-key"
-    RotationEnabled = "true"
-    RotationSchedule = "180-days"
-  })
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-sendgrid-api-key"
+    }
+  )
 }
 
 resource "aws_secretsmanager_secret_version" "sendgrid_api_key" {
   secret_id     = aws_secretsmanager_secret.sendgrid_api_key.id
   secret_string = var.sendgrid_api_key
+}
+
+# Stores only the rotation date (YYYY-MM-DD string) — not the key itself.
+# The application reads this at startup to warn if the key is older than 90 days.
+resource "aws_secretsmanager_secret" "sendgrid_key_rotated_at" {
+  name        = "predictiq/${var.environment}/sendgrid-key-rotated-at"
+  description = "ISO-8601 date (YYYY-MM-DD) when SENDGRID_API_KEY was last rotated. Update this alongside the key itself."
+
+  tags = merge(
+    local.common_tags,
+    {
+      Name = "predictiq-${var.environment}-sendgrid-key-rotated-at"
+    }
+  )
+}
+
+resource "aws_secretsmanager_secret_version" "sendgrid_key_rotated_at" {
+  secret_id     = aws_secretsmanager_secret.sendgrid_key_rotated_at.id
+  secret_string = var.sendgrid_key_rotated_at
 }
 
 resource "aws_secretsmanager_secret" "api_signing_key" {
@@ -496,6 +530,7 @@ resource "aws_secretsmanager_secret_version" "api_signing_key" {
 }
 
 # ── IAM — ECS Task Execution Role ─────────────────────────────────────────────
+
 
 resource "aws_iam_role" "ecs_task_execution_role" {
   name = "predictiq-${var.environment}-ecs-task-execution-role"
@@ -545,6 +580,7 @@ resource "aws_iam_role_policy" "ecs_task_execution_secrets" {
           aws_secretsmanager_secret.redis_url.arn,
           aws_secretsmanager_secret.hmac_key.arn,
           aws_secretsmanager_secret.sendgrid_api_key.arn,
+          aws_secretsmanager_secret.sendgrid_key_rotated_at.arn,
           aws_secretsmanager_secret.api_signing_key.arn,
         ]
       }
