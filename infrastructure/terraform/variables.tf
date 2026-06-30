@@ -205,6 +205,16 @@ variable "api_memory" {
   }
 }
 
+variable "acm_certificate_arn" {
+  description = "ARN of the ACM certificate used by the ALB HTTPS listener."
+  type        = string
+
+  validation {
+    condition     = can(regex("^arn:aws:acm:", var.acm_certificate_arn))
+    error_message = "acm_certificate_arn must be a valid ACM certificate ARN."
+  }
+}
+
 variable "hmac_key" {
   description = "HMAC secret key used to sign API payloads and webhook signatures. Stored in AWS Secrets Manager."
   type        = string
@@ -235,5 +245,4 @@ variable "api_signing_key" {
   validation {
     condition     = length(var.api_signing_key) >= 32
     error_message = "API signing key must be at least 32 characters."
-  }
-}
+

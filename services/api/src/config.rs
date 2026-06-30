@@ -237,6 +237,14 @@ pub struct Config {
     /// startup. Configured via `STELLAR_NETWORK_PASSPHRASE`; defaults to the
     /// canonical passphrase for the configured `BLOCKCHAIN_NETWORK`.
     pub network_passphrase: String,
+    /// Deployment environment name (e.g. "production", "staging", "development").
+    /// Configured via `APP_ENV`. Default: `"development"`.
+    pub app_env: String,
+    /// When `true`, the HTTPS redirect middleware enforces HTTPS by inspecting
+    /// the `X-Forwarded-Proto` header and issuing a 301 redirect for plain HTTP
+    /// requests. TLS termination is expected at the ALB, not at this process.
+    /// Configured via `REQUIRE_HTTPS`. Default: `false`.
+    pub require_https: bool,
 }
 
 impl Config {
@@ -472,6 +480,10 @@ impl Config {
             cors: CorsConfig::from_env(),
             contract_key_schema: ContractKeySchema::from_env(),
             network_passphrase,
+            app_env: env::var("APP_ENV").unwrap_or_else(|_| "development".to_string()),
+            require_https: env::var("REQUIRE_HTTPS")
+                .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+                .unwrap_or(false),
         }
     }
 
@@ -541,6 +553,23 @@ impl Config {
         }
 
         Ok(())
+    }
+
+    /// Emit a startup warning when running in production without HTTPS enforcement.
+    ///
+    /// Call this once at startup, after `validate()`. The check is advisory —
+    /// it does not prevent the server from starting — but it ensures the
+    /// misconfiguration is visible in the log stream.
+    pub fn check_https_config(&self) {
+        if self.app_env == "production" && !self.require_https {
+            tracing::warn!(
+                app_env = %self.app_env,
+                require_https = self.require_https,
+                "REQUIRE_HTTPS is false in production — plain HTTP requests will not be \
+                 redirected to HTTPS. Set REQUIRE_HTTPS=true to enforce HTTPS at the application \
+                 layer, or ensure HTTPS redirection is handled by the ALB."
+            );
+        }
     }
 }
 

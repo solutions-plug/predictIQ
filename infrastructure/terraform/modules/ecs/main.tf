@@ -44,6 +44,11 @@ variable "redis_url" {
   sensitive = true
 }
 
+variable "acm_certificate_arn" {
+  type        = string
+  description = "ARN of the ACM certificate for HTTPS termination on the ALB."
+}
+
 variable "hmac_key" {
   description = "HMAC secret key used to sign API payloads"
   type        = string
@@ -247,10 +252,31 @@ resource "aws_lb_target_group" "api" {
   })
 }
 
-resource "aws_lb_listener" "api" {
+resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.main.arn
   port              = 80
   protocol          = "HTTP"
+
+  # Permanently redirect all plain-HTTP traffic to HTTPS (issue #889).
+  # The ALB is the TLS termination point; the API service receives only
+  # decrypted traffic from the ALB via the target group on port 80.
+  default_action {
+    type = "redirect"
+
+    redirect {
+      port        = "443"
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
+    }
+  }
+}
+
+resource "aws_lb_listener" "https" {
+  load_balancer_arn = aws_lb.main.arn
+  port              = 443
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+  certificate_arn   = var.acm_certificate_arn
 
   default_action {
     type             = "forward"
@@ -289,7 +315,7 @@ resource "aws_ecs_service" "api" {
     container_port   = var.api_container_port
   }
 
-  depends_on = [aws_lb_listener.api]
+  depends_on = [aws_lb_listener.https]
 
   tags = merge(local.common_tags, {
     Name = "predictiq-${var.environment}-api-service"
