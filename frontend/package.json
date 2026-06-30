@@ -51,7 +51,7 @@
     "@types/node": "^25.9.1",
     "@types/react": "^19.2.16",
     "@types/react-dom": "^19.2.3",
-    "axe-core": "^4.11.4",
+    "axe-core": "^4.12.1",
     "bundlewatch": "2.3.3",
     "jest": "^30.4.2",
     "jest-axe": "^10.0.0",
