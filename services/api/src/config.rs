@@ -67,7 +67,7 @@ impl CorsConfig {
                     .filter(|s| !s.is_empty())
                     .collect()
             })
-            .unwrap_or_else(|| {
+            .unwrap_or_else(|_| {
                 ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
                     .iter()
                     .map(|s| s.to_string())
@@ -81,7 +81,7 @@ impl CorsConfig {
                     .filter(|s| !s.is_empty())
                     .collect()
             })
-            .unwrap_or_else(|| {
+            .unwrap_or_else(|_| {
                 ["content-type", "authorization"]
                     .iter()
                     .map(|s| s.to_string())
@@ -169,6 +169,9 @@ pub struct Config {
     pub contract_id: String,
     pub retry_attempts: u32,
     pub retry_base_delay_ms: u64,
+    /// Jitter factor for RPC retry backoff. 1.0 = full jitter (default), 0.0 = no jitter.
+    /// Configured via `RPC_BACKOFF_JITTER_FACTOR`.
+    pub rpc_backoff_jitter_factor: f64,
     pub event_poll_interval: Duration,
     pub tx_poll_interval: Duration,
     pub confirmation_ledger_lag: u32,
@@ -178,6 +181,9 @@ pub struct Config {
     pub sendgrid_api_key: Option<String>,
     pub from_email: Option<String>,
     pub base_url: String,
+    /// Server-side secret for HMAC-SHA256 email idempotency keys.
+    /// Configured via `EMAIL_IDEMPOTENCY_SECRET`. Falls back to `hmac_key` if unset.
+    pub email_idempotency_secret: String,
     pub api_keys: Vec<String>,
     pub admin_whitelist_ips: Vec<IpAddr>,
     pub trust_proxy: bool,
@@ -246,6 +252,14 @@ pub struct Config {
     /// hard `process::exit(1)`.  When `false` only a warning is logged.
     /// Default: `false`.  Set `PREDICTIQ_ENV=production` to enable.
     pub is_production: bool,
+    /// Deployment environment name (e.g. "production", "staging", "development").
+    /// Configured via `APP_ENV`. Default: `"development"`.
+    pub app_env: String,
+    /// When `true`, the HTTPS redirect middleware enforces HTTPS by inspecting
+    /// the `X-Forwarded-Proto` header and issuing a 301 redirect for plain HTTP
+    /// requests. TLS termination is expected at the ALB, not at this process.
+    /// Configured via `REQUIRE_HTTPS`. Default: `false`.
+    pub require_https: bool,
 }
 
 impl Config {
@@ -369,6 +383,11 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(200),
+            rpc_backoff_jitter_factor: env::var("RPC_BACKOFF_JITTER_FACTOR")
+                .ok()
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(1.0)
+                .clamp(0.0, 1.0),
             event_poll_interval: Duration::from_secs(
                 env::var("EVENT_POLL_INTERVAL_SECS")
                     .ok()
@@ -397,6 +416,9 @@ impl Config {
             sendgrid_api_key: env::var("SENDGRID_API_KEY").ok(),
             from_email: env::var("FROM_EMAIL").ok(),
             base_url: env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:8080".to_string()),
+            email_idempotency_secret: env::var("EMAIL_IDEMPOTENCY_SECRET")
+                .or_else(|_| env::var("HMAC_KEY"))
+                .unwrap_or_default(),
             api_keys: env::var("API_KEYS")
                 .ok()
                 .map(|keys| keys.split(',').map(|k| k.trim().to_string()).collect())
@@ -484,6 +506,10 @@ impl Config {
             is_production: env::var("PREDICTIQ_ENV")
                 .map(|v| v.eq_ignore_ascii_case("production"))
                 .unwrap_or(false),
+            app_env: env::var("APP_ENV").unwrap_or_else(|_| "development".to_string()),
+            require_https: env::var("REQUIRE_HTTPS")
+                .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+                .unwrap_or(false),
         }
     }
 
@@ -553,6 +579,23 @@ impl Config {
         }
 
         Ok(())
+    }
+
+    /// Emit a startup warning when running in production without HTTPS enforcement.
+    ///
+    /// Call this once at startup, after `validate()`. The check is advisory —
+    /// it does not prevent the server from starting — but it ensures the
+    /// misconfiguration is visible in the log stream.
+    pub fn check_https_config(&self) {
+        if self.app_env == "production" && !self.require_https {
+            tracing::warn!(
+                app_env = %self.app_env,
+                require_https = self.require_https,
+                "REQUIRE_HTTPS is false in production — plain HTTP requests will not be \
+                 redirected to HTTPS. Set REQUIRE_HTTPS=true to enforce HTTPS at the application \
+                 layer, or ensure HTTPS redirection is handled by the ALB."
+            );
+        }
     }
 }
 
@@ -817,6 +860,7 @@ mod tests {
             contract_id: "contract_id".to_string(),
             retry_attempts: 3,
             retry_base_delay_ms: 200,
+            rpc_backoff_jitter_factor: 1.0,
             event_poll_interval: Duration::from_secs(5),
             tx_poll_interval: Duration::from_secs(4),
             confirmation_ledger_lag: 3,
@@ -826,6 +870,7 @@ mod tests {
             sendgrid_api_key: None,
             from_email: None,
             base_url: "http://localhost:8080".to_string(),
+            email_idempotency_secret: "test-secret".to_string(),
             api_keys: vec![],
             admin_whitelist_ips: vec![],
             trust_proxy: true,
@@ -894,6 +939,7 @@ mod tests {
             contract_id: "contract_id".to_string(),
             retry_attempts: 3,
             retry_base_delay_ms: 200,
+            rpc_backoff_jitter_factor: 1.0,
             event_poll_interval: Duration::from_secs(5),
             tx_poll_interval: Duration::from_secs(4),
             confirmation_ledger_lag: 3,
@@ -903,6 +949,7 @@ mod tests {
             sendgrid_api_key: None,
             from_email: None,
             base_url: "http://localhost:8080".to_string(),
+            email_idempotency_secret: "".to_string(),
             api_keys: vec![],
             admin_whitelist_ips: vec![],
             trust_proxy: true,
@@ -971,6 +1018,7 @@ mod tests {
             contract_id: "contract_id".to_string(),
             retry_attempts: 3,
             retry_base_delay_ms: 200,
+            rpc_backoff_jitter_factor: 1.0,
             event_poll_interval: Duration::from_secs(5),
             tx_poll_interval: Duration::from_secs(4),
             confirmation_ledger_lag: 3,
@@ -980,6 +1028,7 @@ mod tests {
             sendgrid_api_key: None,
             from_email: None,
             base_url: "http://localhost:8080".to_string(),
+            email_idempotency_secret: "".to_string(),
             api_keys: vec![],
             admin_whitelist_ips: vec![],
             trust_proxy: true,
@@ -1048,6 +1097,7 @@ mod tests {
             contract_id: "contract_id".to_string(),
             retry_attempts: 3,
             retry_base_delay_ms: 200,
+            rpc_backoff_jitter_factor: 1.0,
             event_poll_interval: Duration::from_secs(5),
             tx_poll_interval: Duration::from_secs(4),
             confirmation_ledger_lag: 3,
@@ -1057,6 +1107,7 @@ mod tests {
             sendgrid_api_key: None,
             from_email: None,
             base_url: "http://localhost:8080".to_string(),
+            email_idempotency_secret: "".to_string(),
             api_keys: vec![],
             admin_whitelist_ips: vec![],
             trust_proxy: true,

@@ -1,13 +1,15 @@
 use anyhow::{Context, Result};
+use hmac::{Hmac, Mac};
 use redis::AsyncCommands as _;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
-use std::time::Duration;
+use sha2::Sha256;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use validator::ValidateEmail;
 
 use crate::cache::RedisCache;
 use crate::config::Config;
 use crate::email::templates::EmailTemplateEngine;
+use crate::metrics::Metrics;
 
 /// Configuration for email idempotency deduplication.
 #[derive(Clone, Debug)]
@@ -27,18 +29,31 @@ impl Default for IdempotencyConfig {
 
 /// Derive a stable idempotency key from the job inputs.
 ///
-/// The key is `email:idem:<hex(SHA-256(recipient|template|data))>` so the
-/// same logical send always maps to the same Redis key regardless of which
-/// worker processes it.
-pub fn idempotency_key(recipient: &str, template_name: &str, template_data: &Value) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(recipient.as_bytes());
-    hasher.update(b"|");
-    hasher.update(template_name.as_bytes());
-    hasher.update(b"|");
-    hasher.update(template_data.to_string().as_bytes());
-    let digest = hasher.finalize();
-    format!("email:idem:{:x}", digest)
+/// Uses HMAC-SHA256(secret, recipient || "|" || template || "|" || hour_bucket)
+/// so that:
+/// - A server-side secret prevents pre-computation by external attackers.
+/// - The hour bucket bounds the validity window to ~1 hour per key rotation.
+///
+/// The key format is `email:idem:<hex(HMAC)>`.
+pub fn idempotency_key(recipient: &str, template_name: &str, secret: &str) -> String {
+    type HmacSha256 = Hmac<Sha256>;
+
+    // Hour bucket: seconds-since-epoch / 3600, so keys rotate each hour.
+    let hour_bucket = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        / 3600;
+
+    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+        .expect("HMAC accepts any key length");
+    mac.update(recipient.as_bytes());
+    mac.update(b"|");
+    mac.update(template_name.as_bytes());
+    mac.update(b"|");
+    mac.update(hour_bucket.to_string().as_bytes());
+    let result = mac.finalize().into_bytes();
+    format!("email:idem:{}", hex::encode(result))
 }
 
 /// Validate and sanitize an email address before use.
@@ -87,17 +102,31 @@ pub struct EmailService {
     client: reqwest::Client,
     cache: Option<RedisCache>,
     pub idempotency: IdempotencyConfig,
+    pub(crate) idempotency_secret: String,
+    metrics: Option<Metrics>,
+    sendgrid_base_url: String,
 }
 
 impl EmailService {
     pub fn new(config: Config) -> Result<Self> {
-        Self::with_cache(config, None, IdempotencyConfig::default())
+        let secret = config.email_idempotency_secret.clone();
+        Self::with_cache(config, None, IdempotencyConfig::default(), secret)
     }
 
     pub fn with_cache(
         config: Config,
         cache: Option<RedisCache>,
         idempotency: IdempotencyConfig,
+        idempotency_secret: String,
+    ) -> Result<Self> {
+        Self::with_cache_and_metrics(config, cache, idempotency, None)
+    }
+
+    pub fn with_cache_and_metrics(
+        config: Config,
+        cache: Option<RedisCache>,
+        idempotency: IdempotencyConfig,
+        metrics: Option<Metrics>,
     ) -> Result<Self> {
         let template_engine = EmailTemplateEngine::new()?;
         let client = reqwest::Client::builder()
@@ -110,7 +139,16 @@ impl EmailService {
             client,
             cache,
             idempotency,
+            idempotency_secret,
+            metrics,
+            sendgrid_base_url: "https://api.sendgrid.com".to_string(),
         })
+    }
+
+    #[cfg(test)]
+    pub fn with_base_url(mut self, base_url: String) -> Self {
+        self.sendgrid_base_url = base_url;
+        self
     }
 
     /// Probe SendGrid API reachability. Returns Ok if the API key is valid and
@@ -145,7 +183,8 @@ impl EmailService {
         template_name: &str,
         template_data: &Value,
     ) -> Result<String> {
-        self.send_email_idempotent(recipient, template_name, template_data, None)
+        let idem = idempotency_key(recipient, template_name, &self.idempotency_secret);
+        self.send_email_idempotent(recipient, template_name, template_data, Some(&idem))
             .await
     }
 
@@ -164,7 +203,7 @@ impl EmailService {
         // --- idempotency check ---
         if let (Some(cache), Some(key)) = (&self.cache, idem_key) {
             let redis_key = format!("email:idem:{key}");
-            let mut conn = cache.manager.clone();
+            let mut conn = cache.get_connection().await.context("idempotency Redis connection failed")?;
 
             // Try SET NX — only succeeds for the first send.
             let acquired: Option<String> = redis::cmd("SET")
@@ -243,38 +282,78 @@ impl EmailService {
             }
         });
 
-        // Send via SendGrid
-        let response = self
-            .client
-            .post("https://api.sendgrid.com/v3/mail/send")
-            .bearer_auth(api_key)
-            .json(&payload)
-            .send()
-            .await
-            .context("Failed to send email via SendGrid")?;
+        // Send via SendGrid with retry (max 3 attempts, exp backoff + jitter)
+        const MAX_ATTEMPTS: u32 = 3;
+        let mut last_error = String::new();
 
-        if !response.status().is_success() {
+        for attempt in 0..MAX_ATTEMPTS {
+            let response = self
+                .client
+                .post(format!("{}/v3/mail/send", self.sendgrid_base_url))
+                .bearer_auth(api_key)
+                .json(&payload)
+                .send()
+                .await
+                .context("Failed to send email via SendGrid")?;
+
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("SendGrid API error {}: {}", status, body);
+
+            if status.is_success() {
+                let message_id = response
+                    .headers()
+                    .get("x-message-id")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("unknown")
+                    .to_string();
+
+                tracing::info!(
+                    "Email sent successfully to {} using template {} (message_id: {})",
+                    recipient,
+                    template_name,
+                    message_id
+                );
+                return Ok(message_id);
+            }
+
+            let should_retry = status.as_u16() == 429 || status.is_server_error();
+            let retry_after_header = response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok());
+
+            if !should_retry || attempt + 1 == MAX_ATTEMPTS {
+                last_error = format!("SendGrid API error {}", status);
+                break;
+            }
+
+            let reason = if status.as_u16() == 429 { "rate_limited" } else { "server_error" };
+            if let Some(m) = &self.metrics {
+                m.observe_sendgrid_retry(reason);
+            }
+
+            // Respect Retry-After (seconds) if present, else exp backoff + jitter
+            let delay_ms: u64 = if let Some(secs) = retry_after_header {
+                secs * 1_000
+            } else {
+                let jitter = (std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .subsec_millis() % 100) as u64;
+                (1u64 << attempt) * 100 + jitter
+            };
+
+            tracing::warn!(
+                attempt = attempt + 1,
+                delay_ms,
+                reason,
+                "SendGrid transient error {}, retrying",
+                status
+            );
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
         }
 
-        // Extract message ID from response headers
-        let message_id = response
-            .headers()
-            .get("x-message-id")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("unknown")
-            .to_string();
-
-        tracing::info!(
-            "Email sent successfully to {} using template {} (message_id: {})",
-            recipient,
-            template_name,
-            message_id
-        );
-
-        Ok(message_id)
+        anyhow::bail!(last_error);
     }
 
     /// Preview email without sending (for testing/development)
@@ -362,39 +441,36 @@ mod tests {
 
     #[test]
     fn same_inputs_produce_same_key() {
-        let data = serde_json::json!({"token": "abc"});
-        let k1 = idempotency_key("user@example.com", "welcome_email", &data);
-        let k2 = idempotency_key("user@example.com", "welcome_email", &data);
+        let k1 = idempotency_key("user@example.com", "welcome_email", "secret");
+        let k2 = idempotency_key("user@example.com", "welcome_email", "secret");
         assert_eq!(k1, k2);
     }
 
     #[test]
     fn different_recipient_produces_different_key() {
-        let data = serde_json::json!({"token": "abc"});
-        let k1 = idempotency_key("alice@example.com", "welcome_email", &data);
-        let k2 = idempotency_key("bob@example.com", "welcome_email", &data);
+        let k1 = idempotency_key("alice@example.com", "welcome_email", "secret");
+        let k2 = idempotency_key("bob@example.com", "welcome_email", "secret");
         assert_ne!(k1, k2);
     }
 
     #[test]
     fn different_template_produces_different_key() {
-        let data = serde_json::json!({});
-        let k1 = idempotency_key("user@example.com", "welcome_email", &data);
-        let k2 = idempotency_key("user@example.com", "newsletter_confirmation", &data);
+        let k1 = idempotency_key("user@example.com", "welcome_email", "secret");
+        let k2 = idempotency_key("user@example.com", "newsletter_confirmation", "secret");
         assert_ne!(k1, k2);
     }
 
+    /// #932: key changes when the secret changes.
     #[test]
-    fn different_data_produces_different_key() {
-        let k1 = idempotency_key("user@example.com", "welcome_email", &serde_json::json!({"a": 1}));
-        let k2 = idempotency_key("user@example.com", "welcome_email", &serde_json::json!({"a": 2}));
-        assert_ne!(k1, k2);
+    fn different_secret_produces_different_key() {
+        let k1 = idempotency_key("user@example.com", "welcome_email", "secret-a");
+        let k2 = idempotency_key("user@example.com", "welcome_email", "secret-b");
+        assert_ne!(k1, k2, "key must change when the HMAC secret changes");
     }
 
     #[test]
     fn key_has_expected_prefix() {
-        let data = serde_json::json!({});
-        let key = idempotency_key("user@example.com", "t", &data);
+        let key = idempotency_key("user@example.com", "t", "secret");
         assert!(key.starts_with("email:idem:"), "key should start with email:idem: prefix");
     }
 
@@ -410,17 +486,69 @@ mod tests {
         assert_eq!(cfg.ttl.as_secs(), 3600);
     }
 
-    /// Simulate retry scenario: same key presented twice should be detected
-    /// as a duplicate at the key-derivation level (no Redis needed).
+    /// Retry produces the same key (within the same hour bucket).
     #[test]
     fn retry_produces_same_idempotency_key() {
-        let data = serde_json::json!({"confirm_url": "https://example.com/confirm?token=xyz"});
-        let key_attempt_1 = idempotency_key("user@example.com", "newsletter_confirmation", &data);
-        // Simulate a retry — exact same inputs
-        let key_attempt_2 = idempotency_key("user@example.com", "newsletter_confirmation", &data);
+        let key_attempt_1 = idempotency_key("user@example.com", "newsletter_confirmation", "secret");
+        let key_attempt_2 = idempotency_key("user@example.com", "newsletter_confirmation", "secret");
         assert_eq!(
             key_attempt_1, key_attempt_2,
             "retry must produce the same idempotency key"
+        );
+    }
+
+    /// Two 429s followed by a 202: the service should succeed on the third attempt.
+    #[tokio::test]
+    async fn retry_succeeds_after_two_429s() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        // First two calls return 429, third returns 202.
+        Mock::given(method("POST"))
+            .and(path("/v3/mail/send"))
+            .respond_with(ResponseTemplate::new(429))
+            .up_to_n_times(2)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/v3/mail/send"))
+            .respond_with(
+                ResponseTemplate::new(202)
+                    .insert_header("x-message-id", "test-msg-id"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let mut config = Config::from_env();
+        config.sendgrid_api_key = Some("test-key".to_string());
+        config.from_email = Some("from@example.com".to_string());
+
+        let metrics = crate::metrics::Metrics::new().unwrap();
+        let service = EmailService::with_cache_and_metrics(
+            config,
+            None,
+            IdempotencyConfig::default(),
+            Some(metrics.clone()),
+        )
+        .unwrap()
+        .with_base_url(mock_server.uri());
+
+        let data = serde_json::json!({"confirm_url": "https://example.com/confirm?token=abc"});
+        let result = service
+            .send_email("user@example.com", "newsletter_confirmation", &data)
+            .await;
+
+        assert!(result.is_ok(), "expected success after retries, got: {:?}", result);
+        assert_eq!(result.unwrap(), "test-msg-id");
+
+        // Verify the retry counter was incremented twice (one per 429)
+        let rendered = metrics.render().unwrap();
+        assert!(
+            rendered.contains(r#"sendgrid_retries_total{reason="rate_limited"} 2"#),
+            "expected 2 rate_limited retries in metrics:\n{rendered}"
         );
     }
 

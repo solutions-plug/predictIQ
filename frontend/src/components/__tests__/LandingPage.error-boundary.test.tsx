@@ -38,6 +38,7 @@ describe('LandingPage with ErrorBoundary', () => {
     render(<LandingPage />);
 
     expect(screen.getByText('Unable to load statistics at this time. Please try again later.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /retry loading statistics/i })).toBeInTheDocument();
   });
 
   it('should display error message with role alert', () => {
