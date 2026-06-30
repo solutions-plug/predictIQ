@@ -43,8 +43,11 @@ impl Default for RateLimitConfig {
 
 #[derive(Clone)]
 pub struct RateLimitState {
-    pub redis:  Arc<RedisPool>,
-    pub config: RateLimitConfig,
+    pub redis:   Arc<RedisPool>,
+    pub config:  RateLimitConfig,
+    /// Optional metrics sink. When present, rejections are counted under
+    /// the `rate_limit_rejections_total` Prometheus counter.
+    pub metrics: Option<crate::metrics::Metrics>,
 }
 
 #[derive(Serialize)]
@@ -122,6 +125,15 @@ pub async fn rate_limit_middleware(
     match check_rate_limit(&state.redis, &state.config, &client_key).await {
         Ok(_count) => next.run(req).await,
         Err(retry_after) => {
+            if let Some(m) = &state.metrics {
+                m.observe_rate_limit_rejection(&state.config.key_prefix);
+            }
+            tracing::warn!(
+                client_key = %client_key,
+                route = %state.config.key_prefix,
+                retry_after,
+                "rate limit exceeded"
+            );
             let body = RateLimitError {
                 error:   "rate_limit_exceeded",
                 message: format!(
@@ -172,5 +184,16 @@ mod tests {
         assert_eq!(cfg.max_requests,   100);
         assert_eq!(cfg.window_seconds,  60);
         assert!(!cfg.key_prefix.is_empty());
+    }
+
+    #[test]
+    fn rate_limit_state_metrics_field_is_optional() {
+        let state = RateLimitState {
+            redis:   std::sync::Arc::new(deadpool_redis::Config::from_url("redis://127.0.0.1")
+                .create_pool(Some(deadpool_redis::Runtime::Tokio1)).unwrap()),
+            config:  RateLimitConfig::default(),
+            metrics: None,
+        };
+        assert!(state.metrics.is_none());
     }
 }

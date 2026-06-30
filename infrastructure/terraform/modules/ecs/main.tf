@@ -44,6 +44,11 @@ variable "redis_url" {
   sensitive = true
 }
 
+variable "ecs_tasks_sg_id" {
+  type        = string
+  description = "Security group ID of the ECS tasks (managed at root level)"
+}
+
 locals {
   common_tags = {
     Project   = "predictiq"
@@ -141,6 +146,7 @@ resource "aws_security_group" "alb" {
   name   = "predictiq-${var.environment}-alb-sg"
   vpc_id = var.vpc_id
 
+  # Allow inbound HTTP/HTTPS from the public internet
   ingress {
     from_port   = 80
     to_port     = 80
@@ -155,11 +161,12 @@ resource "aws_security_group" "alb" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+  # Restrict egress to the container port on ECS tasks only
   egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    from_port       = var.api_container_port
+    to_port         = var.api_container_port
+    protocol        = "tcp"
+    security_groups = [var.ecs_tasks_sg_id]
   }
 
   tags = merge(
@@ -168,6 +175,17 @@ resource "aws_security_group" "alb" {
       Name = "predictiq-${var.environment}-alb-sg"
     }
   )
+}
+
+# Allow inbound from the ALB on the container port — added as a rule on the
+# externally-managed ecs_tasks SG to avoid a circular module dependency.
+resource "aws_security_group_rule" "ecs_tasks_ingress_alb" {
+  type                     = "ingress"
+  from_port                = var.api_container_port
+  to_port                  = var.api_container_port
+  protocol                 = "tcp"
+  security_group_id        = var.ecs_tasks_sg_id
+  source_security_group_id = aws_security_group.alb.id
 }
 
 resource "aws_lb" "main" {
@@ -220,32 +238,6 @@ resource "aws_lb_listener" "api" {
   }
 }
 
-resource "aws_security_group" "ecs_tasks" {
-  name   = "predictiq-${var.environment}-ecs-tasks-sg"
-  vpc_id = var.vpc_id
-
-  ingress {
-    from_port       = var.api_container_port
-    to_port         = var.api_container_port
-    protocol        = "tcp"
-    security_groups = [aws_security_group.alb.id]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = merge(
-    local.common_tags,
-    {
-      Name = "predictiq-${var.environment}-ecs-tasks-sg"
-    }
-  )
-}
-
 resource "aws_ecs_service" "api" {
   name            = "predictiq-${var.environment}-api"
   cluster         = aws_ecs_cluster.main.id
@@ -255,7 +247,7 @@ resource "aws_ecs_service" "api" {
 
   network_configuration {
     subnets          = var.private_subnet_ids
-    security_groups  = [aws_security_group.ecs_tasks.id]
+    security_groups  = [var.ecs_tasks_sg_id]
     assign_public_ip = false
   }
 

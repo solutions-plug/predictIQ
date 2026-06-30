@@ -2,6 +2,7 @@
 //! for failed request/response logging.
 
 use serde_json::{Map, Value};
+use tracing;
 
 /// Maximum bytes captured from request/response body before truncation.
 pub const MAX_BODY_BYTES: usize = 4 * 1024; // 4 KB
@@ -44,7 +45,10 @@ pub fn redact_sensitive(body: &str) -> String {
     match serde_json::from_str::<Value>(body) {
         Ok(Value::Object(map)) => {
             let redacted = redact_map(map);
-            serde_json::to_string(&Value::Object(redacted)).unwrap_or_else(|_| body.to_owned())
+            serde_json::to_string(&Value::Object(redacted)).unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to serialize redacted body; logging original");
+                body.to_owned()
+            })
         }
         _ => body.to_owned(),
     }
