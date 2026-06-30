@@ -10,6 +10,7 @@ use crate::cache::RedisCache;
 use crate::db::Database;
 use crate::email::service::idempotency_key;
 use crate::email::types::{EmailJobStatus, EmailJobType};
+use crate::metrics::Metrics;
 use crate::shutdown::ShutdownCoordinator;
 
 const EMAIL_QUEUE_KEY: &str = "email:queue";
@@ -345,6 +346,16 @@ impl EmailQueue {
         })
     }
 
+    /// Get the current depth of the main email queue.
+    pub async fn get_queue_depth(&self) -> Result<usize> {
+        let mut conn = self.cache.get_connection().await?;
+        let depth: usize = conn
+            .zcard(EMAIL_QUEUE_KEY)
+            .await
+            .context("Failed to get queue depth")?;
+        Ok(depth)
+    }
+
     /// Re-queue any jobs stuck in the processing set (e.g. from a previous crash).
     ///
     /// Recovers jobs that have been in processing longer than the configured
@@ -483,6 +494,12 @@ impl EmailQueue {
                             break;
                         }
                     }
+                }
+            }
+
+            if let Some(ref m) = metrics {
+                if let Ok(depth) = self.get_queue_depth().await {
+                    m.set_email_queue_depth(depth as i64);
                 }
             }
         }

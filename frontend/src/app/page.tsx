@@ -1,16 +1,17 @@
 'use client';
 import dynamic from 'next/dynamic';
 import { Suspense } from 'react';
+import { LoadingSpinner } from '../components/LoadingSpinner';
 
 // Dynamic import with code splitting
 const LandingPage = dynamic(() => import('../components/LandingPage').then(mod => ({ default: mod.LandingPage })), {
-  loading: () => <div role="status" aria-live="polite">Loading...</div>,
+  loading: () => <LoadingSpinner aria-label="Loading" />,
   ssr: true,
 });
 
 export default function Home() {
   return (
-    <Suspense fallback={<div role="status" aria-live="polite">Loading page...</div>}>
+    <Suspense fallback={<LoadingSpinner aria-label="Loading page" />}>
       <LandingPage />
     </Suspense>
   );

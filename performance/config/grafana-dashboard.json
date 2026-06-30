@@ -451,6 +451,52 @@
         }
       },
       {
+        "id": 11,
+        "title": "Email Queue Depth",
+        "type": "graph",
+        "gridPos": { "x": 0, "y": 36, "w": 12, "h": 8 },
+        "targets": [
+          {
+            "expr": "email_queue_depth",
+            "legendFormat": "Queue Depth",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "short",
+            "label": "Jobs"
+          }
+        ],
+        "alert": {
+          "name": "Email Queue Depth High",
+          "conditions": [
+            {
+              "evaluator": {
+                "params": [100],
+                "type": "gt"
+              },
+              "operator": {
+                "type": "and"
+              },
+              "query": {
+                "params": ["A", "5m", "now"]
+              },
+              "reducer": {
+                "params": [],
+                "type": "avg"
+              },
+              "type": "query"
+            }
+          ],
+          "executionErrorState": "alerting",
+          "frequency": "1m",
+          "message": "Email queue depth exceeded 100 for more than 5 minutes",
+          "noDataState": "no_data",
+          "notifications": []
+        }
+      },
+      {
         "id": 9,
         "title": "System Health Overview",
         "type": "stat",
