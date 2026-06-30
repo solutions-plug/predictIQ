@@ -62,10 +62,17 @@ rand = { version = "0.8", features = ["getrandom"] }
 ipnet = "2"
 utoipa = { version = "4", features = ["yaml"] }
 
+[features]
+# Gate tests that require a live Redis instance (testcontainers or external).
+# Run with: cargo test --features redis-integration
+redis-integration = []
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
-testcontainers = { version = "0.23", features = ["tokio"] }
-testcontainers-modules = { version = "0.11", features = ["redis", "tokio"] }
+testcontainers = "0.23"
+testcontainers-modules = { version = "0.11", features = ["redis"] }
+axum = { version = "0.7", features = ["macros"] }
+serde_json = "1"
 
 [[bench]]
 name = "api_key_auth"

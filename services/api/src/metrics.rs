@@ -33,6 +33,7 @@ pub struct Metrics {
     rpc_errors: IntCounterVec,
     rpc_fallbacks: IntCounterVec,
     db_timeouts: IntCounterVec,
+    ledger_gaps: IntCounterVec,
     email_dlq_size: IntGauge,
     email_queue_depth: IntGauge,
     db_pool_connections_active: IntGaugeVec,
@@ -96,6 +97,15 @@ impl Metrics {
             &["operation"],
         )
         .context("db_timeouts metric")?;
+
+        let ledger_gaps = IntCounterVec::new(
+            prometheus::Opts::new(
+                "blockchain_ledger_gaps_total",
+                "Ledger gap events detected during blockchain sync, labelled by network",
+            ),
+            &["network"],
+        )
+        .context("ledger_gaps metric")?;
 
         let email_dlq_size = IntGauge::new(
             "email_dlq_size",
@@ -161,6 +171,7 @@ impl Metrics {
         registry.register(Box::new(rpc_errors.clone()))?;
         registry.register(Box::new(rpc_fallbacks.clone()))?;
         registry.register(Box::new(db_timeouts.clone()))?;
+        registry.register(Box::new(ledger_gaps.clone()))?;
         registry.register(Box::new(email_dlq_size.clone()))?;
         registry.register(Box::new(email_queue_depth.clone()))?;
         registry.register(Box::new(db_pool_connections_active.clone()))?;
@@ -178,6 +189,7 @@ impl Metrics {
             rpc_errors,
             rpc_fallbacks,
             db_timeouts,
+            ledger_gaps,
             email_dlq_size,
             email_queue_depth,
             db_pool_connections_active,
@@ -229,6 +241,15 @@ impl Metrics {
     pub fn observe_db_timeout(&self, operation: &str) {
         let labels = normalize_label_values(&[operation]);
         self.db_timeouts.with_label_values(&[&labels[0]]).inc();
+    }
+
+    /// Record a ledger-gap event on `network`, incrementing the counter by `gap_size` ledgers.
+    pub fn observe_ledger_gap(&self, network: &str, gap_size: u32) {
+        if gap_size > 0 {
+            self.ledger_gaps
+                .with_label_values(&[network])
+                .inc_by(u64::from(gap_size));
+        }
     }
 
     pub fn set_dlq_size(&self, n: i64) {
@@ -414,4 +435,3 @@ mod tests {
         assert!(rendered.contains("endpoint=\"oracle_result\""));
     }
 }
-
