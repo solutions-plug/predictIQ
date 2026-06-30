@@ -18,6 +18,11 @@ pub struct Metrics {
     db_pool_connections_idle: IntGaugeVec,
     db_pool_acquire_duration: HistogramVec,
     rate_limit_rejections: IntCounterVec,
+    /// Counts Redis errors encountered by security-critical rate limiters.
+    /// A non-zero rate here means the rate limiter is running in fail-closed
+    /// mode (returning 429) due to Redis unavailability.
+    /// Metric: `rate_limiter_redis_errors_total{limiter="<name>"}`
+    rate_limiter_redis_errors: IntCounterVec,
 }
 
 impl Metrics {
@@ -120,6 +125,17 @@ impl Metrics {
         )
         .context("rate_limit_rejections metric")?;
 
+        let rate_limiter_redis_errors = IntCounterVec::new(
+            prometheus::Opts::new(
+                "rate_limiter_redis_errors_total",
+                "Redis errors encountered by security-critical rate limiters. \
+                 A non-zero value means the limiter is fail-closed (returning 429) \
+                 due to Redis unavailability.",
+            ),
+            &["limiter"],
+        )
+        .context("rate_limiter_redis_errors metric")?;
+
         registry.register(Box::new(cache_hits.clone()))?;
         registry.register(Box::new(cache_misses.clone()))?;
         registry.register(Box::new(invalidations.clone()))?;
@@ -132,6 +148,7 @@ impl Metrics {
         registry.register(Box::new(db_pool_connections_idle.clone()))?;
         registry.register(Box::new(db_pool_acquire_duration.clone()))?;
         registry.register(Box::new(rate_limit_rejections.clone()))?;
+        registry.register(Box::new(rate_limiter_redis_errors.clone()))?;
 
         Ok(Self {
             registry,
@@ -147,6 +164,7 @@ impl Metrics {
             db_pool_connections_idle,
             db_pool_acquire_duration,
             rate_limit_rejections,
+            rate_limiter_redis_errors,
         })
     }
 
@@ -223,6 +241,15 @@ impl Metrics {
     pub fn observe_rate_limit_rejection(&self, route: &str) {
         self.rate_limit_rejections
             .with_label_values(&[route])
+            .inc();
+    }
+
+    /// Increment the Redis-error counter for a named rate limiter.
+    /// Call this whenever the limiter's Redis operation fails and the
+    /// fail-closed path (429) is triggered.
+    pub fn observe_rate_limiter_redis_error(&self, limiter: &str) {
+        self.rate_limiter_redis_errors
+            .with_label_values(&[limiter])
             .inc();
     }
 
