@@ -247,6 +247,58 @@ export class TTSProviderError extends Error {
 }
 
 // ---------------------------------------------------------------------------
+// Retry with exponential backoff + full jitter (issue #994)
+// ---------------------------------------------------------------------------
+
+export interface RetryConfig {
+  /** Maximum number of retry attempts (not counting the first attempt). Default 3. */
+  maxRetries: number;
+  /** Maximum delay between retries in milliseconds. Default 60 000. */
+  maxDelayMs: number;
+}
+
+/** Returns true for transient errors that warrant a retry (429, 5xx). */
+function isRetryable(err: unknown): boolean {
+  if (err instanceof TTSProviderError) {
+    const code = err.statusCode;
+    // 400, 401, 403 are non-retriable client / auth errors
+    if (code === 400 || code === 401 || code === 403) return false;
+    return code === 429 || code >= 500;
+  }
+  // Network-level errors (no statusCode) are always retriable
+  return true;
+}
+
+/** Full-jitter exponential backoff: delay ∈ [0, min(maxDelayMs, 1000 * 2^attempt)]. */
+export async function backoffDelay(attempt: number, maxDelayMs: number): Promise<void> {
+  const cap = Math.min(maxDelayMs, 1000 * Math.pow(2, attempt));
+  const ms = Math.random() * cap;
+  await new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+/** Call `fn` and retry up to `config.maxRetries` times on transient errors. */
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  config: RetryConfig,
+  label = "operation"
+): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (!isRetryable(err) || attempt === config.maxRetries) throw err;
+      console.warn(
+        `[TTSService] ${label} failed (attempt ${attempt + 1}/${config.maxRetries + 1}), retrying after backoff…`
+      );
+      await backoffDelay(attempt, config.maxDelayMs);
+    }
+  }
+  throw lastErr;
+}
+
+// ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 
@@ -266,6 +318,8 @@ export interface TTSConfig {
   rateLimit?: RateLimitConfig;
   /** Audio caching — omit to disable */
   cache?: CacheConfig;
+  /** Retry config for transient provider errors — omit to use defaults */
+  retry?: RetryConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -621,8 +675,9 @@ export class TTSService {
   }
 
   /**
-   * Try the requested provider; if it fails and a fallback is available, try that.
-   * Logs errors at each step and surfaces a meaningful error if both fail.
+   * Try the requested provider with retry; if it fails and a fallback is available, try that.
+   * Transient errors (429, 5xx) are retried with exponential backoff + full jitter.
+   * Non-retriable errors (400, 401, 403) propagate immediately.
    */
   private async _generateWithFallback(job: TTSJob): Promise<Buffer> {
     const primary = job.provider;
@@ -630,8 +685,17 @@ export class TTSService {
     const hasFallback =
       fallback === "google" ? !!this.config.google : !!this.config.elevenlabs;
 
+    const retryConfig: RetryConfig = {
+      maxRetries: this.config.retry?.maxRetries ?? 3,
+      maxDelayMs: this.config.retry?.maxDelayMs ?? 60_000,
+    };
+
     try {
-      return await this._callProvider(primary, job.text, job.voice);
+      return await withRetry(
+        () => this._callProvider(primary, job.text, job.voice),
+        retryConfig,
+        `provider:${primary}`
+      );
     } catch (primaryErr) {
       const errMsg = primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
       console.error(`[TTSService] Primary provider "${primary}" failed: ${errMsg}`);
@@ -644,7 +708,11 @@ export class TTSService {
 
       console.warn(`[TTSService] Falling back to "${fallback}"`);
       try {
-        return await this._callProvider(fallback, job.text, job.voice);
+        return await withRetry(
+          () => this._callProvider(fallback, job.text, job.voice),
+          retryConfig,
+          `provider:${fallback}`
+        );
       } catch (fallbackErr) {
         const fbMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
         console.error(`[TTSService] Fallback provider "${fallback}" also failed: ${fbMsg}`);

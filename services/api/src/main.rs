@@ -182,9 +182,10 @@ async fn main() -> anyhow::Result<()> {
     let email_token = email_coordinator.token();
     let email_coord = email_coordinator.clone();
     let stale_threshold = state.config.email_stale_job_threshold_secs;
+    let metrics_worker = metrics.clone();
     tokio::spawn(async move {
         queue_worker
-            .start_worker(service_worker, email_token, email_coord, stale_threshold)
+            .start_worker(service_worker, email_token, email_coord, stale_threshold, Some(metrics_worker))
             .await;
     });
 

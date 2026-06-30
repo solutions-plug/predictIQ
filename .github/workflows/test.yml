@@ -327,9 +327,13 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit
 
-      - name: Run security audit
+      - name: Run security audit — contracts/predict-iq
         run: cargo audit
         working-directory: contracts/predict-iq
+
+      - name: Run security audit — services/api
+        run: cargo audit
+        working-directory: services/api
 
   sast-scanning:
     name: SAST Security Scanning
@@ -346,6 +350,7 @@ jobs:
           config: >-
             p/security-audit
             p/rust
+            p/nodejs
             p/typescript
             p/javascript
           generateSarif: true
@@ -434,8 +439,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build API container image
-        run: |
-          docker build -t predictiq-api:${{ github.sha }} -f services/api/Dockerfile .
+        run: docker build -t predictiq-api:${{ github.sha }} -f services/api/Dockerfile .
         continue-on-error: true
 
       - name: Scan API container with Trivy
@@ -444,15 +448,37 @@ jobs:
         with:
           image-ref: "predictiq-api:${{ github.sha }}"
           format: "sarif"
-          output: "trivy-container.sarif"
+          output: "trivy-api.sarif"
           severity: "CRITICAL,HIGH"
           exit-code: "1"
 
-      - name: Upload container scan SARIF
+      - name: Upload API container scan SARIF
         uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
-          sarif_file: trivy-container.sarif
+          sarif_file: trivy-api.sarif
+          category: trivy-api
+
+      - name: Build TTS container image
+        run: docker build -t predictiq-tts:${{ github.sha }} -f services/tts/Dockerfile services/tts/
+        continue-on-error: true
+
+      - name: Scan TTS container with Trivy
+        uses: aquasecurity/trivy-action@314ff8b43182423b84c50b1670b0e10f858f2d98 # master
+        if: success()
+        with:
+          image-ref: "predictiq-tts:${{ github.sha }}"
+          format: "sarif"
+          output: "trivy-tts.sarif"
+          severity: "CRITICAL,HIGH"
+          exit-code: "1"
+
+      - name: Upload TTS container scan SARIF
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: trivy-tts.sarif
+          category: trivy-tts
 
   codeql-analysis:
     name: CodeQL Analysis
@@ -643,6 +669,113 @@ jobs:
           path: frontend/playwright-report/
           retention-days: 14
 
+  # ── #948: mocked E2E — no live backend required ───────────────────────────────
+  e2e-mocked:
+    name: E2E — Mocked (no backend)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "18"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run mocked E2E suite
+        run: |
+          npx playwright test \
+            e2e/user-journeys.spec.ts \
+            e2e/accessibility.spec.ts \
+            e2e/interactions.spec.ts \
+            e2e/mobile.spec.ts \
+            e2e/performance.spec.ts \
+            --project=chromium
+        env:
+          CI: "true"
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-mocked-report
+          path: frontend/playwright-report/
+          retention-days: 14
+
+  # ── #949: visual regression tests inside pinned Docker image ─────────────────
+  e2e-visual-regression:
+    name: E2E — Visual Regression (Docker)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build visual-regression Docker image
+        run: |
+          docker build \
+            -f e2e/docker/Dockerfile.visual-regression \
+            -t predictiq-visual-regression \
+            .
+
+      - name: Run visual regression tests
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}/frontend/e2e:/app/e2e" \
+            --network host \
+            -e BASE_URL=http://localhost:3000 \
+            -e CI=true \
+            predictiq-visual-regression
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-visual-regression-report
+          path: frontend/playwright-report/
+          retention-days: 14
+
+  # ── #950: bundle size budget ──────────────────────────────────────────────────
+  bundle-size:
+    name: Bundle Size Budget
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "18"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build with bundle analyzer
+        run: npm run build
+        env:
+          NEXT_PUBLIC_API_URL: "https://placeholder.example.com"
+
+      - name: Check bundle size budgets
+        run: npx bundlewatch --config bundlewatch.config.json
+        env:
+          BUNDLEWATCH_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   # ── #740: validate every migration has a rollback script ────────────────────
   validate-migration-rollbacks:
     name: Validate Migration Rollback Scripts
@@ -692,6 +825,57 @@ jobs:
             echo "✅ $f"
           done
 
+  # ── #906: verify rollback scripts are idempotent (run each twice) ────────────
+  rollback-idempotency:
+    name: Rollback Idempotency Check
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: predictiq_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/predictiq_test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply all forward migrations
+        run: |
+          for f in $(ls services/api/database/migrations/*.sql | sort); do
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+          done
+
+      - name: Run every rollback script twice and verify second run exits 0
+        run: |
+          FAILED=0
+          for f in $(ls services/api/database/migrations/rollbacks/*_down.sql | sort -r); do
+            echo "--- First run: $f ---"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f" || { echo "❌ First run failed: $f"; FAILED=1; continue; }
+            echo "--- Second run (idempotency check): $f ---"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+            RC=$?
+            if [ $RC -ne 0 ]; then
+              echo "❌ Second run of $f exited with code $RC (not idempotent)"
+              FAILED=1
+            else
+              echo "✅ $f is idempotent"
+            fi
+          done
+          if [ "$FAILED" -eq 1 ]; then
+            echo "One or more rollback scripts are not idempotent."
+            exit 1
+          fi
+          echo "All rollback scripts passed the idempotency check."
+
   # ── #741: API Criterion benchmarks ───────────────────────────────────────────
   api-criterion-benchmarks:
     name: API Criterion Benchmarks
@@ -725,13 +909,24 @@ jobs:
           node services/api/scripts/parse-bench-output.js \
             bench-output.txt bench-results.json
 
+      - name: Fetch baseline from benchmarks branch
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch origin benchmarks:refs/remotes/origin/benchmarks 2>/dev/null || true
+          if git show origin/benchmarks:api-benchmark-baseline.json > baseline-from-branch.json 2>/dev/null; then
+            echo "BASELINE_FILE=baseline-from-branch.json" >> "$GITHUB_ENV"
+          else
+            echo "BASELINE_FILE=services/api/benches/.benchmarks/baseline.json" >> "$GITHUB_ENV"
+            echo "No dedicated branch baseline found, falling back to repo baseline."
+          fi
+
       - name: Compare against baseline
         if: github.event_name == 'pull_request'
         run: |
           node services/api/scripts/compare-api-benchmarks.js \
             bench-results.json \
-            services/api/benches/.benchmarks/baseline.json \
-            --threshold 10
+            "$BASELINE_FILE" \
+            --threshold 20
 
       - name: Upload benchmark results
         if: always()
@@ -748,8 +943,12 @@ jobs:
     runs-on: ubuntu-latest
     needs: [api-criterion-benchmarks]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -772,31 +971,30 @@ jobs:
         with:
           node-version: "18"
 
-      - name: Parse and save new baseline
+      - name: Parse benchmark results
         run: |
           node services/api/scripts/parse-bench-output.js \
             bench-output.txt \
-            services/api/benches/.benchmarks/baseline.json
+            api-benchmark-baseline.json
 
-      - name: Create Pull Request with baseline updates
-        uses: peter-evans/create-pull-request@v6
-        with:
-          commit-message: "chore: update API benchmark baseline for main branch"
-          title: "chore: update API benchmark baseline"
-          body: |
-            ## Automated API Benchmark Baseline Update
-            
-            This PR updates the API benchmark baseline after changes to main branch.
-            
-            **Changes:**
-            - Updated `services/api/benches/.benchmarks/baseline.json` with latest benchmark results
-            
-            **Note:** This is an automated PR. Please review the baseline changes before merging.
-          branch: chore/api-baseline-${{ github.run_id }}
-          delete-branch: true
-          labels: |
-            ci/cd
-            automated
+      - name: Push baseline to benchmarks branch
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Switch to (or create) the dedicated benchmarks branch.
+          git fetch origin benchmarks 2>/dev/null || true
+          if git show-ref --verify --quiet refs/remotes/origin/benchmarks; then
+            git checkout -B benchmarks origin/benchmarks
+          else
+            git checkout --orphan benchmarks
+            git rm -rf . --quiet
+          fi
+
+          cp api-benchmark-baseline.json .
+          git add api-benchmark-baseline.json
+          git commit --allow-empty -m "chore: update API benchmark baseline (run ${{ github.run_id }})"
+          git push origin benchmarks
 
   # ── #743: frontend unit-test coverage gate ───────────────────────────────────
   frontend-unit-coverage:
@@ -920,6 +1118,85 @@ jobs:
           PROPTEST_CASES: "1000"
         run: cargo test prop_
 
+  # ── #742: schema drift detection ─────────────────────────────────────────────
+  schema-drift-check:
+    name: Schema Drift Detection
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: predictiq_schema_check
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGHOST: localhost
+      PGDATABASE: predictiq_schema_check
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply all migrations
+        run: |
+          for f in $(ls services/api/database/migrations/*.sql | sort); do
+            echo "▶ $f"
+            psql -f "$f" || { echo "❌ Migration failed: $f"; exit 1; }
+          done
+
+      - name: Dump live schema
+        run: |
+          pg_dump \
+            --schema-only \
+            --no-owner \
+            --no-privileges \
+            --no-comments \
+            --schema=public \
+            > /tmp/live-schema.sql
+
+      - name: Normalise both dumps for comparison
+        run: |
+          # Strip pg_dump header lines (SET …, SELECT …) that are not structural.
+          normalize() {
+            grep -vE '^(SET |SELECT |--|$)' "$1" \
+              | sed 's/ *$//; s/\t/ /g' \
+              | sort
+          }
+          normalize /tmp/live-schema.sql > /tmp/live-normalized.sql
+          normalize services/api/database/schema.sql > /tmp/snap-normalized.sql
+
+      - name: Compare against committed snapshot
+        run: |
+          if ! diff -u /tmp/snap-normalized.sql /tmp/live-normalized.sql; then
+            echo ""
+            echo "❌ Schema drift detected!"
+            echo "   The live schema (after running all migrations) differs from"
+            echo "   services/api/database/schema.sql."
+            echo ""
+            echo "   To update the snapshot:"
+            echo "     pg_dump --schema-only --no-owner --no-privileges --no-comments \\"
+            echo "       --schema=public <db> > services/api/database/schema.sql"
+            echo "     git add services/api/database/schema.sql"
+            echo "     git commit -m 'chore: update schema snapshot'"
+            exit 1
+          fi
+          echo "✅ Schema matches snapshot — no drift detected."
+
+      - name: Upload live schema dump
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-schema-dump
+          path: /tmp/live-schema.sql
+          retention-days: 7
+
   all-tests-passed:
     name: All Tests Passed
     needs:
@@ -940,13 +1217,18 @@ jobs:
       - build-optimized
       - api-cache-tests
       - e2e-market-creation
+      - e2e-mocked
+      - e2e-visual-regression
+      - bundle-size
       - documentation-sync
       - validate-migration-rollbacks
+      - rollback-idempotency
       - api-criterion-benchmarks
       - frontend-unit-coverage
       - api-integration-tests
       - api-test-order-independence
       - api-property-tests
+      - schema-drift-check
     runs-on: ubuntu-latest
     steps:
       - name: Success

@@ -50,10 +50,30 @@ jobs:
           
           echo "✅ All required secrets are configured"
 
+  security-scan:
+    name: Checkov Security Scan
+    runs-on: ubuntu-latest
+    needs: validate-secrets
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: infrastructure/terraform
+          framework: terraform
+          # Fail on HIGH and CRITICAL severity findings only
+          soft_fail_on: LOW,MEDIUM
+          output_format: cli
+          # Skip checks that are intentional/acceptable in this architecture:
+          # CKV_AWS_91  - ALB access logs (cost tradeoff, tracked separately)
+          # CKV2_AWS_28 - WAF on ALB (tracked separately)
+          skip_check: CKV_AWS_91,CKV2_AWS_28
+
   plan:
     name: Terraform Plan
     runs-on: ubuntu-latest
-    needs: validate-secrets
+    needs: [validate-secrets, security-scan]
     strategy:
       matrix:
         environment: [dev, staging, prod]
@@ -71,14 +91,29 @@ jobs:
           role-to-assume: ${{ secrets[format('AWS_ROLE_{0}', matrix.environment)] }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Resolve backend config
+        id: backend
+        run: |
+          case "${{ matrix.environment }}" in
+            staging) echo "file=environments/staging/backend.hcl" >> $GITHUB_OUTPUT ;;
+            prod)    echo "file=environments/production/backend.hcl" >> $GITHUB_OUTPUT ;;
+            *)       echo "file=backend-config.hcl" >> $GITHUB_OUTPUT ;;
+          esac
+
       - name: Terraform Init
         working-directory: infrastructure/terraform
-        run: terraform init
+        run: terraform init -backend-config="${{ steps.backend.outputs.file }}"
+
+      - name: Terraform Validate
+        working-directory: infrastructure/terraform
+        run: terraform validate -var-file="environments/ci-validate.tfvars"
 
       - name: Terraform Plan
         working-directory: infrastructure/terraform
         run: |
           terraform plan \
+            -lock=true \
+            -lock-timeout=5m \
             -var-file="environments/${{ matrix.environment }}.tfvars" \
             -out=tfplan-${{ matrix.environment }}
 
@@ -118,6 +153,15 @@ jobs:
         env:
           PROMETHEUS_URL: ${{ secrets.PROMETHEUS_URL }}
 
+      - name: Resolve backend config
+        id: backend
+        run: |
+          case "${{ matrix.environment }}" in
+            staging) echo "file=environments/staging/backend.hcl" >> $GITHUB_OUTPUT ;;
+            prod)    echo "file=environments/production/backend.hcl" >> $GITHUB_OUTPUT ;;
+            *)       echo "file=backend-config.hcl" >> $GITHUB_OUTPUT ;;
+          esac
+
       - name: Download plan
         uses: actions/download-artifact@v4
         with:
@@ -126,11 +170,11 @@ jobs:
 
       - name: Terraform Init
         working-directory: infrastructure/terraform
-        run: terraform init
+        run: terraform init -backend-config="${{ steps.backend.outputs.file }}"
 
       - name: Terraform Apply
         working-directory: infrastructure/terraform
-        run: terraform apply -auto-approve tfplan-${{ matrix.environment }}
+        run: terraform apply -lock=true -lock-timeout=5m -auto-approve tfplan-${{ matrix.environment }}
 
       - name: Output infrastructure details
         working-directory: infrastructure/terraform

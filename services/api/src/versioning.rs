@@ -39,7 +39,7 @@ pub async fn versioning_middleware(mut req: Request, next: Next) -> Response {
 pub async fn v1_deprecation_middleware(req: Request, next: Next) -> Response {
     tracing::warn!(
         version = "v1",
-        sunset = "Sat, 25 Apr 2026 00:00:00 GMT",
+        sunset = "Sat, 31 Dec 2026 00:00:00 GMT",
         "Deprecated API version v1 called; clients must migrate before sunset"
     );
 
@@ -53,7 +53,7 @@ pub async fn v1_deprecation_middleware(req: Request, next: Next) -> Response {
     // Sunset date per RFC 8594: when v1 will be removed
     headers.insert(
         "Sunset",
-        HeaderValue::from_static("Sat, 25 Apr 2026 00:00:00 GMT"),
+        HeaderValue::from_static("Sat, 31 Dec 2026 00:00:00 GMT"),
     );
     headers.insert(
         header::LINK,
