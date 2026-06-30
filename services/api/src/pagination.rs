@@ -117,6 +117,41 @@ impl<T: Serialize> PageResponse<T> {
 
 pub struct ValidatedPaginationQuery(pub ValidatedPagination);
 
+/// Lightweight raw pagination query used by handlers that do their own
+/// bounds-checking or in-memory slicing.  Axum extracts this directly from
+/// the query string; call `.limit()` / `.cursor()` for the clamped values.
+#[derive(Debug, Clone, Deserialize, Default, utoipa::IntoParams)]
+pub struct PaginationQuery {
+    pub limit: Option<i64>,
+    pub cursor: Option<String>,
+}
+
+impl PaginationQuery {
+    pub fn limit(&self) -> i64 {
+        self.limit.unwrap_or(DEFAULT_LIMIT as i64).max(1).min(MAX_PAGE_LIMIT as i64)
+    }
+
+    pub fn cursor(&self) -> Option<String> {
+        self.cursor.clone()
+    }
+}
+
+/// A single page of results returned by paginated endpoints.
+#[derive(Debug, Serialize)]
+pub struct PaginatedResponse<T: Serialize> {
+    pub items: Vec<T>,
+    pub next_cursor: Option<String>,
+    pub limit: u32,
+    pub has_more: bool,
+}
+
+impl<T: Serialize> PaginatedResponse<T> {
+    pub fn new(items: Vec<T>, next_cursor: Option<String>, limit: u32, has_more: bool) -> Self {
+        Self { items, next_cursor, limit, has_more }
+    }
+}
+
+
 #[axum::async_trait]
 impl<S> axum::extract::FromRequestParts<S> for ValidatedPaginationQuery
 where

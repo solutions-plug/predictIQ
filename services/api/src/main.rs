@@ -92,9 +92,18 @@ async fn main() -> anyhow::Result<()> {
     )?;
 
     // Validate required configuration before proceeding
-    config.validate()?;
+    config.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let metrics = Metrics::new()?;
+
+    // Warn at startup if the OTLP endpoint is unreachable so operators know
+    // that traces are being dropped before any export attempt is made.
+    if let Some(ref endpoint) = config.otlp_endpoint {
+        if !tracing_config::check_otlp_connectivity(endpoint).await {
+            metrics.observe_otel_export_error("unreachable");
+        }
+    }
+
     let cache = RedisCache::new(&config.redis_url).await?;
     let db = Database::new(&config.database_url, cache.clone(), metrics.clone(), &config.db_pool).await?;
     let blockchain = BlockchainClient::new(&config, cache.clone(), metrics.clone())?;
@@ -126,11 +135,26 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Rate-limiter cleanup (fire-and-forget) ────────────────────────────────
     let rate_limiter_cleanup = rate_limiter.clone();
+    let metrics_rate_limiter = metrics.clone();
     tokio::spawn(async move {
+        const WORKER_NAME: &str = "rate_limiter_cleanup";
+        
+        // Set worker status to running
+        metrics_rate_limiter.set_worker_status(WORKER_NAME, true);
+        
         let mut interval = tokio::time::interval(Duration::from_secs(300));
+        let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(30));
+        heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        
         loop {
-            interval.tick().await;
-            rate_limiter_cleanup.cleanup().await;
+            tokio::select! {
+                _ = interval.tick() => {
+                    rate_limiter_cleanup.cleanup().await;
+                }
+                _ = heartbeat_interval.tick() => {
+                    metrics_rate_limiter.set_worker_status(WORKER_NAME, true);
+                }
+            }
         }
     });
 
@@ -153,16 +177,31 @@ async fn main() -> anyhow::Result<()> {
 
     // ── Newsletter cleanup (fire-and-forget) ──────────────────────────────────
     let db_cleanup = state.clone();
+    let metrics_newsletter = state.metrics.clone();
     tokio::spawn(async move {
+        const WORKER_NAME: &str = "newsletter_cleanup";
+        
+        // Set worker status to running
+        metrics_newsletter.set_worker_status(WORKER_NAME, true);
+        
         let mut interval = tokio::time::interval(Duration::from_secs(3600));
+        let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(30));
+        heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        
         loop {
-            interval.tick().await;
-            let ttl = db_cleanup.config.newsletter_token_ttl_secs;
-            let batch = db_cleanup.config.newsletter_cleanup_batch_size;
-            match db_cleanup.db.newsletter_delete_expired_pending(ttl, batch).await {
-                Ok(n) if n > 0 => tracing::info!("[newsletter] cleaned up {n} expired pending subscriptions"),
-                Err(e) => tracing::warn!("[newsletter] cleanup error: {e}"),
-                _ => {}
+            tokio::select! {
+                _ = interval.tick() => {
+                    let ttl = db_cleanup.config.newsletter_token_ttl_secs;
+                    let batch = db_cleanup.config.newsletter_cleanup_batch_size;
+                    match db_cleanup.db.newsletter_delete_expired_pending(ttl, batch).await {
+                        Ok(n) if n > 0 => tracing::info!("[newsletter] cleaned up {n} expired pending subscriptions"),
+                        Err(e) => tracing::warn!("[newsletter] cleanup error: {e}"),
+                        _ => {}
+                    }
+                }
+                _ = heartbeat_interval.tick() => {
+                    metrics_newsletter.set_worker_status(WORKER_NAME, true);
+                }
             }
         }
     });
