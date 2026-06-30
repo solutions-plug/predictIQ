@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use crate::cache::RedisCache;
+use crate::metrics::Metrics;
 
 use anyhow::Context;
 use rand::RngCore;
@@ -29,6 +30,91 @@ use crate::config::Config;
 //  5. The raw token is returned to the caller exactly once (to be embedded
 //     in the email). Only the hash is persisted; a DB breach exposes no
 //     usable tokens.
+
+/// # Rate-limiting policy: fail-closed vs fail-open
+///
+/// ## Why fail-closed?
+///
+/// Security-critical rate limiters (newsletter subscribe, admin endpoints)
+/// **must** fail-closed: when Redis is unavailable the limiter returns
+/// `false` (deny / 429 Too Many Requests) rather than `true` (allow).
+///
+/// Rationale:
+/// - A Redis outage is an abnormal condition. Silently allowing unlimited
+///   requests during an outage turns every Redis failure into an open door
+///   for newsletter-spam abuse or brute-force attacks on admin endpoints.
+/// - The cost of a brief 429 to a legitimate subscriber is far lower than
+///   the cost of a spam flood or enumeration attack.
+/// - Operators are alerted via the `rate_limiter_redis_errors_total` Prometheus
+///   counter, which fires whenever the fail-closed path is taken. A CloudWatch
+///   alarm on this metric gives fast visibility into Redis health.
+///
+/// ## When might fail-open be acceptable?
+///
+/// Fail-open is only appropriate for non-security-critical limiters where
+/// availability is strictly more important than abuse prevention — for example,
+/// a public read-only search endpoint where an occasional spike is harmless.
+/// It must **never** be used for write endpoints, authentication endpoints,
+/// or any path that creates subscriber/user records.
+///
+/// ## Observability
+///
+/// Every Redis error increments `rate_limiter_redis_errors_total{limiter="<name>"}`.
+/// Alert on `increase(rate_limiter_redis_errors_total[5m]) > 0` to detect
+/// Redis degradation before it becomes an outage.
+#[derive(Clone)]
+pub struct IpRateLimiter {
+    pub cache: RedisCache,
+    /// Optional Prometheus metrics handle. When `None` errors are only logged.
+    pub metrics: Option<Metrics>,
+    /// Identifier used in the `limiter` label of `rate_limiter_redis_errors_total`.
+    pub name: String,
+}
+
+impl IpRateLimiter {
+    pub fn new(cache: RedisCache) -> Self {
+        Self {
+            cache,
+            metrics: None,
+            name: "newsletter_subscribe".to_string(),
+        }
+    }
+
+    pub fn with_metrics(cache: RedisCache, metrics: Metrics, name: impl Into<String>) -> Self {
+        Self {
+            cache,
+            metrics: Some(metrics),
+            name: name.into(),
+        }
+    }
+
+    /// Returns `true` if the request is **allowed**, `false` if it should be
+    /// rejected with 429 Too Many Requests.
+    ///
+    /// Uses an atomic Redis Lua script so the counter is consistent across all
+    /// instances. **Fails closed** (returns `false`) if Redis is unavailable —
+    /// see module-level documentation for the security rationale.
+    pub async fn allow(&self, key: &str, max_requests: usize, window: Duration) -> bool {
+        let redis_key = format!("newsletter:ratelimit:v1:{key}");
+        match self.cache.incr_with_ttl(&redis_key, window).await {
+            Ok(count) => count as usize <= max_requests,
+            Err(e) => {
+                // Increment the Prometheus error counter so operators are alerted.
+                if let Some(m) = &self.metrics {
+                    m.observe_rate_limiter_redis_error(&self.name);
+                }
+                tracing::warn!(
+                    error = %e,
+                    limiter = %self.name,
+                    key,
+                    "rate limiter Redis error — failing CLOSED (429) to prevent abuse during outage"
+                );
+                // Fail-closed: deny the request.
+                false
+            }
+        }
+    }
+}
 
 /// Raw token length in bytes. 32 bytes = 256 bits of entropy.
 const TOKEN_BYTES: usize = 32;
@@ -64,35 +150,6 @@ pub enum UnsubscribeTokenResult {
     AlreadyUsed,
     /// Token not found or has expired.
     InvalidOrExpired,
-}
-
-#[derive(Clone)]
-pub struct IpRateLimiter {
-    pub cache: RedisCache,
-}
-
-impl IpRateLimiter {
-    pub fn new(cache: RedisCache) -> Self {
-        Self { cache }
-    }
-
-    /// Returns true if allowed, false if rate limited.
-    /// Uses an atomic Redis Lua script so the counter is consistent across
-    /// all instances. Fails open (returns `true`) if Redis is unavailable.
-    pub async fn allow(&self, key: &str, max_requests: usize, window: Duration) -> bool {
-        let redis_key = format!("newsletter:ratelimit:v1:{key}");
-        match self.cache.incr_with_ttl(&redis_key, window).await {
-            Ok(count) => count as usize <= max_requests,
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    key,
-                    "newsletter rate limiter Redis error; failing open to avoid blocking subscribers"
-                );
-                true
-            }
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -321,6 +378,34 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(1100)).await;
 
         assert!(limiter.allow(key, 1, window).await);
+    }
+
+    /// When Redis is unreachable the limiter must fail CLOSED (return `false`).
+    ///
+    /// This test connects to a port with no Redis listener so every Redis
+    /// operation times out / errors, then asserts that `allow()` returns
+    /// `false` — confirming the fail-closed path and the 429 behaviour.
+    #[tokio::test]
+    async fn limiter_fails_closed_when_redis_unavailable() {
+        // Point at a port that has nothing listening so every Redis call fails.
+        let cache = crate::cache::RedisCache::new("redis://127.0.0.1:16399")
+            .await
+            .expect("cache construction should succeed even with unreachable Redis");
+
+        let metrics = crate::metrics::Metrics::new()
+            .expect("metrics init");
+        let limiter = IpRateLimiter::with_metrics(
+            cache,
+            metrics,
+            "newsletter_subscribe",
+        );
+
+        // Should deny (fail-closed) rather than allow (fail-open)
+        let allowed = limiter.allow("203.0.113.99", 100, Duration::from_secs(60)).await;
+        assert!(
+            !allowed,
+            "rate limiter must fail CLOSED (deny) when Redis is unavailable"
+        );
     }
 
     // -------------------------------------------------------------------------

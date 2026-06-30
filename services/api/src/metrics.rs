@@ -43,6 +43,11 @@ pub struct Metrics {
     db_pool_acquire_duration: HistogramVec,
     rate_limit_rejections: IntCounterVec,
     deprecated_api_calls: IntCounterVec,
+    /// Counts Redis errors encountered by security-critical rate limiters.
+    /// A non-zero rate here means the rate limiter is running in fail-closed
+    /// mode (returning 429) due to Redis unavailability.
+    /// Metric: `rate_limiter_redis_errors_total{limiter="<name>"}`
+    rate_limiter_redis_errors: IntCounterVec,
     /// Counts authentication failures by failure reason.
     /// Labels: `reason` — one of: "invalid_api_key", "expired_token", "missing_credentials".
     auth_failures: IntCounterVec,
@@ -193,6 +198,17 @@ impl Metrics {
         )
         .context("deprecated_api_calls metric")?;
 
+        let rate_limiter_redis_errors = IntCounterVec::new(
+            prometheus::Opts::new(
+                "rate_limiter_redis_errors_total",
+                "Redis errors encountered by security-critical rate limiters. \
+                 A non-zero value means the limiter is fail-closed (returning 429) \
+                 due to Redis unavailability.",
+            ),
+            &["limiter"],
+        )
+        .context("rate_limiter_redis_errors metric")?;
+
         let auth_failures = IntCounterVec::new(
             prometheus::Opts::new(
                 "auth_failures_total",
@@ -213,15 +229,6 @@ impl Metrics {
             "Unix timestamp of the last heartbeat emitted by the sync worker",
         )
         .context("sync_worker_heartbeat_ts metric")?;
-
-        let ledger_gaps = IntCounterVec::new(
-            prometheus::Opts::new(
-                "blockchain_ledger_gaps_total",
-                "Total ledger sequence gaps detected, labelled by gap_type (restart|sync)",
-            ),
-            &["gap_type"],
-        )
-        .context("ledger_gaps metric")?;
 
         let sendgrid_retries = IntCounterVec::new(
             prometheus::Opts::new("sendgrid_retries_total", "SendGrid send retries by reason"),
@@ -282,6 +289,7 @@ impl Metrics {
         registry.register(Box::new(db_pool_acquire_duration.clone()))?;
         registry.register(Box::new(rate_limit_rejections.clone()))?;
         registry.register(Box::new(deprecated_api_calls.clone()))?;
+        registry.register(Box::new(rate_limiter_redis_errors.clone()))?;
         registry.register(Box::new(auth_failures.clone()))?;
         registry.register(Box::new(sync_worker_restarts.clone()))?;
         registry.register(Box::new(sync_worker_heartbeat_ts.clone()))?;
@@ -310,6 +318,7 @@ impl Metrics {
             db_pool_acquire_duration,
             rate_limit_rejections,
             deprecated_api_calls,
+            rate_limiter_redis_errors,
             auth_failures,
             sync_worker_restarts,
             sync_worker_heartbeat_ts,
@@ -448,6 +457,15 @@ impl Metrics {
             .inc();
     }
 
+    /// Increment the Redis-error counter for a named rate limiter.
+    /// Call this whenever the limiter's Redis operation fails and the
+    /// fail-closed path (429) is triggered.
+    pub fn observe_rate_limiter_redis_error(&self, limiter: &str) {
+        self.rate_limiter_redis_errors
+            .with_label_values(&[limiter])
+            .inc();
+    }
+
     /// Increment the auth_failures_total counter.
     ///
     /// `reason` should be one of:
@@ -477,11 +495,6 @@ impl Metrics {
         self.sync_worker_heartbeat_ts.get()
     }
 
-    /// #938: Record a ledger sequence gap.
-    pub fn observe_ledger_gap(&self, gap: u32) {
-        self.ledger_gaps.with_label_values(&["sync"]).inc_by(gap as u64);
-    }
-
     /// Increment the SendGrid retry counter.
     /// `reason` should be "rate_limited" (429) or "server_error" (5xx).
     pub fn observe_sendgrid_retry(&self, reason: &str) {
@@ -507,9 +520,15 @@ impl Metrics {
     /// Call this whenever the circuit breaker transitions state.
     /// state: 0=closed, 1=open, 2=half-open
     pub fn set_cache_circuit_breaker_state(&self, state: i64) {
-        self.cache_circuit_breaker_state.with_label_values(&["closed"]).set(0);
-        self.cache_circuit_breaker_state.with_label_values(&["open"]).set(0);
-        self.cache_circuit_breaker_state.with_label_values(&["half_open"]).set(0);
+        self.cache_circuit_breaker_state
+            .with_label_values(&["closed"])
+            .set(0);
+        self.cache_circuit_breaker_state
+            .with_label_values(&["open"])
+            .set(0);
+        self.cache_circuit_breaker_state
+            .with_label_values(&["half_open"])
+            .set(0);
 
         match state {
             0 => { self.cache_circuit_breaker_state.with_label_values(&["closed"]).set(1); }
