@@ -42,6 +42,9 @@ pub struct Metrics {
     db_pool_connections_idle: IntGaugeVec,
     db_pool_acquire_duration: HistogramVec,
     rate_limit_rejections: IntCounterVec,
+    /// Counts authentication failures by failure reason.
+    /// Labels: `reason` — one of: "invalid_api_key", "expired_token", "missing_credentials".
+    auth_failures: IntCounterVec,
     /// #936: counts how many times the sync worker has been restarted after a panic.
     sync_worker_restarts: prometheus::IntCounter,
     /// #936: timestamp of last heartbeat from the sync worker (unix seconds).
@@ -191,6 +194,15 @@ impl Metrics {
         )
         .context("rate_limit_rejections metric")?;
 
+        let auth_failures = IntCounterVec::new(
+            prometheus::Opts::new(
+                "auth_failures_total",
+                "Authentication failures by reason (invalid_api_key, expired_token, missing_credentials)",
+            ),
+            &["reason"],
+        )
+        .context("auth_failures metric")?;
+
         let sync_worker_restarts = prometheus::IntCounter::new(
             "blockchain_sync_worker_restarts_total",
             "Number of times the blockchain sync worker has been restarted after a panic",
@@ -270,6 +282,7 @@ impl Metrics {
         registry.register(Box::new(db_pool_connections_idle.clone()))?;
         registry.register(Box::new(db_pool_acquire_duration.clone()))?;
         registry.register(Box::new(rate_limit_rejections.clone()))?;
+        registry.register(Box::new(auth_failures.clone()))?;
         registry.register(Box::new(sync_worker_restarts.clone()))?;
         registry.register(Box::new(sync_worker_heartbeat_ts.clone()))?;
         registry.register(Box::new(ledger_gaps.clone()))?;
@@ -297,6 +310,7 @@ impl Metrics {
             db_pool_connections_idle,
             db_pool_acquire_duration,
             rate_limit_rejections,
+            auth_failures,
             sync_worker_restarts,
             sync_worker_heartbeat_ts,
             ledger_gaps,
@@ -427,6 +441,16 @@ impl Metrics {
         self.rate_limit_rejections
             .with_label_values(&[&labels[0]])
             .inc();
+    }
+
+    /// Increment the auth_failures_total counter.
+    ///
+    /// `reason` should be one of:
+    /// - `"invalid_api_key"` — key present but not recognized
+    /// - `"expired_token"`   — token present but expired/invalid
+    /// - `"missing_credentials"` — no key or token supplied at all
+    pub fn observe_auth_failure(&self, reason: &str) {
+        self.auth_failures.with_label_values(&[reason]).inc();
     }
 
     /// #936: Increment the sync worker restart counter.
@@ -596,6 +620,7 @@ mod tests {
         m.observe_tx_eviction(3);
         m.set_dlq_size(7);
         m.set_email_queue_depth(12);
+        m.observe_auth_failure("invalid_api_key");
         m.set_circuit_breaker_state(0);
         m.set_worker_status("test_worker", true);
         let rendered = m.render().expect("render must not fail");
