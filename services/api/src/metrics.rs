@@ -42,6 +42,7 @@ pub struct Metrics {
     db_pool_connections_idle: IntGaugeVec,
     db_pool_acquire_duration: HistogramVec,
     rate_limit_rejections: IntCounterVec,
+    otel_export_errors: IntCounterVec,
     worker_status: IntGaugeVec,
     cache_circuit_breaker_state: IntGaugeVec,
 }
@@ -182,6 +183,15 @@ impl Metrics {
         )
         .context("rate_limit_rejections metric")?;
 
+        let otel_export_errors = IntCounterVec::new(
+            prometheus::Opts::new(
+                "otel_export_errors_total",
+                "OpenTelemetry trace export failures, by reason",
+            ),
+            &["reason"],
+        )
+        .context("otel_export_errors metric")?;
+
         let worker_status = IntGaugeVec::new(
             prometheus::Opts::new(
                 "worker_status",
@@ -216,6 +226,7 @@ impl Metrics {
         registry.register(Box::new(db_pool_connections_idle.clone()))?;
         registry.register(Box::new(db_pool_acquire_duration.clone()))?;
         registry.register(Box::new(rate_limit_rejections.clone()))?;
+        registry.register(Box::new(otel_export_errors.clone()))?;
         registry.register(Box::new(worker_status.clone()))?;
         registry.register(Box::new(cache_circuit_breaker_state.clone()))?;
 
@@ -237,6 +248,7 @@ impl Metrics {
             db_pool_connections_idle,
             db_pool_acquire_duration,
             rate_limit_rejections,
+            otel_export_errors,
             worker_status,
             cache_circuit_breaker_state,
         })
@@ -361,6 +373,13 @@ impl Metrics {
         self.rate_limit_rejections
             .with_label_values(&[&labels[0]])
             .inc();
+    }
+
+    /// Increment the OTEL export error counter.
+    /// Pass `reason = "unreachable"` for startup connectivity failures,
+    /// `reason = "export_failed"` for runtime export errors.
+    pub fn observe_otel_export_error(&self, reason: &str) {
+        self.otel_export_errors.with_label_values(&[reason]).inc();
     }
 
     /// Set worker status to running (1) or stopped (0).

@@ -95,6 +95,15 @@ async fn main() -> anyhow::Result<()> {
     config.validate().map_err(|e| anyhow::anyhow!("{e}"))?;
 
     let metrics = Metrics::new()?;
+
+    // Warn at startup if the OTLP endpoint is unreachable so operators know
+    // that traces are being dropped before any export attempt is made.
+    if let Some(ref endpoint) = config.otlp_endpoint {
+        if !tracing_config::check_otlp_connectivity(endpoint).await {
+            metrics.observe_otel_export_error("unreachable");
+        }
+    }
+
     let cache = RedisCache::new(&config.redis_url).await?;
     let db = Database::new(&config.database_url, cache.clone(), metrics.clone(), &config.db_pool).await?;
     let blockchain = BlockchainClient::new(&config, cache.clone(), metrics.clone())?;

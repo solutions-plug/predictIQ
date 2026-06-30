@@ -1065,6 +1065,95 @@ jobs:
           path: frontend/coverage/
           retention-days: 14
 
+  # ── #971: API integration tests with Docker Compose ─────────────────────────
+  api-integration-tests:
+    name: API Integration Tests (Compose)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-api-integration-${{ hashFiles('services/api/Cargo.lock') }}
+
+      - name: Start test services
+        run: docker compose -f docker-compose.test.yml up -d --wait
+
+      - name: Run integration tests
+        working-directory: services/api
+        env:
+          TEST_DATABASE_URL: postgres://predictiq_test:predictiq_test@localhost:5433/predictiq_test
+          TEST_REDIS_URL: redis://localhost:6380
+          STELLAR_RPC_URL: http://localhost:8080
+        run: cargo test --test '*' -- --test-threads=1
+
+      - name: Tear down test services
+        if: always()
+        run: docker compose -f docker-compose.test.yml down -v
+
+  # ── #972: test-order independence ────────────────────────────────────────────
+  api-test-order-independence:
+    name: API Tests — Order Independence
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-api-order-${{ hashFiles('services/api/Cargo.lock') }}
+
+      - name: Install cargo-nextest
+        run: cargo install cargo-nextest --locked
+
+      - name: Run tests with seed 1 (unit + doc tests)
+        working-directory: services/api
+        run: cargo nextest run --test-threads=1 --rand-rng-seed=1
+
+      - name: Run tests with seed 2 (different order)
+        working-directory: services/api
+        run: cargo nextest run --test-threads=1 --rand-rng-seed=2
+
+  # ── #977: property-based tests ───────────────────────────────────────────────
+  api-property-tests:
+    name: API Property-Based Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-api-proptest-${{ hashFiles('services/api/Cargo.lock') }}
+
+      - name: Run property tests (1000 cases each)
+        working-directory: services/api
+        env:
+          PROPTEST_CASES: "1000"
+        run: cargo test prop_
+
   openapi-drift-check:
     name: OpenAPI Spec Drift Check
     runs-on: ubuntu-latest
@@ -1246,6 +1335,9 @@ jobs:
       - rollback-idempotency
       - api-criterion-benchmarks
       - frontend-unit-coverage
+      - api-integration-tests
+      - api-test-order-independence
+      - api-property-tests
       - schema-drift-check
     runs-on: ubuntu-latest
     steps:
