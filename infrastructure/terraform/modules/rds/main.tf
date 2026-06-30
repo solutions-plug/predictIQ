@@ -33,7 +33,13 @@ variable "allocated_storage" {
 }
 
 variable "backup_retention" {
-  type = number
+  type    = number
+  default = 7
+}
+
+variable "deletion_protection" {
+  type    = bool
+  default = false
 }
 
 variable "ecs_tasks_sg_id" {
@@ -98,7 +104,8 @@ resource "aws_db_instance" "main" {
   backup_retention_period = var.backup_retention
   backup_window           = "03:00-04:00"
   maintenance_window      = "mon:04:00-mon:05:00"
-  
+  deletion_protection     = var.deletion_protection
+
   multi_az               = var.environment == "prod" ? true : false
   publicly_accessible    = false
   skip_final_snapshot    = var.environment != "prod"

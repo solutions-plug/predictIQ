@@ -589,6 +589,12 @@ jobs:
         run: cargo build --target wasm32-unknown-unknown --release
         working-directory: contracts/predict-iq
 
+      - name: Print unoptimized WASM size
+        run: |
+          size=$(wc -c < target/wasm32-unknown-unknown/release/predict_iq.wasm)
+          echo "Unoptimized WASM size: $size bytes (budget: ${{ env.WASM_SIZE_LIMIT_BYTES }} bytes)"
+        working-directory: contracts/predict-iq
+
       - name: Optimize WASM
         run: |
           soroban contract optimize \
@@ -605,6 +611,36 @@ jobs:
             exit 1
           fi
         working-directory: contracts/predict-iq
+
+  contract-fuzz:
+    name: Contract Fuzz Tests (libFuzzer, 60 s per target)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nightly Rust + cargo-fuzz
+        run: |
+          rustup toolchain install nightly
+          cargo +nightly install cargo-fuzz
+
+      - name: Fuzz fuzz_place_bet
+        run: cargo +nightly fuzz run fuzz_place_bet -- -max_total_time=60
+        working-directory: contracts/predict-iq
+
+      - name: Fuzz fuzz_resolve_market
+        run: cargo +nightly fuzz run fuzz_resolve_market -- -max_total_time=60
+        working-directory: contracts/predict-iq
+
+      - name: Fuzz fuzz_withdraw
+        run: cargo +nightly fuzz run fuzz_withdraw -- -max_total_time=60
+        working-directory: contracts/predict-iq
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes
+          path: contracts/predict-iq/fuzz/artifacts/
 
   api-cache-tests:
     name: API Cache Tests (Redis)
@@ -1029,6 +1065,168 @@ jobs:
           path: frontend/coverage/
           retention-days: 14
 
+  # ── #971: API integration tests with Docker Compose ─────────────────────────
+  api-integration-tests:
+    name: API Integration Tests (Compose)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-api-integration-${{ hashFiles('services/api/Cargo.lock') }}
+
+      - name: Start test services
+        run: docker compose -f docker-compose.test.yml up -d --wait
+
+      - name: Run integration tests
+        working-directory: services/api
+        env:
+          TEST_DATABASE_URL: postgres://predictiq_test:predictiq_test@localhost:5433/predictiq_test
+          TEST_REDIS_URL: redis://localhost:6380
+          STELLAR_RPC_URL: http://localhost:8080
+        run: cargo test --test '*' -- --test-threads=1
+
+      - name: Tear down test services
+        if: always()
+        run: docker compose -f docker-compose.test.yml down -v
+
+  # ── #972: test-order independence ────────────────────────────────────────────
+  api-test-order-independence:
+    name: API Tests — Order Independence
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-api-order-${{ hashFiles('services/api/Cargo.lock') }}
+
+      - name: Install cargo-nextest
+        run: cargo install cargo-nextest --locked
+
+      - name: Run tests with seed 1 (unit + doc tests)
+        working-directory: services/api
+        run: cargo nextest run --test-threads=1 --rand-rng-seed=1
+
+      - name: Run tests with seed 2 (different order)
+        working-directory: services/api
+        run: cargo nextest run --test-threads=1 --rand-rng-seed=2
+
+  # ── #977: property-based tests ───────────────────────────────────────────────
+  api-property-tests:
+    name: API Property-Based Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-api-proptest-${{ hashFiles('services/api/Cargo.lock') }}
+
+      - name: Run property tests (1000 cases each)
+        working-directory: services/api
+        env:
+          PROPTEST_CASES: "1000"
+        run: cargo test prop_
+
+  openapi-drift-check:
+    name: OpenAPI Spec Drift Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-api-openapi-${{ hashFiles('services/api/Cargo.lock') }}
+
+      - name: Build generate-openapi binary
+        run: cargo build --bin generate-openapi
+        working-directory: services/api
+
+      - name: Generate OpenAPI spec from code annotations
+        run: cargo run --bin generate-openapi > /tmp/generated-openapi.yaml
+        working-directory: services/api
+
+      - name: Compare path sets (committed vs generated)
+        run: |
+          python3 << 'EOF'
+          import yaml
+          import sys
+
+          with open('/tmp/generated-openapi.yaml') as f:
+              generated = yaml.safe_load(f)
+
+          with open('services/api/openapi.yaml') as f:
+              committed = yaml.safe_load(f)
+
+          gen_paths = set(generated.get('paths', {}).keys())
+          com_paths = set(committed.get('paths', {}).keys())
+
+          missing_in_committed = gen_paths - com_paths
+          extra_in_committed   = com_paths - gen_paths
+
+          failed = False
+
+          if missing_in_committed:
+              print('❌ Paths annotated in code but missing from openapi.yaml:')
+              for p in sorted(missing_in_committed):
+                  print(f'   {p}')
+              failed = True
+
+          if extra_in_committed:
+              print('⚠️  Paths in openapi.yaml with no matching code annotation (may be stale):')
+              for p in sorted(extra_in_committed):
+                  print(f'   {p}')
+
+          if failed:
+              print()
+              print('Run the following to regenerate and commit the spec:')
+              print('  cd services/api && cargo run --bin generate-openapi > openapi.yaml')
+              sys.exit(1)
+
+          print(f'✅ OpenAPI spec is in sync ({len(gen_paths)} paths)')
+          EOF
+
+      - name: Fail if out of sync
+        if: failure()
+        run: |
+          echo "openapi.yaml is out of sync with the code annotations."
+          echo "See the step above for the list of missing / extra paths."
+          exit 1
+
   # ── #742: schema drift detection ─────────────────────────────────────────────
   schema-drift-check:
     name: Schema Drift Detection
@@ -1132,10 +1330,14 @@ jobs:
       - e2e-visual-regression
       - bundle-size
       - documentation-sync
+      - openapi-drift-check
       - validate-migration-rollbacks
       - rollback-idempotency
       - api-criterion-benchmarks
       - frontend-unit-coverage
+      - api-integration-tests
+      - api-test-order-independence
+      - api-property-tests
       - schema-drift-check
     runs-on: ubuntu-latest
     steps:

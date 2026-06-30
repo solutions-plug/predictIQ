@@ -136,7 +136,7 @@ impl Database {
     /// Snapshot pool size/idle into Prometheus gauges.
     /// Call this just before rendering `/metrics` so the values are current.
     pub fn record_pool_metrics(&self) {
-        self.metrics.record_pool_metrics(self.pool.size(), self.pool.num_idle());
+        self.metrics.observe_pool_connections("primary", self.pool.size() as i64, self.pool.num_idle() as i64);
     }
 
     pub async fn new(
@@ -185,14 +185,27 @@ impl Database {
     }
 
     /// Run `fut` with the configured query timeout.
+    /// On success, records the query duration in the `db_query_duration_seconds` histogram.
     /// On timeout, increments the `db_timeouts` metric and logs a warning.
+    /// On pool exhaustion, increments the `db_pool_exhaustion_total` counter.
     async fn with_timeout<F, T>(&self, operation: &str, fut: F) -> Result<T, DbError>
     where
         F: std::future::Future<Output = Result<T, sqlx::Error>>,
     {
+        let start = std::time::Instant::now();
         match tokio::time::timeout(self.query_timeout, fut).await {
-            Ok(Ok(v)) => Ok(v),
-            Ok(Err(e)) => Err(DbError::Other(anyhow::Error::from(e))),
+            Ok(Ok(v)) => {
+                self.metrics
+                    .observe_db_query_duration(operation, start.elapsed());
+                Ok(v)
+            }
+            Ok(Err(e)) => {
+                if matches!(&e, sqlx::Error::PoolTimedOut) {
+                    self.metrics.observe_db_pool_exhaustion("api");
+                    return Err(DbError::PoolExhausted);
+                }
+                Err(DbError::Other(anyhow::Error::from(e)))
+            }
             Err(_elapsed) => {
                 self.metrics.observe_db_timeout(operation);
                 tracing::warn!(operation, timeout_secs = ?self.query_timeout, "db query timed out");
@@ -920,7 +933,6 @@ impl Database {
         hasher.update(raw_key.as_bytes());
         format!("{:x}", hasher.finalize())
     }
-}
 }
 
 #[cfg(test)]
