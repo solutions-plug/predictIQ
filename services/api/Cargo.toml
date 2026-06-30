@@ -3,6 +3,14 @@ name = "predictiq-api"
 version = "0.1.0"
 edition = "2021"
 publish = false
+# Minimum Supported Rust Version (MSRV).
+# Determined by the most-restrictive dependency in this crate:
+#   - axum 0.7 requires Rust ≥ 1.75
+#   - sqlx 0.8 requires Rust ≥ 1.75
+#   - tower-http 0.6 requires Rust ≥ 1.75
+# The root Dockerfile already pins rust:1.75-slim for production builds.
+# See CONTRIBUTING.md for the MSRV policy.
+rust-version = "1.75"
 
 [[bin]]
 name = "predictiq-api"

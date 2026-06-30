@@ -5,6 +5,9 @@
   "private": true,
   "main": "dist/TTSService.js",
   "types": "dist/TTSService.d.ts",
+  "engines": {
+    "node": ">=20.0.0 <21.0.0"
+  },
   "scripts": {
     "build": "tsc",
     "dev": "ts-node src/server.ts",
@@ -25,12 +28,14 @@
     "@opentelemetry/sdk-node": "^0.219.0",
     "@opentelemetry/semantic-conventions": "^1.41.1",
     "express": "^5.2.1",
-    "express-rate-limit": "^7.5.0"
+    "express-rate-limit": "^7.5.0",
+    "opossum": "^8.3.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/jest": "30.0.0",
     "@types/node": "^26.0.1",
+    "@types/opossum": "^8.1.8",
     "jest": "^30.4.2",
     "ts-jest": "^29.4.11",
     "ts-node": "^10.9.0",
