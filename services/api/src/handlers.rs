@@ -27,7 +27,14 @@ pub struct ApiError {
 
 impl ApiError {
     pub fn internal(err: anyhow::Error) -> Self {
+        // Log the full error chain for debugging, then record it on the active OTel span
+        // so traces carry the root cause even though the HTTP response is sanitised.
         tracing::error!(error = %err, "internal server error");
+        {
+            use tracing_opentelemetry::OpenTelemetrySpanExt;
+            tracing::Span::current()
+                .set_status(opentelemetry::trace::Status::error(format!("{err:#}")));
+        }
         Self {
             code: "INTERNAL_ERROR",
             message: "An internal error occurred.".to_string(),
@@ -110,6 +117,8 @@ pub struct FeaturedMarketView {
     pub resolved_outcome: Option<u32>,
 }
 
+/// Legacy `/health` endpoint — retained for backward compatibility.
+/// Returns 200 when healthy and 503 when any dependency is down.
 pub async fn health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl IntoResponse {
     use crate::cache::CircuitState;
     use crate::correlation::REQUEST_ID_HEADER;
@@ -134,6 +143,7 @@ pub async fn health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> i
             "circuit_breaker": cb_state,
             "pool_size": pool.size,
             "pool_available": pool.available,
+            "status": "ok",
         },
         "db": {
             "status": "ok",
@@ -142,16 +152,19 @@ pub async fn health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> i
             "blockchain_sync": "running",
             "blockchain_monitor": "running",
             "email_queue": "running",
-            "rate_limiter_cleanup": "running"
         }
     });
 
+    let mut degraded = false;
+
     if state.cache.ping().await.is_err() {
+        degraded = true;
         health_status["status"] = "degraded".into();
         health_status["redis"]["status"] = "unhealthy".into();
     }
 
     if state.db.ping().await.is_err() {
+        degraded = true;
         health_status["status"] = "degraded".into();
         health_status["db"]["status"] = "unhealthy".into();
     }
@@ -160,7 +173,47 @@ pub async fn health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> i
         health_status["workers"]["email_queue_processing"] = processing_count.into();
     }
 
-    (StatusCode::OK, Json(health_status))
+    let status_code = if degraded {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::OK
+    };
+    (status_code, Json(health_status))
+}
+
+/// `/health/live` — lightweight liveness probe.
+/// Returns 200 as long as the process is running; does not check dependencies.
+pub async fn health_live() -> impl IntoResponse {
+    Json(serde_json::json!({
+        "status": "ok",
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    }))
+}
+
+/// `/health/ready` — readiness probe checked by the load balancer.
+/// Returns 200 when all dependencies are reachable, 503 otherwise.
+pub async fn health_ready(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let db_ok = state.db.ping().await.is_ok();
+    let redis_ok = state.cache.ping().await.is_ok();
+    let ready = db_ok && redis_ok;
+
+    let status_code = if ready {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+
+    (
+        status_code,
+        Json(serde_json::json!({
+            "ready": ready,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "checks": {
+                "db": if db_ok { "ok" } else { "unhealthy" },
+                "redis": if redis_ok { "ok" } else { "unhealthy" },
+            }
+        })),
+    )
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1104,4 +1157,36 @@ pub struct AuditLogsQuery {
 pub struct AuditStatisticsQuery {
     pub from: Option<String>,
     pub to: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::StatusCode;
+
+    /// The HTTP response body from ApiError::internal must never contain the
+    /// underlying error message — only a generic sanitised string.
+    /// The root cause is emitted to tracing (and therefore OTel spans) instead.
+    #[test]
+    fn internal_error_response_body_does_not_leak_cause() {
+        let secret_detail = "secret db password at host db.internal:5432";
+        let err = anyhow::anyhow!(secret_detail);
+        let api_err = ApiError::internal(err);
+
+        let json = serde_json::to_string(&api_err).unwrap();
+        assert_eq!(api_err.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(api_err.message, "An internal error occurred.");
+        assert!(!json.contains("secret"), "response must not leak internal error details");
+        assert!(!json.contains("db.internal"), "response must not leak internal hostnames");
+    }
+
+    /// ApiError::internal should preserve the error code and HTTP status independently
+    /// of what the underlying error contains.
+    #[test]
+    fn internal_error_has_correct_code_and_status() {
+        let err = anyhow::anyhow!("something broke");
+        let api_err = ApiError::internal(err);
+        assert_eq!(api_err.code, "INTERNAL_ERROR");
+        assert_eq!(api_err.status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
 }

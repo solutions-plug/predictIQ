@@ -13,7 +13,7 @@
 //! All four commands execute atomically via a Lua script.
 
 use axum::{
-    extract::State,
+    extract::{ConnectInfo, State},
     http::{HeaderMap, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -93,7 +93,7 @@ pub async fn check_rate_limit(
         .as_millis() as u64;
 
     let window_start_ms = now_ms.saturating_sub(config.window_seconds * 1_000);
-    let member = format!("{}-{}", now_ms, fastrand::u64(..));
+    let member = format!("{}-{}", now_ms, uuid::Uuid::new_v4().as_u128());
     let redis_key = format!("{}:{}:{}", config.key_prefix, client_key, config.window_seconds);
 
     let script = deadpool_redis::redis::Script::new(SLIDING_WINDOW_SCRIPT);
@@ -159,6 +159,93 @@ fn client_key_from_headers(headers: &HeaderMap) -> String {
         .and_then(|s| s.split(',').next())
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Redis-backed global rate limit middleware (100 req/min per IP).
+/// Replaces the former in-memory `global_rate_limit_middleware` from `security.rs`
+/// so limits are shared across all API instances.
+pub async fn global_rate_limit_middleware(
+    State(state): State<Arc<crate::AppState>>,
+    headers: HeaderMap,
+    connect_info: Option<ConnectInfo<std::net::SocketAddr>>,
+    req: axum::extract::Request,
+    next: Next,
+) -> Response {
+    use crate::security::extract_client_ip_cidrs;
+    let ip = extract_client_ip_cidrs(
+        &headers,
+        connect_info.as_ref(),
+        state.config.trust_proxy,
+        &state.config.trusted_proxy_cidrs,
+    );
+    let config = RateLimitConfig {
+        max_requests:   100,
+        window_seconds: 60,
+        key_prefix:     "global".to_string(),
+    };
+    let pool = Arc::new(state.cache.redis_pool());
+    match check_rate_limit(&pool, &config, &ip).await {
+        Ok(_) => next.run(req).await,
+        Err(retry_after) => rate_limit_response(retry_after, &config),
+    }
+}
+
+/// Redis-backed newsletter route rate limit middleware.
+/// Applied per-IP using the newsletter-specific limits from config.
+pub async fn newsletter_rate_limit_middleware(
+    State(state): State<Arc<crate::AppState>>,
+    headers: HeaderMap,
+    req: axum::extract::Request,
+    next: Next,
+) -> Response {
+    let client_key = client_key_from_headers(&headers);
+    let config = RateLimitConfig {
+        max_requests:   state.config.newsletter_rate_limit_max as u64,
+        window_seconds: state.config.newsletter_rate_limit_window_secs,
+        key_prefix:     "newsletter".to_string(),
+    };
+    let pool = Arc::new(state.cache.redis_pool());
+    match check_rate_limit(&pool, &config, &client_key).await {
+        Ok(_) => next.run(req).await,
+        Err(retry_after) => rate_limit_response(retry_after, &config),
+    }
+}
+
+/// Redis-backed admin route rate limit middleware (60 req/min per IP).
+pub async fn admin_rate_limit_middleware(
+    State(state): State<Arc<crate::AppState>>,
+    headers: HeaderMap,
+    req: axum::extract::Request,
+    next: Next,
+) -> Response {
+    let client_key = client_key_from_headers(&headers);
+    let config = RateLimitConfig {
+        max_requests:   60,
+        window_seconds: 60,
+        key_prefix:     "admin".to_string(),
+    };
+    let pool = Arc::new(state.cache.redis_pool());
+    match check_rate_limit(&pool, &config, &client_key).await {
+        Ok(_) => next.run(req).await,
+        Err(retry_after) => rate_limit_response(retry_after, &config),
+    }
+}
+
+fn rate_limit_response(retry_after: u64, config: &RateLimitConfig) -> Response {
+    let body = RateLimitError {
+        error:   "rate_limit_exceeded",
+        message: format!(
+            "Rate limit of {} requests per {}s exceeded. Retry after {} seconds.",
+            config.max_requests, config.window_seconds, retry_after
+        ),
+        retry_after,
+    };
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [("Retry-After", retry_after.to_string())],
+        Json(body),
+    )
+        .into_response()
 }
 
 #[cfg(test)]

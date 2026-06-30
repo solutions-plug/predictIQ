@@ -9,7 +9,7 @@ use predictiq_api::{
     idempotency, correlation, versioning, validation, rate_limit, audit_middleware,
     metrics::Metrics,
     newsletter::IpRateLimiter,
-    security::{self, ApiKeyAuth, IpWhitelist, MetricsAuthConfig, RateLimiter},
+    security::{self, ApiKeyAuth, IpWhitelist, MetricsAuthConfig},
     shutdown::{self as shutdown, wait_for_signal, ShutdownCoordinator},
     tracing_config, compression,
     AppState,
@@ -97,7 +97,7 @@ async fn main() -> anyhow::Result<()> {
     let metrics = Metrics::new()?;
     let cache = RedisCache::new(&config.redis_url).await?;
     let db = Database::new(&config.database_url, cache.clone(), metrics.clone(), &config.db_pool).await?;
-    let blockchain = BlockchainClient::new(&config, cache.clone(), metrics.clone())?;
+    let blockchain = BlockchainClient::new(&config, cache.clone(), db.clone(), metrics.clone())?;
     blockchain.validate_network_passphrase().await?;
 
     let email_service = EmailService::new(config.clone())?;
@@ -107,7 +107,6 @@ async fn main() -> anyhow::Result<()> {
 
     let bind_addr = config.bind_addr;
 
-    let rate_limiter = Arc::new(RateLimiter::new());
     let api_key_auth = Arc::new(ApiKeyAuth::new(config.api_keys.clone()));
     let ip_whitelist = Arc::new(IpWhitelist::new(config.admin_whitelist_ips.clone()));
     let config_trust_proxy = config.trust_proxy;
@@ -119,20 +118,9 @@ async fn main() -> anyhow::Result<()> {
     // delaying exit, so the email drain timeout defaults to 60 s.
     //
     // Blockchain workers (sync + tx-monitor) use the global coordinator.
-    // The rate-limiter cleanup and newsletter cleanup tasks are fire-and-forget
-    // (low-risk, no persistent state) so they are not tracked.
+    // The newsletter cleanup task is fire-and-forget (low-risk) so it is not tracked.
     let email_coordinator = ShutdownCoordinator::new(1);
     let coordinator = ShutdownCoordinator::new(2);
-
-    // ── Rate-limiter cleanup (fire-and-forget) ────────────────────────────────
-    let rate_limiter_cleanup = rate_limiter.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(300));
-        loop {
-            interval.tick().await;
-            rate_limiter_cleanup.cleanup().await;
-        }
-    });
 
     let state = Arc::new(AppState {
         config,
@@ -148,6 +136,10 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // ── Blockchain background workers ─────────────────────────────────────────
+    // Restore watched transactions from the database before workers start polling.
+    if let Err(e) = state.blockchain.load_watched_transactions().await {
+        tracing::warn!(error = %e, "failed to restore watched transactions from database; starting with empty watch list");
+    }
     let _blockchain_handles = Arc::new(state.blockchain.clone())
         .start_background_tasks(&coordinator);
 
@@ -187,8 +179,14 @@ async fn main() -> anyhow::Result<()> {
     let cors_layer = build_cors_layer(&state.config.cors);
 
     // ── Routes ────────────────────────────────────────────────────────────────
-    let public_routes = Router::new()
+    // Health probes bypass rate limiting so the load balancer is never gated.
+    let health_routes = Router::new()
         .route("/health", get(handlers::health))
+        .route("/health/live", get(handlers::health_live))
+        .route("/health/ready", get(handlers::health_ready))
+        .with_state(state.clone());
+
+    let public_routes = Router::new()
         .route("/api/v1/blockchain/health", get(handlers::blockchain_health))
         .route("/api/v1/blockchain/markets/:market_id", get(handlers::blockchain_market_data))
         .route("/api/v1/blockchain/stats", get(handlers::blockchain_platform_stats))
@@ -202,8 +200,8 @@ async fn main() -> anyhow::Result<()> {
         .layer(TraceLayer::new_for_http())
         .layer(middleware::from_fn(versioning::versioning_middleware))
         .layer(middleware::from_fn_with_state(
-            (rate_limiter.clone(), security::TrustProxy(config_trust_proxy)),
-            security::global_rate_limit_middleware,
+            state.clone(),
+            rate_limit::global_rate_limit_middleware,
         ))
         .with_state(state.clone());
 
@@ -325,7 +323,7 @@ async fn main() -> anyhow::Result<()> {
         ))
         .layer(middleware::from_fn_with_state(api_key_auth.clone(), security::api_key_middleware))
         .layer(middleware::from_fn_with_state(
-            rate_limiter.clone(),
+            state.clone(),
             rate_limit::admin_rate_limit_middleware,
         ))
         .layer(middleware::from_fn_with_state(state.clone(), audit_middleware::audit_logging_middleware))
@@ -334,6 +332,7 @@ async fn main() -> anyhow::Result<()> {
         .with_state(state.clone());
 
     let app = Router::new()
+        .merge(health_routes)
         .merge(public_routes)
         .merge(metrics_routes)
         .merge(newsletter_routes)
