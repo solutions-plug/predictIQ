@@ -71,15 +71,12 @@ Authorization: Bearer YOUR_API_KEY
 
 ## Error Handling
 
-All errors are returned as JSON with the following structure:
+All errors are returned as JSON with the following flat structure:
 
 ```json
 {
-  "error": {
-    "code": "ERROR_CODE",
-    "message": "Human-readable error message",
-    "details": {}
-  }
+  "code": "ERROR_CODE",
+  "message": "Human-readable error message"
 }
 ```
 
@@ -87,30 +84,22 @@ All errors are returned as JSON with the following structure:
 
 | Code | HTTP Status | Description |
 |------|-------------|-------------|
-| INVALID_REQUEST | 400 | Request validation failed |
-| UNAUTHORIZED | 401 | Authentication required or failed |
-| FORBIDDEN | 403 | Insufficient permissions |
+| BAD_REQUEST | 400 | Request validation failed |
 | NOT_FOUND | 404 | Resource not found |
 | CONFLICT | 409 | Resource conflict (e.g., duplicate) |
 | RATE_LIMITED | 429 | Rate limit exceeded |
+| SERVICE_UNAVAILABLE | 503 | Upstream dependency unavailable |
 | INTERNAL_ERROR | 500 | Internal server error |
 
 ## Contract Error Codes
 
 When a blockchain endpoint proxies a Soroban contract call that fails, the API wraps the
-contract error in the standard error envelope with `code` set to `CONTRACT_ERROR` and a
-`details.contract_code` field containing the numeric error code.
+contract error with `code` set to `CONTRACT_ERROR`.
 
 ```json
 {
-  "error": {
-    "code": "CONTRACT_ERROR",
-    "message": "The market has been closed and no longer accepts bets or updates.",
-    "details": {
-      "contract_code": 103,
-      "variant": "MarketClosed"
-    }
-  }
+  "code": "CONTRACT_ERROR",
+  "message": "The market has been closed and no longer accepts bets or updates."
 }
 ```
 
@@ -163,9 +152,8 @@ Requests with `limit > 100` receive **400 Bad Request**:
 
 ```json
 {
-  "error": "limit_exceeded",
-  "message": "limit 500 exceeds the maximum allowed value of 100.",
-  "max_limit": 100
+  "code": "BAD_REQUEST",
+  "message": "limit 500 exceeds the maximum allowed value of 100."
 }
 ```
 
