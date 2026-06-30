@@ -1,0 +1,82 @@
+name: OpenAPI Spec Validation
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "services/api/openapi.yaml"
+      - "services/api/src/**"
+      - "services/api/tests/openapi_contract_test.rs"
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "services/api/openapi.yaml"
+      - "services/api/src/**"
+      - "services/api/tests/openapi_contract_test.rs"
+
+jobs:
+  spectral-lint:
+    name: Spectral — OpenAPI structural lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "18"
+
+      - name: Install Spectral
+        run: npm install -g @stoplight/spectral-cli
+
+      - name: Lint openapi.yaml
+        run: spectral lint services/api/openapi.yaml --ruleset @stoplight/spectral-oas
+
+      - name: Fail on errors
+        if: failure()
+        run: |
+          echo "Spectral found structural issues in services/api/openapi.yaml."
+          echo "Run 'spectral lint services/api/openapi.yaml --ruleset @stoplight/spectral-oas' locally to see details."
+          exit 1
+
+  contract-tests:
+    name: OpenAPI Contract Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-api-openapi-${{ hashFiles('services/api/Cargo.lock') }}
+
+      - name: Run OpenAPI contract tests
+        run: cargo test --test openapi_contract_test -- --nocapture
+        working-directory: services/api
+
+      - name: Fail if spec and routes diverge
+        if: failure()
+        run: |
+          echo "OpenAPI contract tests failed."
+          echo "The spec (services/api/openapi.yaml) and SPEC_ROUTES in"
+          echo "services/api/tests/openapi_contract_test.rs have diverged."
+          echo ""
+          echo "To fix:"
+          echo "  1. If you added/removed a route in Rust: update openapi.yaml to match."
+          echo "  2. If you updated openapi.yaml: update SPEC_ROUTES in the contract test."
+          exit 1
+
+  all-openapi-checks-passed:
+    name: All OpenAPI Checks Passed
+    needs: [spectral-lint, contract-tests]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Success
+        run: echo "OpenAPI spec is valid and in sync with routes."

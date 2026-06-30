@@ -182,6 +182,7 @@ async fn main() -> anyhow::Result<()> {
         let email_coord = email_coordinator.clone();
         let stale_threshold = state.config.email_stale_job_threshold_secs;
         let crash_counter = state.metrics.worker_crash_total.clone();
+        let metrics_worker = state.metrics.clone();
 
         tokio::spawn(async move {
             let mut restarts: u32 = 0;
@@ -190,9 +191,10 @@ async fn main() -> anyhow::Result<()> {
                 let s = service_worker.clone();
                 let token = email_token.clone();
                 let coord = email_coord.clone();
+                let mw = metrics_worker.clone();
 
                 let handle = tokio::spawn(async move {
-                    q.start_worker(s, token, coord, stale_threshold).await;
+                    q.start_worker(s, token, coord, stale_threshold, Some(mw)).await;
                 });
 
                 match handle.await {
