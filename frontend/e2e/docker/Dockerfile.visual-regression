@@ -1,0 +1,18 @@
+FROM mcr.microsoft.com/playwright:v1.43.0-jammy
+
+# Pin font packages for consistent cross-environment rendering
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    fonts-liberation=1:2.1.5-3 \
+    fonts-noto-core=20201225-1 \
+    fontconfig=2.13.1-4.2ubuntu5 \
+  && fc-cache -f \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci
+
+COPY . .
+
+CMD ["npx", "playwright", "test", "e2e/visual-regression.spec.ts", "--project=chromium"]

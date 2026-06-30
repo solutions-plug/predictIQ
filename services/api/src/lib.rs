@@ -1,5 +1,6 @@
 pub mod audit;
 pub mod audit_middleware;
+pub mod csrf;
 #[cfg(test)]
 mod resolve_market_tests;
 pub mod blockchain;

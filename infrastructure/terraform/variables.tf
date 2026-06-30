@@ -55,10 +55,16 @@ variable "db_password" {
   description = "Database master password"
   type        = string
   sensitive   = true
-  
+
   validation {
-    condition     = length(var.db_password) >= 8
-    error_message = "Database password must be at least 8 characters long."
+    condition = (
+      length(var.db_password) >= 24 &&
+      can(regex("[A-Z]", var.db_password)) &&
+      can(regex("[a-z]", var.db_password)) &&
+      can(regex("[0-9]", var.db_password)) &&
+      can(regex("[^a-zA-Z0-9]", var.db_password))
+    )
+    error_message = "Database password must be at least 24 characters and contain uppercase letters, lowercase letters, numbers, and special characters."
   }
 }
 
@@ -125,6 +131,23 @@ variable "redis_engine_version" {
   validation {
     condition     = can(regex("^\\d+\\.\\d+$", var.redis_engine_version))
     error_message = "Redis engine version must be in format X.Y (e.g., 7.0, 6.2)."
+  }
+}
+
+variable "redis_auth_token" {
+  description = "Auth token for Redis in-transit encryption"
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition = (
+      length(var.redis_auth_token) >= 24 &&
+      can(regex("[A-Z]", var.redis_auth_token)) &&
+      can(regex("[a-z]", var.redis_auth_token)) &&
+      can(regex("[0-9]", var.redis_auth_token)) &&
+      can(regex("[^a-zA-Z0-9]", var.redis_auth_token))
+    )
+    error_message = "Redis auth token must be at least 24 characters and contain uppercase letters, lowercase letters, numbers, and special characters."
   }
 }
 
