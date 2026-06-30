@@ -204,3 +204,36 @@ variable "api_memory" {
     error_message = "API memory must be one of: 512, 1024, 2048, 3072, 4096, 5120, 6144, 7168, 8192."
   }
 }
+
+variable "hmac_key" {
+  description = "HMAC secret key used to sign API payloads and webhook signatures. Stored in AWS Secrets Manager."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(var.hmac_key) >= 32
+    error_message = "HMAC key must be at least 32 characters for adequate security."
+  }
+}
+
+variable "sendgrid_api_key" {
+  description = "SendGrid API key for transactional email. Stored in AWS Secrets Manager."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = can(regex("^SG\\.", var.sendgrid_api_key))
+    error_message = "SendGrid API key must start with 'SG.'."
+  }
+}
+
+variable "api_signing_key" {
+  description = "Private key used to sign API responses. Stored in AWS Secrets Manager."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(var.api_signing_key) >= 32
+    error_message = "API signing key must be at least 32 characters."
+  }
+}
