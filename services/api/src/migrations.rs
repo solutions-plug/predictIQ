@@ -17,6 +17,13 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tracing::{info, warn};
 
+/// Returns true when the `MIGRATE_DRY_RUN` environment variable is set to `"true"`.
+fn is_dry_run() -> bool {
+    std::env::var("MIGRATE_DRY_RUN")
+        .map(|v| v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 /// A single migration file embedded at compile time.
 #[derive(Debug, Clone)]
 pub struct Migration {
@@ -109,11 +116,17 @@ impl<'a> MigrationRunner<'a> {
     /// Already-applied migrations are skipped. Returns the number of newly
     /// applied migrations.
     ///
+    /// When `MIGRATE_DRY_RUN=true` is set, pending migration SQL is printed to
+    /// stdout and no changes are made to the database. Returns 0 in dry-run mode.
+    ///
     /// Uses a PostgreSQL session-level advisory lock to serialize concurrent
     /// invocations (e.g. multiple instances starting simultaneously). If another
     /// instance already holds the lock, this call aborts with an error so the
     /// caller can surface it and halt startup cleanly.
     pub async fn run(&self) -> anyhow::Result<usize> {
+        if is_dry_run() {
+            return self.dry_run().await;
+        }
         self.ensure_tracking_table().await?;
 
         // Stable lock key — chosen to be unique to this codebase.
@@ -148,6 +161,32 @@ impl<'a> MigrationRunner<'a> {
             .await;
 
         result
+    }
+
+    /// Print SQL for every pending migration without executing anything.
+    /// Called automatically when `MIGRATE_DRY_RUN=true`.
+    async fn dry_run(&self) -> anyhow::Result<usize> {
+        self.ensure_tracking_table().await?;
+
+        let mut pending = 0usize;
+        for migration in MIGRATIONS {
+            if self.is_applied(migration.version).await? {
+                info!(version = migration.version, "migration already applied — skipping");
+                continue;
+            }
+            warn!(
+                version = migration.version,
+                name = migration.name,
+                "[DRY RUN] would apply migration"
+            );
+            println!(
+                "-- [DRY RUN] migration {} ({})\n{}\n",
+                migration.version, migration.name, migration.sql
+            );
+            pending += 1;
+        }
+        info!(pending, "[DRY RUN] migration run complete — no changes applied");
+        Ok(0)
     }
 
     async fn run_inner(&self) -> anyhow::Result<usize> {
