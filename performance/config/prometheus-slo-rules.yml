@@ -39,6 +39,11 @@ groups:
             sum(rate(db_query_duration_seconds_bucket[5m])) by (le)
           ) <= 0.05
 
+      # Database Pool Exhaustion Rate SLO
+      - record: slo:db_pool_exhaustion:burn_rate
+        expr: |
+          rate(db_pool_exhaustion_total[5m])
+
       # Cache Availability SLO
       - record: slo:cache_availability:success_rate
         expr: |
@@ -171,3 +176,30 @@ groups:
           summary: "Cache availability SLO violation"
           description: "Redis cache availability below 99.95% target. Current: {{ $value }}%"
           runbook_url: "https://docs.predictiq.com/runbooks/cache-availability-slo-violation"
+
+      # Database Query P95 Latency Alert
+      - alert: DBSlowQueryP95
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(db_query_duration_seconds_bucket[5m])) by (le)
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          slo: db_query_latency
+        annotations:
+          summary: "Database P95 query latency exceeds 500ms"
+          description: "Database P95 query latency is {{ $value }}s, exceeding 500ms threshold for 5 minutes"
+          runbook_url: "https://docs.predictiq.com/runbooks/slow-database-queries"
+
+      # Database Connection Pool Exhaustion Alert
+      - alert: DBPoolExhaustion
+        expr: rate(db_pool_exhaustion_total[5m]) > 0.0167
+        for: 1m
+        labels:
+          severity: critical
+          slo: db_pool_availability
+        annotations:
+          summary: "Database connection pool exhaustion rate exceeds 1/min"
+          description: "Pool exhaustion rate is {{ $value | humanize }} per second (threshold: 0.0167/s = 1/min)"
+          runbook_url: "https://docs.predictiq.com/runbooks/db-pool-exhaustion"
