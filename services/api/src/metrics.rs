@@ -40,7 +40,7 @@ pub struct Metrics {
     db_pool_connections_idle: IntGaugeVec,
     db_pool_acquire_duration: HistogramVec,
     rate_limit_rejections: IntCounterVec,
-    cache_circuit_breaker_state: IntGauge,
+    cache_circuit_breaker_state: IntGaugeVec,
 }
 
 impl Metrics {
@@ -158,9 +158,12 @@ impl Metrics {
         )
         .context("rate_limit_rejections metric")?;
 
-        let cache_circuit_breaker_state = IntGauge::new(
-            "cache_circuit_breaker_state",
-            "Current Redis cache circuit breaker state (0=closed, 1=open, 2=half_open)",
+        let cache_circuit_breaker_state = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cache_circuit_breaker_state",
+                "Redis cache circuit breaker state (0=closed, 1=open, 2=half-open)",
+            ),
+            &["state"],
         )
         .context("cache_circuit_breaker_state metric")?;
 
@@ -309,8 +312,46 @@ impl Metrics {
             .inc();
     }
 
+    /// Update the cache circuit breaker state gauge.
+    /// Call this whenever the circuit breaker transitions state.
+    /// state: 0=closed, 1=open, 2=half-open
+    pub fn set_cache_circuit_breaker_state(&self, state: i64) {
+        // Reset all states to 0 first
+        self.cache_circuit_breaker_state
+            .with_label_values(&["closed"])
+            .set(0);
+        self.cache_circuit_breaker_state
+            .with_label_values(&["open"])
+            .set(0);
+        self.cache_circuit_breaker_state
+            .with_label_values(&["half_open"])
+            .set(0);
+
+        // Set the current state to 1
+        match state {
+            0 => {
+                self.cache_circuit_breaker_state
+                    .with_label_values(&["closed"])
+                    .set(1);
+            }
+            1 => {
+                self.cache_circuit_breaker_state
+                    .with_label_values(&["open"])
+                    .set(1);
+            }
+            2 => {
+                self.cache_circuit_breaker_state
+                    .with_label_values(&["half_open"])
+                    .set(1);
+            }
+            _ => {}
+        }
+    }
+
+    /// Convenience alias that maps a numeric state to the labelled gauge vec.
+    /// Delegates to set_cache_circuit_breaker_state; kept for backward compatibility.
     pub fn set_circuit_breaker_state(&self, state: i64) {
-        self.cache_circuit_breaker_state.set(state);
+        self.set_cache_circuit_breaker_state(state);
     }
 
     pub fn render(&self) -> anyhow::Result<String> {
