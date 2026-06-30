@@ -48,6 +48,7 @@ pub struct Metrics {
     /// mode (returning 429) due to Redis unavailability.
     /// Metric: `rate_limiter_redis_errors_total{limiter="<name>"}`
     rate_limiter_redis_errors: IntCounterVec,
+    watched_tx_count: IntGauge,
     /// Counts authentication failures by failure reason.
     /// Labels: `reason` — one of: "invalid_api_key", "expired_token", "missing_credentials".
     auth_failures: IntCounterVec,
@@ -272,6 +273,12 @@ impl Metrics {
         )
         .context("cache_circuit_breaker_state metric")?;
 
+        let watched_tx_count = IntGauge::new(
+            "watched_tx_count",
+            "Current number of transaction hashes being monitored in the watch map",
+        )
+        .context("watched_tx_count metric")?;
+
         registry.register(Box::new(cache_hits.clone()))?;
         registry.register(Box::new(cache_misses.clone()))?;
         registry.register(Box::new(invalidations.clone()))?;
@@ -298,6 +305,7 @@ impl Metrics {
         registry.register(Box::new(otel_export_errors.clone()))?;
         registry.register(Box::new(worker_status.clone()))?;
         registry.register(Box::new(cache_circuit_breaker_state.clone()))?;
+        registry.register(Box::new(watched_tx_count.clone()))?;
 
         Ok(Self {
             registry,
@@ -327,6 +335,7 @@ impl Metrics {
             otel_export_errors,
             worker_status,
             cache_circuit_breaker_state,
+            watched_tx_count,
         })
     }
 
@@ -542,6 +551,12 @@ impl Metrics {
         self.set_cache_circuit_breaker_state(state);
     }
 
+    /// Update the gauge tracking the current number of watched transactions.
+    /// Call this after every insert, eviction, or removal from the watch map.
+    pub fn set_watched_tx_count(&self, n: i64) {
+        self.watched_tx_count.set(n);
+    }
+
     pub fn render(&self) -> anyhow::Result<String> {
         let mut buffer = vec![];
         let encoder = TextEncoder::new();
@@ -624,10 +639,12 @@ mod tests {
         m.set_email_queue_depth(12);
         m.observe_auth_failure("invalid_api_key");
         m.set_circuit_breaker_state(0);
+        m.set_watched_tx_count(42);
         m.set_worker_status("test_worker", true);
         let rendered = m.render().expect("render must not fail");
         assert!(rendered.contains("cache_hits_total"));
         assert!(rendered.contains("http_request_duration_seconds"));
+        assert!(rendered.contains("watched_tx_count 42"));
     }
 
     // ── record_pool_metrics ────────────────────────────────────────────────────

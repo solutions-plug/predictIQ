@@ -204,15 +204,6 @@ pub async fn health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> i
     (status_code, Json(health_status))
 }
 
-/// `/health/live` — lightweight liveness probe.
-/// Returns 200 as long as the process is running; does not check dependencies.
-pub async fn health_live() -> impl IntoResponse {
-    Json(serde_json::json!({
-        "status": "ok",
-        "timestamp": chrono::Utc::now().to_rfc3339(),
-    }))
-}
-
 /// Liveness probe: just confirms the process is alive and serving requests.
 /// Never returns 503 — if this endpoint is reachable the process is up.
 pub async fn health_live() -> impl IntoResponse {
@@ -1196,7 +1187,23 @@ pub async fn blockchain_tx_status(
     State(state): State<Arc<AppState>>,
     Path(tx_hash): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    state.blockchain.watch_transaction(&tx_hash).await;
+    use crate::blockchain::WatchTxError;
+
+    match state.blockchain.watch_transaction(&tx_hash).await {
+        Ok(()) => {}
+        Err(WatchTxError::AlreadyWatched) => {
+            // Idempotent: the hash is already registered.  Continue to return
+            // the current status so the caller gets a useful response.
+        }
+        Err(WatchTxError::CapReached) => {
+            return Err(ApiError::service_unavailable(
+                "Transaction watch map is at capacity. \
+                 Too many concurrent transactions are being monitored. \
+                 Please retry later.",
+            ));
+        }
+    }
+
     let data = state
         .blockchain
         .transaction_status_cached(&tx_hash)
