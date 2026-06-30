@@ -193,6 +193,65 @@ groups:
           description: "CPU usage is {{ $value }}%, exceeding 80% threshold"
           runbook_url: "https://docs.predictiq.com/runbooks/high-cpu-usage"
 
+      - alert: APIOutage
+        expr: up{job="predictiq-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: api
+        annotations:
+          summary: "API is completely unreachable"
+          description: "predictiq-api has been down for more than 2 minutes — all client traffic is failing"
+          runbook_url: "https://docs.predictiq.com/runbooks/api-outage"
+
+      - alert: RedisFailure
+        expr: redis_up{job="predictiq-redis"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: cache
+        annotations:
+          summary: "Redis instance is down"
+          description: "Redis has been unreachable for more than 1 minute — cache is unavailable and API latency will spike"
+          runbook_url: "https://docs.predictiq.com/runbooks/redis-failure"
+
+      - alert: EmailQueueBackup
+        expr: email_queue_depth > 100
+        for: 5m
+        labels:
+          severity: warning
+          component: email
+        annotations:
+          summary: "Email queue depth is elevated"
+          description: "Email queue depth is {{ $value }} messages — delivery may be delayed"
+          runbook_url: "https://docs.predictiq.com/runbooks/email-queue-backup"
+
+      - alert: StellarRPCUnavailable
+        expr: stellar_rpc_up == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: blockchain
+        annotations:
+          summary: "Stellar RPC endpoint is unreachable"
+          description: "The Stellar RPC provider has been unreachable for 2 minutes — blockchain event indexing is stalled"
+          runbook_url: "https://docs.predictiq.com/runbooks/stellar-rpc-unavailable"
+
+      - alert: ECSTaskCrashLoop
+        expr: |
+          (
+            aws_ecs_service_running_task_count{cluster="predictiq-prod"}
+            < aws_ecs_service_desired_task_count{cluster="predictiq-prod"}
+          ) == 1
+        for: 3m
+        labels:
+          severity: critical
+          component: infrastructure
+        annotations:
+          summary: "ECS service task is crash-looping"
+          description: "Service {{ $labels.service }} has been below desired task count for 3+ minutes"
+          runbook_url: "https://docs.predictiq.com/runbooks/ecs-task-crash-loop"
+
   - name: tts_quota
     interval: 1m
     rules:
