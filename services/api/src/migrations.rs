@@ -110,9 +110,29 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../database/migrations/017_add_soft_delete_markets.sql"),
     },
     Migration {
+        version: "017c",
+        name: "017_add_analytics_events_market_id",
+        sql: include_str!("../database/migrations/017_add_analytics_events_market_id.sql"),
+    },
+    Migration {
         version: "018",
+        name: "018_add_email_tracking_email_status_index",
+        sql: include_str!("../database/migrations/018_add_email_tracking_email_status_index.sql"),
+    },
+    Migration {
+        version: "018b",
         name: "018_add_varchar_constraints",
         sql: include_str!("../database/migrations/018_add_varchar_constraints.sql"),
+    },
+    Migration {
+        version: "019",
+        name: "019_add_newsletter_confirmed_at_index",
+        sql: include_str!("../database/migrations/019_add_newsletter_confirmed_at_index.sql"),
+    },
+    Migration {
+        version: "020",
+        name: "020_add_audit_log_actor_time_index",
+        sql: include_str!("../database/migrations/020_add_audit_log_actor_time_index.sql"),
     },
 ];
 
