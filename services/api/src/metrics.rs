@@ -42,6 +42,7 @@ pub struct Metrics {
     db_pool_connections_idle: IntGaugeVec,
     db_pool_acquire_duration: HistogramVec,
     rate_limit_rejections: IntCounterVec,
+    sendgrid_retries: IntCounterVec,
     pub worker_crash_total: IntCounterVec,
     otel_export_errors: IntCounterVec,
     worker_status: IntGaugeVec,
@@ -184,6 +185,12 @@ impl Metrics {
         )
         .context("rate_limit_rejections metric")?;
 
+        let sendgrid_retries = IntCounterVec::new(
+            prometheus::Opts::new("sendgrid_retries_total", "SendGrid send retries by reason"),
+            &["reason"],
+        )
+        .context("sendgrid_retries metric")?;
+
         let worker_crash_total = IntCounterVec::new(
             prometheus::Opts::new(
                 "worker_crash_total",
@@ -236,6 +243,7 @@ impl Metrics {
         registry.register(Box::new(db_pool_connections_idle.clone()))?;
         registry.register(Box::new(db_pool_acquire_duration.clone()))?;
         registry.register(Box::new(rate_limit_rejections.clone()))?;
+        registry.register(Box::new(sendgrid_retries.clone()))?;
         registry.register(Box::new(worker_crash_total.clone()))?;
         registry.register(Box::new(otel_export_errors.clone()))?;
         registry.register(Box::new(worker_status.clone()))?;
@@ -259,6 +267,7 @@ impl Metrics {
             db_pool_connections_idle,
             db_pool_acquire_duration,
             rate_limit_rejections,
+            sendgrid_retries,
             worker_crash_total,
             otel_export_errors,
             worker_status,
@@ -385,6 +394,12 @@ impl Metrics {
         self.rate_limit_rejections
             .with_label_values(&[&labels[0]])
             .inc();
+    }
+
+    /// Increment the SendGrid retry counter.
+    /// `reason` should be "rate_limited" (429) or "server_error" (5xx).
+    pub fn observe_sendgrid_retry(&self, reason: &str) {
+        self.sendgrid_retries.with_label_values(&[reason]).inc();
     }
 
     /// Increment the OTEL export error counter.

@@ -8,51 +8,172 @@
 //!
 //! This is a defence-in-depth layer; the frontend MUST also escape output.
 
-use axum::{
-    body::Body,
-    http::{Request, StatusCode},
-    middleware::Next,
-    response::{IntoResponse, Response},
-    Json,
-};
+use axum::body::Body;
+use axum::extract::Request;
+use axum::http::{Method, StatusCode};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
+use axum::Json;
 use serde::Serialize;
 
-const MAX_REQUEST_BODY_BYTES: u64 = 1 * 1024 * 1024; // 1 MB
+// ── Request body size limit ──────────────────────────────────────────────────
+
+/// Default request body size limit: 1 MiB.
+pub const DEFAULT_REQUEST_BODY_MAX_BYTES: usize = 1_048_576;
+
+/// Parse `REQUEST_BODY_MAX_BYTES` from an optional env-var string.
+/// Returns the default on missing, zero, or unparseable values.
+pub fn parse_request_body_max_bytes(val: Option<&str>) -> usize {
+    val.and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_REQUEST_BODY_MAX_BYTES)
+}
+
+fn body_limit() -> usize {
+    parse_request_body_max_bytes(std::env::var("REQUEST_BODY_MAX_BYTES").ok().as_deref())
+}
 
 #[derive(Serialize)]
-struct RequestTooLargeError {
-    error:      &'static str,
-    message:    String,
-    max_bytes:  u64,
+struct PayloadTooLargeError {
+    error: &'static str,
+    message: String,
+    limit_bytes: usize,
 }
 
-pub async fn content_type_validation_middleware(req: Request<Body>, next: Next) -> Response {
-    crate::content_type::require_json_content_type(req, next).await
+/// Tower middleware that enforces a request body size limit.
+///
+/// Fast-path: rejects immediately when `Content-Length` exceeds the limit.
+/// Slow-path: buffers the stream and rejects once accumulated bytes exceed limit.
+pub async fn request_size_validation_middleware(
+    req: Request,
+    next: Next,
+) -> Response {
+    let limit = body_limit();
+
+    // Fast path: Content-Length header present
+    if let Some(cl) = req.headers().get("content-length") {
+        if let Ok(s) = cl.to_str() {
+            if let Ok(n) = s.parse::<usize>() {
+                if n > limit {
+                    return payload_too_large(limit);
+                }
+            }
+        }
+    }
+
+    // Slow path: buffer stream up to limit+1 bytes.
+    // axum::body::to_bytes returns Err when body exceeds the cap — treat that as 413.
+    let (parts, body) = req.into_parts();
+    let bytes = match axum::body::to_bytes(body, limit + 1).await {
+        Ok(b) => b,
+        Err(_) => return payload_too_large(limit),
+    };
+    if bytes.len() > limit {
+        return payload_too_large(limit);
+    }
+
+    let req = Request::from_parts(parts, Body::from(bytes));
+    next.run(req).await
 }
 
-pub async fn request_size_validation_middleware(req: Request<Body>, next: Next) -> Response {
-    if let Some(content_length) = req
-        .headers()
-        .get(axum::http::header::CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<u64>().ok())
-    {
-        if content_length > MAX_REQUEST_BODY_BYTES {
-            let body = RequestTooLargeError {
-                error:     "request_too_large",
-                message:   format!(
-                    "Request body exceeds the {MAX_REQUEST_BODY_BYTES}-byte limit."
-                ),
-                max_bytes: MAX_REQUEST_BODY_BYTES,
-            };
-            return (StatusCode::PAYLOAD_TOO_LARGE, Json(body)).into_response();
+fn payload_too_large(limit: usize) -> Response {
+    (
+        StatusCode::PAYLOAD_TOO_LARGE,
+        Json(PayloadTooLargeError {
+            error: "payload_too_large",
+            message: format!(
+                "Request body exceeds the maximum allowed size of {} bytes.",
+                limit
+            ),
+            limit_bytes: limit,
+        }),
+    )
+        .into_response()
+}
+
+// ── Content-Type validation ───────────────────────────────────────────────────
+
+const JSON_REQUIRED_METHODS: &[Method] = &[Method::POST, Method::PUT, Method::PATCH];
+
+#[derive(Serialize)]
+struct UnsupportedMediaTypeError {
+    error: &'static str,
+    message: String,
+    required: &'static str,
+    received: String,
+}
+
+/// Reject POST/PUT/PATCH requests whose `Content-Type` is not `application/json`.
+pub async fn content_type_validation_middleware(req: Request, next: Next) -> Response {
+    if JSON_REQUIRED_METHODS.contains(req.method()) {
+        let ct = req
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !ct.starts_with("application/json") {
+            return (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                Json(UnsupportedMediaTypeError {
+                    error: "unsupported_media_type",
+                    message: "Content-Type must be application/json for POST, PUT, and PATCH \
+                              requests."
+                        .to_string(),
+                    required: "application/json",
+                    received: if ct.is_empty() {
+                        "not set".to_string()
+                    } else {
+                        ct.to_string()
+                    },
+                }),
+            )
+                .into_response();
         }
     }
     next.run(req).await
 }
 
-pub async fn request_validation_middleware(req: Request<Body>, next: Next) -> Response {
-    request_size_validation_middleware(req, next).await
+// ── Query / path validation ───────────────────────────────────────────────────
+
+static SUSPICIOUS_QUERY_PATTERNS: &[&str] = &[
+    "' or", "\" or", "1=1", "or 1=1", "drop table", "select ", "insert ",
+    "delete ", "update ", "union ", "--", "/*", "*/", "xp_", "exec(",
+];
+
+static SUSPICIOUS_PATH_PATTERNS: &[&str] = &["//", "../", "..\\", "%2e%2e"];
+
+/// Reject requests with SQL-injection or path-traversal patterns in query / path.
+pub async fn request_validation_middleware(req: Request, next: Next) -> Response {
+    let uri = req.uri();
+
+    if let Some(query) = uri.query() {
+        let lower = query.to_lowercase();
+        if SUSPICIOUS_QUERY_PATTERNS.iter().any(|p| lower.contains(p)) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "invalid_request",
+                    "message": "Request contains disallowed query patterns."
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    let path = uri.path();
+    let lower_path = path.to_lowercase();
+    if SUSPICIOUS_PATH_PATTERNS.iter().any(|p| lower_path.contains(p)) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid_request",
+                "message": "Request path contains disallowed patterns."
+            })),
+        )
+            .into_response();
+    }
+
+    next.run(req).await
 }
 
 #[derive(Debug, Serialize)]
