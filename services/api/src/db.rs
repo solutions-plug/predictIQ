@@ -3,6 +3,7 @@ use std::time::Duration;
 use anyhow::Context;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sqlx::{postgres::PgPoolOptions, PgPool, Row};
 use tokio::time::error::Elapsed;
 
@@ -116,6 +117,17 @@ pub struct NewsletterSubscriber {
     pub deleted_at: Option<DateTime<Utc>>,
 }
 
+/// A single row from the `api_keys` table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiKeyRecord {
+    pub id: uuid::Uuid,
+    pub key_hash: String,
+    pub label: String,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+
 impl Database {
     pub fn pool(&self) -> PgPool {
         self.pool.clone()
@@ -216,7 +228,8 @@ impl Database {
                         COUNT(*) FILTER (WHERE status = 'active')::BIGINT AS active_markets, \
                         COUNT(*) FILTER (WHERE status = 'resolved')::BIGINT AS resolved_markets, \
                         COALESCE(SUM(total_volume), 0)::DOUBLE PRECISION AS total_volume \
-                    FROM markets",
+                    FROM markets \
+                    WHERE deleted_at IS NULL",
                 )
                 .fetch_one(&self.pool)).await.map_err(anyhow::Error::from)?;
 
@@ -248,7 +261,7 @@ impl Database {
                 let rows = self.with_timeout("featured_markets", sqlx::query(
                     "SELECT id, title, total_volume, ends_at \
                     FROM markets \
-                    WHERE status = 'active' \
+                    WHERE status = 'active' AND deleted_at IS NULL \
                     ORDER BY total_volume DESC, ends_at ASC \
                     LIMIT $1",
                 )
@@ -711,6 +724,40 @@ impl Database {
         Ok(analytics)
     }
 
+    /// Soft-delete a market by setting `deleted_at = NOW()`.
+    /// Returns `true` if the market existed and was not already deleted.
+    pub async fn soft_delete_market(&self, market_id: i64) -> anyhow::Result<bool> {
+        let rows = self
+            .with_timeout(
+                "soft_delete_market",
+                sqlx::query(
+                    "UPDATE markets \
+                     SET deleted_at = NOW() \
+                     WHERE id = $1 AND deleted_at IS NULL",
+                )
+                .bind(market_id)
+                .execute(&self.pool),
+            )
+            .await
+            .map_err(anyhow::Error::from)?
+            .rows_affected();
+        Ok(rows > 0)
+    }
+
+    /// Hard-delete markets that have been soft-deleted for more than 30 days
+    /// by invoking the `cleanup_soft_deleted_markets` database function.
+    /// Returns the number of rows permanently removed.
+    pub async fn cleanup_soft_deleted_markets(&self) -> anyhow::Result<i32> {
+        let count: i32 = self
+            .with_timeout(
+                "cleanup_soft_deleted_markets",
+                sqlx::query_scalar("SELECT cleanup_soft_deleted_markets()").fetch_one(&self.pool),
+            )
+            .await
+            .map_err(anyhow::Error::from)?;
+        Ok(count)
+    }
+
     /// Resolve a market by persisting the winning outcome to the database.
     ///
     /// Returns an error if the market does not exist or is not in `active` status.
@@ -721,7 +768,7 @@ impl Database {
                 sqlx::query(
                     "UPDATE markets \
                      SET status = 'resolved', outcome_index = $1, resolved_at = NOW() \
-                     WHERE id = $2 AND status = 'active'",
+                     WHERE id = $2 AND status = 'active' AND deleted_at IS NULL",
                 )
                 .bind(outcome_index as i32)
                 .bind(market_id)
@@ -771,6 +818,120 @@ impl Database {
         .bind(timestamp as f64)
         .fetch_one(&self.pool)).await.unwrap_or(0);
         Ok(count > 0)
+    }
+
+    // ── API key management (issue #892) ───────────────────────────────────────
+
+    /// Insert a new API key into the database.
+    /// The caller is responsible for supplying the SHA-256 hex hash of the raw key.
+    pub async fn api_key_insert(&self, key_hash: &str, label: &str) -> anyhow::Result<ApiKeyRecord> {
+        let row = self.with_timeout("api_key_insert", sqlx::query(
+            "INSERT INTO api_keys (key_hash, label)
+             VALUES ($1, $2)
+             RETURNING id, key_hash, label, created_at, expires_at, revoked_at",
+        )
+        .bind(key_hash)
+        .bind(label)
+        .fetch_one(&self.pool)).await.map_err(anyhow::Error::from)?;
+
+        Ok(ApiKeyRecord {
+            id: row.try_get("id")?,
+            key_hash: row.try_get("key_hash")?,
+            label: row.try_get("label")?,
+            created_at: row.try_get("created_at")?,
+            expires_at: row.try_get("expires_at")?,
+            revoked_at: row.try_get("revoked_at")?,
+        })
+    }
+
+    /// Mark an existing key as expiring at the given timestamp (rotation overlap window).
+    /// Returns `true` if a row was updated, `false` if no key with that hash was found.
+    pub async fn api_key_set_expires(
+        &self,
+        key_hash: &str,
+        expires_at: DateTime<Utc>,
+    ) -> anyhow::Result<bool> {
+        let result = self.with_timeout("api_key_set_expires", sqlx::query(
+            "UPDATE api_keys SET expires_at = $1 WHERE key_hash = $2",
+        )
+        .bind(expires_at)
+        .bind(key_hash)
+        .execute(&self.pool)).await.map_err(anyhow::Error::from)?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Validate a raw API key: compute its SHA-256 hash, then return the record
+    /// if it exists, is not revoked, and is not expired.
+    pub async fn api_key_validate(&self, key_hash: &str) -> anyhow::Result<Option<ApiKeyRecord>> {
+        let row = self.with_timeout("api_key_validate", sqlx::query(
+            "SELECT id, key_hash, label, created_at, expires_at, revoked_at
+             FROM api_keys
+             WHERE key_hash = $1
+               AND revoked_at IS NULL
+               AND (expires_at IS NULL OR expires_at > NOW())",
+        )
+        .bind(key_hash)
+        .fetch_optional(&self.pool)).await.map_err(anyhow::Error::from)?;
+
+        if let Some(row) = row {
+            return Ok(Some(ApiKeyRecord {
+                id: row.try_get("id")?,
+                key_hash: row.try_get("key_hash")?,
+                label: row.try_get("label")?,
+                created_at: row.try_get("created_at")?,
+                expires_at: row.try_get("expires_at")?,
+                revoked_at: row.try_get("revoked_at")?,
+            }));
+        }
+
+        Ok(None)
+    }
+
+    /// Hard-delete all keys where `expires_at <= NOW()` and `expires_at IS NOT NULL`.
+    /// Returns the number of rows deleted.
+    pub async fn api_key_delete_expired(&self) -> anyhow::Result<u64> {
+        let result = self.with_timeout("api_key_delete_expired", sqlx::query(
+            "DELETE FROM api_keys
+             WHERE expires_at IS NOT NULL AND expires_at <= NOW()",
+        )
+        .execute(&self.pool)).await.map_err(anyhow::Error::from)?;
+
+        Ok(result.rows_affected())
+    }
+
+    /// List all active (non-revoked, non-expired) API keys.
+    pub async fn api_key_list_active(&self) -> anyhow::Result<Vec<ApiKeyRecord>> {
+        let rows = self.with_timeout("api_key_list_active", sqlx::query(
+            "SELECT id, key_hash, label, created_at, expires_at, revoked_at
+             FROM api_keys
+             WHERE revoked_at IS NULL
+               AND (expires_at IS NULL OR expires_at > NOW())
+             ORDER BY created_at DESC",
+        )
+        .fetch_all(&self.pool)).await.map_err(anyhow::Error::from)?;
+
+        let mut keys = Vec::with_capacity(rows.len());
+        for row in rows {
+            keys.push(ApiKeyRecord {
+                id: row.try_get("id")?,
+                key_hash: row.try_get("key_hash")?,
+                label: row.try_get("label")?,
+                created_at: row.try_get("created_at")?,
+                expires_at: row.try_get("expires_at")?,
+                revoked_at: row.try_get("revoked_at")?,
+            });
+        }
+
+        Ok(keys)
+    }
+
+    /// Compute the SHA-256 hex digest of a raw API key string.
+    /// Use this helper to hash keys before passing to `api_key_insert` or `api_key_validate`.
+    pub fn hash_api_key(raw_key: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(raw_key.as_bytes());
+        format!("{:x}", hasher.finalize())
     }
 }
 }
