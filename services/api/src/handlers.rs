@@ -92,7 +92,8 @@ fn into_api_error(err: anyhow::Error) -> ApiError {
                 return ApiError::service_unavailable("database connection pool exhausted");
             }
             DbError::ConstraintViolation(msg) => {
-                return ApiError::conflict(msg.clone());
+                tracing::error!(db_constraint = %msg, "database constraint violation");
+                return ApiError::conflict("A record with this value already exists.");
             }
             DbError::Other(_) => {}
         }
@@ -119,12 +120,15 @@ pub async fn health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> i
         .and_then(|v| v.to_str().ok())
         .unwrap_or("-");
 
-    let cb_state = match state.cache.circuit_state() {
-        CircuitState::Closed => "closed",
-        CircuitState::Open => "open",
-        CircuitState::HalfOpen => "half_open",
+    let (cb_state, cb_state_val) = match state.cache.circuit_state() {
+        CircuitState::Closed => ("closed", 0),
+        CircuitState::Open => ("open", 1),
+        CircuitState::HalfOpen => ("half_open", 2),
     };
     let pool = state.cache.pool_status();
+    state
+        .metrics
+        .set_circuit_breaker_state(cb_state_val);
 
     let mut health_status = serde_json::json!({
         "status": "ok",
@@ -159,6 +163,16 @@ pub async fn health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> i
     if let Ok(processing_count) = state.email_queue.get_processing_count().await {
         health_status["workers"]["email_queue_processing"] = processing_count.into();
     }
+
+    let sendgrid_status = match state.email_service.probe_sendgrid().await {
+        Ok(()) => "ok",
+        Err(e) => {
+            tracing::warn!(error = %e, "SendGrid connectivity probe failed");
+            health_status["status"] = "degraded".into();
+            "degraded"
+        }
+    };
+    health_status["sendgrid"] = serde_json::json!({ "status": sendgrid_status });
 
     (StatusCode::OK, Json(health_status))
 }
@@ -565,7 +579,9 @@ pub async fn statistics(State(state): State<Arc<AppState>>) -> Result<impl IntoR
     } else {
         state.metrics.observe_miss("api", endpoint);
     }
-    state.metrics.observe_request(endpoint, start.elapsed());
+    state
+        .metrics
+        .observe_request(endpoint, 200, start.elapsed().as_secs_f64());
 
     Ok((StatusCode::OK, Json(payload)))
 }
@@ -633,7 +649,7 @@ pub async fn featured_markets(
     } else {
         state.metrics.observe_miss("api", endpoint);
     }
-    state.metrics.observe_request(endpoint, start.elapsed());
+    state.metrics.observe_request(endpoint, 200, start.elapsed().as_secs_f64());
 
     Ok((StatusCode::OK, Json(paginated)))
 }
@@ -683,7 +699,7 @@ pub async fn content(
     } else {
         state.metrics.observe_miss("api", endpoint);
     }
-    state.metrics.observe_request(endpoint, start.elapsed());
+    state.metrics.observe_request(endpoint, 200, start.elapsed().as_secs_f64());
 
     Ok((StatusCode::OK, Json(paginated)))
 }
@@ -987,6 +1003,7 @@ pub async fn email_queue_stats(
         .map_err(into_api_error)?;
 
     state.metrics.set_dlq_size(stats.dead_letter as i64);
+    state.metrics.set_email_queue_depth(stats.pending as i64);
 
     Ok((StatusCode::OK, Json(stats)))
 }
@@ -1104,4 +1121,156 @@ pub struct AuditLogsQuery {
 pub struct AuditStatisticsQuery {
     pub from: Option<String>,
     pub to: Option<String>,
+}
+
+// ── API key rotation (issue #892) ─────────────────────────────────────────────
+
+/// Request body for POST /api/v1/admin/api-keys/rotate
+#[derive(Debug, Deserialize)]
+pub struct RotateApiKeyRequest {
+    /// Human-readable label for the new key (e.g. "ci-deploy-2026-07").
+    pub key_label: String,
+    /// Days the old key remains valid after rotation (overlap window).
+    /// Defaults to 7 days when omitted.
+    pub overlap_days: Option<u32>,
+}
+
+/// Response body for POST /api/v1/admin/api-keys/rotate
+#[derive(Debug, Serialize)]
+pub struct RotateApiKeyResponse {
+    /// The new raw API key.  Store it securely — it is only returned once.
+    pub new_key: String,
+    /// The label assigned to the new key.
+    pub new_key_label: String,
+    /// ISO-8601 timestamp when the old key (identified by `old_key_label`) will
+    /// be hard-deleted from the database.  `null` when no old key was found.
+    pub old_key_expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Label of the key that was rotated out (if any).
+    pub old_key_label: Option<String>,
+}
+
+/// POST /api/v1/admin/api-keys/rotate
+///
+/// Generates a new API key and marks any existing key with the same label as
+/// expiring after the configured overlap window so clients can migrate without
+/// downtime.
+///
+/// ## Overlap window
+///
+/// During the overlap window both the old key and the new key are accepted by
+/// [`security::ApiKeyAuth::verify_async`].  After `expires_at` the old key is
+/// hard-deleted by the background cleanup task.
+///
+/// ## Security
+///
+/// The new raw key is only returned in this response.  The database stores
+/// the SHA-256 hash of the key, not the key itself.
+pub async fn rotate_api_key(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<RotateApiKeyRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    use sha2::{Digest, Sha256};
+
+    let overlap_days = body.overlap_days.unwrap_or(7).max(1) as i64;
+
+    // Generate a new cryptographically random key (256-bit hex string).
+    let new_raw_key = {
+        use std::fmt::Write;
+        let bytes = uuid::Uuid::new_v4().as_bytes().to_vec();
+        let bytes2 = uuid::Uuid::new_v4().as_bytes().to_vec();
+        let combined: Vec<u8> = bytes.into_iter().chain(bytes2).collect();
+        let mut s = String::with_capacity(combined.len() * 2);
+        for b in &combined {
+            write!(s, "{:02x}", b).unwrap();
+        }
+        s
+    };
+    let new_hash = hex::encode(Sha256::digest(new_raw_key.as_bytes()));
+
+    // Find any existing active key(s) with the same label and schedule their expiry.
+    let active_keys = state
+        .db
+        .api_key_list_active()
+        .await
+        .map_err(into_api_error)?;
+
+    let mut old_expires_at: Option<chrono::DateTime<chrono::Utc>> = None;
+    let mut old_label: Option<String> = None;
+
+    let expires_at = chrono::Utc::now() + chrono::Duration::days(overlap_days);
+
+    for key in &active_keys {
+        if key.label == body.key_label {
+            state
+                .db
+                .api_key_set_expires(&key.key_hash, expires_at)
+                .await
+                .map_err(into_api_error)?;
+            old_expires_at = Some(expires_at);
+            old_label = Some(key.label.clone());
+            tracing::info!(
+                label = %key.label,
+                expires_at = %expires_at,
+                "API key scheduled for expiry (rotation overlap window)"
+            );
+        }
+    }
+
+    // Insert the new key.
+    state
+        .db
+        .api_key_insert(&new_hash, &body.key_label)
+        .await
+        .map_err(into_api_error)?;
+
+    tracing::info!(label = %body.key_label, "New API key issued");
+
+    Ok((
+        StatusCode::CREATED,
+        Json(RotateApiKeyResponse {
+            new_key: new_raw_key,
+            new_key_label: body.key_label,
+            old_key_expires_at: old_expires_at,
+            old_key_label: old_label,
+        }),
+    ))
+}
+
+/// Response item for GET /api/v1/admin/api-keys
+#[derive(Debug, Serialize)]
+pub struct ApiKeyListItem {
+    pub id: uuid::Uuid,
+    pub label: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// `true` when the key has an `expires_at` set (it was rotated out and is
+    /// in its overlap window).
+    pub is_expiring: bool,
+}
+
+/// GET /api/v1/admin/api-keys
+///
+/// Lists all active (non-revoked, non-expired) API keys.  Key hashes are
+/// intentionally omitted from the response.
+pub async fn list_api_keys(
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, ApiError> {
+    let records = state
+        .db
+        .api_key_list_active()
+        .await
+        .map_err(into_api_error)?;
+
+    let items: Vec<ApiKeyListItem> = records
+        .into_iter()
+        .map(|r| ApiKeyListItem {
+            id: r.id,
+            label: r.label,
+            created_at: r.created_at,
+            expires_at: r.expires_at,
+            is_expiring: r.expires_at.is_some(),
+        })
+        .collect();
+
+    Ok((StatusCode::OK, Json(items)))
 }

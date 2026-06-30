@@ -36,8 +36,66 @@ npm run test:e2e:ui
 | `mobile.spec.ts` | Mobile/tablet viewports, responsive breakpoints, touch gestures |
 | `market-creation.spec.ts` | Market creation flow (runs against staging via `STAGING_URL`) |
 | `performance.spec.ts` | Core Web Vitals, page load timing |
-| `user-journeys.spec.ts` | Full user journeys end-to-end |
+| `user-journeys.spec.ts` | Full user journeys end-to-end (mocked API) |
 | `visual-regression.spec.ts` | Screenshot comparison |
+
+---
+
+## Mocked vs Real-backend E2E suites
+
+Tests are split into two categories:
+
+- **Mocked E2E** — use `page.route(...)` to intercept API calls. No backend needed.
+  Run on every PR via the `e2e-mocked` CI job.
+- **Integration E2E** — run against a real backend (staging). Triggered only on
+  merge to `main` via the `e2e-staging` CI job.
+
+`user-journeys.spec.ts` and `market-creation.spec.ts` use mocked routes so they
+run in CI without a live API.
+
+---
+
+## Visual Regression Tests
+
+Visual regression tests (`visual-regression.spec.ts`) compare full-page and
+component screenshots against stored baselines. A `maxDiffPixelRatio` of `0.01`
+(1 %) is applied to every comparison to absorb sub-pixel font differences.
+
+### Running inside Docker for consistent baselines
+
+Font rendering differs between macOS, Linux, and Docker. Always generate and
+update baselines inside the pinned Docker image to avoid false failures:
+
+```bash
+# Build the image (run once, or after Playwright version bumps)
+docker build \
+  -f e2e/docker/Dockerfile.visual-regression \
+  -t predictiq-visual-regression \
+  .
+
+# Update baselines (overwrites snapshots)
+docker run --rm \
+  -v "$(pwd)/e2e:/app/e2e" \
+  -e BASE_URL=http://host.docker.internal:3000 \
+  predictiq-visual-regression \
+  npx playwright test e2e/visual-regression.spec.ts --project=chromium --update-snapshots
+
+# Run comparison only (CI mode)
+docker run --rm \
+  -v "$(pwd)/e2e:/app/e2e" \
+  -e BASE_URL=http://host.docker.internal:3000 \
+  predictiq-visual-regression
+```
+
+### Updating baselines after intentional UI changes
+
+1. Make your UI change and verify it looks correct locally.
+2. Run the Docker update command above to regenerate all snapshots.
+3. Review the diff in `git diff e2e/**/*.png` to confirm only expected pixels changed.
+4. Commit the updated snapshots together with your UI change.
+
+> **Note:** Never update baselines on a developer laptop; always use Docker to
+> ensure the font environment matches CI.
 
 ---
 
