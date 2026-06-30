@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     waitlist_entry_id UUID,
     content_id UUID,
     CONSTRAINT fk_audit_newsletter
-        FOREIGN KEY (newsletter_subscription_id) REFERENCES newsletter_subscriptions(id)
+        FOREIGN KEY (newsletter_subscription_id) REFERENCES newsletter_subscribers(id)
         ON DELETE SET NULL,
     CONSTRAINT fk_audit_contact
         FOREIGN KEY (contact_submission_id) REFERENCES contact_form_submissions(id)

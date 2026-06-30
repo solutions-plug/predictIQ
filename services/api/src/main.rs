@@ -158,7 +158,8 @@ async fn main() -> anyhow::Result<()> {
         loop {
             interval.tick().await;
             let ttl = db_cleanup.config.newsletter_token_ttl_secs;
-            match db_cleanup.db.newsletter_delete_expired_pending(ttl).await {
+            let batch = db_cleanup.config.newsletter_cleanup_batch_size;
+            match db_cleanup.db.newsletter_delete_expired_pending(ttl, batch).await {
                 Ok(n) if n > 0 => tracing::info!("[newsletter] cleaned up {n} expired pending subscriptions"),
                 Err(e) => tracing::warn!("[newsletter] cleanup error: {e}"),
                 _ => {}
@@ -172,9 +173,10 @@ async fn main() -> anyhow::Result<()> {
     let email_token = email_coordinator.token();
     let email_coord = email_coordinator.clone();
     let stale_threshold = state.config.email_stale_job_threshold_secs;
+    let metrics_worker = metrics.clone();
     tokio::spawn(async move {
         queue_worker
-            .start_worker(service_worker, email_token, email_coord, stale_threshold)
+            .start_worker(service_worker, email_token, email_coord, stale_threshold, Some(metrics_worker))
             .await;
     });
 

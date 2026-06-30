@@ -17,10 +17,59 @@ const DEFAULT_RETRY_CONFIG: RetryConfig = {
   maxDelayMs: 10000,
 };
 
+/** Per-attempt request timeout in milliseconds. */
+const REQUEST_TIMEOUT_MS = 10_000;
+
+/**
+ * Cache tag constants used to associate GET responses with resource namespaces
+ * and to target only the affected entries when a mutation completes.
+ *
+ * Invalidation strategy (tag-based):
+ *   - Each GET endpoint declares the tags of the resources it reads.
+ *   - Each mutation declares the tags of the resources it writes.
+ *   - On mutation success, only entries carrying those tags are dropped.
+ */
+export const CacheTag = {
+  STATISTICS: 'statistics',
+  MARKETS: 'markets',
+  BLOCKCHAIN: 'blockchain',
+  NEWSLETTER: 'newsletter',
+  EMAIL: 'email',
+} as const;
+
 function getRetryDelay(attempt: number, retryAfter?: number): number {
   if (retryAfter) return retryAfter * 1000;
-  const delay = DEFAULT_RETRY_CONFIG.initialDelayMs * Math.pow(2, attempt);
-  return Math.min(delay, DEFAULT_RETRY_CONFIG.maxDelayMs);
+  const base = DEFAULT_RETRY_CONFIG.initialDelayMs * Math.pow(2, attempt);
+  // Add up to 25 % random jitter to spread out thundering-herd retries.
+  const jitter = Math.random() * base * 0.25;
+  return Math.min(base + jitter, DEFAULT_RETRY_CONFIG.maxDelayMs);
+}
+
+/**
+ * Create a per-attempt abort signal that fires after `timeoutMs` milliseconds.
+ * If `userSignal` is provided it is linked: aborting either one aborts the other.
+ */
+function createRequestSignal(
+  timeoutMs: number,
+  userSignal?: AbortSignal
+): { signal: AbortSignal; clear: () => void } {
+  const controller = new AbortController();
+  const timerId = setTimeout(() => controller.abort(), timeoutMs);
+  const clear = () => clearTimeout(timerId);
+
+  if (userSignal) {
+    if (userSignal.aborted) {
+      clear();
+      controller.abort(userSignal.reason);
+    } else {
+      userSignal.addEventListener('abort', () => {
+        clear();
+        controller.abort(userSignal.reason);
+      }, { once: true });
+    }
+  }
+
+  return { signal: controller.signal, clear };
 }
 
 function sleep(ms: number): Promise<void> {
@@ -31,7 +80,16 @@ interface RequestOptions {
   body?: unknown;
   params?: Record<string, string | number | undefined>;
   cacheTtl?: number;
+  /** Resource tags applied to a cached GET entry, or invalidated on a mutation. */
+  cacheTags?: string[];
   maxRetries?: number;
+  /** Per-attempt timeout in ms. Defaults to REQUEST_TIMEOUT_MS (10 s). */
+  timeoutMs?: number;
+  /**
+   * Mark a non-GET request as safe to retry on 5xx.
+   * Only set this for endpoints that are truly idempotent (e.g. PUT upserts).
+   */
+  idempotent?: boolean;
   signal?: AbortSignal;
 }
 
@@ -192,16 +250,21 @@ async function request<T>(
   }
 
   const maxRetries = options.maxRetries ?? DEFAULT_RETRY_CONFIG.maxRetries;
+  const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const { signal, clear } = createRequestSignal(timeoutMs, options.signal);
+
     try {
       const res = await fetch(url, {
         method,
         headers: { "Content-Type": "application/json" },
         body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-        signal: options.signal,
+        signal,
       });
+
+      clear();
 
       if (!res.ok) {
         if (res.status === 429) {
@@ -213,15 +276,23 @@ async function request<T>(
           }
         }
 
-        let err: any;
+        // Retry transient 5xx errors for safe/idempotent methods only.
+        if (res.status >= 500 && attempt < maxRetries && (method === "GET" || options.idempotent)) {
+          const delayMs = getRetryDelay(attempt);
+          await sleep(delayMs);
+          continue;
+        }
+
+        let err: unknown;
         try {
           err = await res.json();
         } catch {
           err = {};
         }
-        const message = err?.message ?? res.statusText ?? `HTTP ${res.status}`;
-        const code = err?.code ?? "UNKNOWN_ERROR";
-        const details = err?.details ?? undefined;
+        const errObj = (typeof err === 'object' && err !== null) ? err as Record<string, unknown> : {};
+        const message = (errObj['message'] as string | undefined) ?? res.statusText ?? `HTTP ${res.status}`;
+        const code = (errObj['code'] as string | undefined) ?? "UNKNOWN_ERROR";
+        const details = errObj['details'] as Record<string, unknown> | undefined;
         throw new ApiError(message, res.status, code, details);
       }
 
@@ -229,24 +300,39 @@ async function request<T>(
       const text = await res.text();
       const data = text ? (JSON.parse(text) as T) : (undefined as unknown as T);
 
-      // Cache GET responses
+      // Cache GET responses with their resource tags for targeted invalidation.
       if (method === "GET" && options.cacheTtl) {
-        apiCache.set(url, data, options.cacheTtl);
+        apiCache.set(url, data, options.cacheTtl, options.cacheTags);
       }
 
-      // Invalidate cache on mutations
+      // On mutations, invalidate only the affected resource tags instead of
+      // the entire cache. Fall back to a full clear for untagged mutations.
       if (method === "POST" || method === "DELETE") {
-        apiCache.invalidateByPattern('.*');
+        if (options.cacheTags?.length) {
+          apiCache.invalidateByTags(options.cacheTags);
+        } else {
+          apiCache.invalidateByPattern('.*');
+        }
       }
 
       return data;
     } catch (networkErr) {
-      if (networkErr instanceof ApiError) {
+      clear();
+
+      if (networkErr instanceof ApiError) throw networkErr;
+
+      // If the abort came from our timeout (not a caller-supplied signal), surface
+      // a distinct TIMEOUT_ERROR so the UI can show a specific message.
+      if (networkErr instanceof DOMException && networkErr.name === 'AbortError') {
+        if (!options.signal?.aborted) {
+          throw new ApiError('The request timed out. Please try again.', 0, 'TIMEOUT_ERROR');
+        }
+        // Caller-initiated abort: propagate as-is so error boundaries can ignore it.
         throw networkErr;
       }
 
       lastError = networkErr instanceof Error ? networkErr : new Error(String(networkErr));
-      
+
       if (attempt < maxRetries && method === "GET") {
         const delayMs = getRetryDelay(attempt);
         await sleep(delayMs);
@@ -268,8 +354,12 @@ async function request<T>(
 export const api = {
   health: (signal?: AbortSignal) => request<string>("GET", "/health", { signal }),
 
-  getStatistics: (signal?: AbortSignal) => 
-    request<Record<string, unknown>>("GET", "/api/statistics", { cacheTtl: CACHE_TTL.MEDIUM, signal }),
+  getStatistics: (signal?: AbortSignal) =>
+    request<Record<string, unknown>>("GET", "/api/statistics", {
+      cacheTtl: CACHE_TTL.MEDIUM,
+      cacheTags: [CacheTag.STATISTICS],
+      signal,
+    }),
 
   getFeaturedMarkets: (signal?: AbortSignal) =>
     request<
@@ -281,43 +371,78 @@ export const api = {
         onchain_volume: string;
         resolved_outcome?: number | null;
       }>
-    >("GET", "/api/markets/featured", { cacheTtl: CACHE_TTL.SHORT, signal }),
+    >("GET", "/api/markets/featured", {
+      cacheTtl: CACHE_TTL.SHORT,
+      cacheTags: [CacheTag.MARKETS],
+      signal,
+    }),
 
   getContent: (params?: { page?: number; page_size?: number }, signal?: AbortSignal) =>
     request<Record<string, unknown>>("GET", "/api/content", { params, cacheTtl: CACHE_TTL.MEDIUM, signal }),
 
   // Blockchain
   getBlockchainHealth: (signal?: AbortSignal) =>
-    request<Record<string, unknown>>("GET", "/api/blockchain/health", { cacheTtl: CACHE_TTL.SHORT, signal }),
+    request<Record<string, unknown>>("GET", "/api/blockchain/health", {
+      cacheTtl: CACHE_TTL.SHORT,
+      cacheTags: [CacheTag.BLOCKCHAIN],
+      signal,
+    }),
 
   getBlockchainMarket: (marketId: number | string, signal?: AbortSignal) =>
-    request<Record<string, unknown>>("GET", `/api/blockchain/markets/${marketId}`, { cacheTtl: CACHE_TTL.MEDIUM, signal }),
+    request<Record<string, unknown>>("GET", `/api/blockchain/markets/${marketId}`, {
+      cacheTtl: CACHE_TTL.MEDIUM,
+      cacheTags: [CacheTag.BLOCKCHAIN, CacheTag.MARKETS],
+      signal,
+    }),
 
   getBlockchainStats: (signal?: AbortSignal) =>
-    request<Record<string, unknown>>("GET", "/api/blockchain/stats", { cacheTtl: CACHE_TTL.MEDIUM, signal }),
+    request<Record<string, unknown>>("GET", "/api/blockchain/stats", {
+      cacheTtl: CACHE_TTL.MEDIUM,
+      cacheTags: [CacheTag.BLOCKCHAIN],
+      signal,
+    }),
 
   getUserBets: (user: string, params?: { page?: number; page_size?: number }, signal?: AbortSignal) =>
-    request<Record<string, unknown>>("GET", `/api/blockchain/users/${user}/bets`, { params, cacheTtl: CACHE_TTL.MEDIUM, signal }),
+    request<Record<string, unknown>>("GET", `/api/blockchain/users/${user}/bets`, {
+      params,
+      cacheTtl: CACHE_TTL.MEDIUM,
+      cacheTags: [CacheTag.BLOCKCHAIN],
+      signal,
+    }),
 
   getOracleResult: (marketId: number | string, signal?: AbortSignal) =>
-    request<Record<string, unknown>>("GET", `/api/blockchain/oracle/${marketId}`, { cacheTtl: CACHE_TTL.LONG, signal }),
+    request<Record<string, unknown>>("GET", `/api/blockchain/oracle/${marketId}`, {
+      cacheTtl: CACHE_TTL.LONG,
+      cacheTags: [CacheTag.BLOCKCHAIN],
+      signal,
+    }),
 
   getTransactionStatus: (txHash: string, signal?: AbortSignal) =>
-    request<Record<string, unknown>>("GET", `/api/blockchain/tx/${txHash}`, { cacheTtl: CACHE_TTL.LONG, signal }),
+    request<Record<string, unknown>>("GET", `/api/blockchain/tx/${txHash}`, {
+      cacheTtl: CACHE_TTL.LONG,
+      cacheTags: [CacheTag.BLOCKCHAIN],
+      signal,
+    }),
 
   // Newsletter
   newsletterSubscribe: (body: { email: string; source?: string }, signal?: AbortSignal) =>
-    request<{ success: boolean; message: string }>("POST", "/api/v1/newsletter/subscribe", { body, signal }),
+    request<{ success: boolean; message: string }>("POST", "/api/v1/newsletter/subscribe", {
+      body,
+      cacheTags: [CacheTag.NEWSLETTER, CacheTag.STATISTICS],
+      signal,
+    }),
 
   newsletterConfirm: (token: string, signal?: AbortSignal) =>
     request<{ success: boolean; message: string }>("GET", `/api/v1/newsletter/confirm`, {
       params: { token },
+      cacheTags: [CacheTag.NEWSLETTER],
       signal,
     }),
 
   newsletterUnsubscribe: (email: string, signal?: AbortSignal) =>
     request<{ success: boolean; message: string }>("DELETE", "/api/v1/newsletter/unsubscribe", {
       body: { email },
+      cacheTags: [CacheTag.NEWSLETTER, CacheTag.STATISTICS],
       signal,
     }),
 
@@ -325,32 +450,49 @@ export const api = {
     request<{ success: boolean; data: Record<string, unknown> }>(
       "GET",
       "/api/v1/newsletter/gdpr/export",
-      { params: { email }, signal }
+      { params: { email }, cacheTags: [CacheTag.NEWSLETTER], signal }
     ),
 
   newsletterGdprDelete: (email: string, signal?: AbortSignal) =>
     request<{ success: boolean; message: string }>("DELETE", "/api/v1/newsletter/gdpr/delete", {
       body: { email },
+      cacheTags: [CacheTag.NEWSLETTER],
       signal,
     }),
 
   // Admin / email
   resolveMarket: (marketId: number | string, signal?: AbortSignal) =>
-    request<{ invalidated_keys: number }>("POST", `/api/markets/${marketId}/resolve`, { signal }),
+    request<{ invalidated_keys: number }>("POST", `/api/markets/${marketId}/resolve`, {
+      cacheTags: [CacheTag.MARKETS, CacheTag.BLOCKCHAIN, CacheTag.STATISTICS],
+      signal,
+    }),
 
   emailPreview: (templateName: string, signal?: AbortSignal) =>
-    request<Record<string, unknown>>("GET", `/api/v1/email/preview/${templateName}`, { cacheTtl: CACHE_TTL.LONG, signal }),
+    request<Record<string, unknown>>("GET", `/api/v1/email/preview/${templateName}`, {
+      cacheTtl: CACHE_TTL.LONG,
+      cacheTags: [CacheTag.EMAIL],
+      signal,
+    }),
 
   emailSendTest: (body: { recipient: string; template_name: string }, signal?: AbortSignal) =>
     request<{ success: boolean; message: string; message_id: string }>(
       "POST",
       "/api/v1/email/test",
-      { body, signal }
+      { body, cacheTags: [CacheTag.EMAIL], signal }
     ),
 
   getEmailAnalytics: (params?: { template_name?: string; days?: number }, signal?: AbortSignal) =>
-    request<Record<string, unknown>>("GET", "/api/v1/email/analytics", { params, cacheTtl: CACHE_TTL.MEDIUM, signal }),
+    request<Record<string, unknown>>("GET", "/api/v1/email/analytics", {
+      params,
+      cacheTtl: CACHE_TTL.MEDIUM,
+      cacheTags: [CacheTag.EMAIL],
+      signal,
+    }),
 
   getEmailQueueStats: (signal?: AbortSignal) =>
-    request<Record<string, unknown>>("GET", "/api/v1/email/queue/stats", { cacheTtl: CACHE_TTL.SHORT, signal }),
+    request<Record<string, unknown>>("GET", "/api/v1/email/queue/stats", {
+      cacheTtl: CACHE_TTL.SHORT,
+      cacheTags: [CacheTag.EMAIL],
+      signal,
+    }),
 };

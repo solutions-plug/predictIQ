@@ -37,7 +37,8 @@ export function useAsync<T>(
       }
     } catch (error) {
       if (isMountedRef.current && !(error instanceof DOMException && error.name === 'AbortError')) {
-        setState({ data: null, loading: false, error: error as Error });
+        const normalized = error instanceof Error ? error : new Error(String(error));
+        setState({ data: null, loading: false, error: normalized });
       }
     }
   }, [asyncFunction]);
@@ -45,7 +46,7 @@ export function useAsync<T>(
   useEffect(() => {
     isMountedRef.current = true;
     if (options.immediate) {
-      execute();
+      void execute();
     }
 
     return () => {
