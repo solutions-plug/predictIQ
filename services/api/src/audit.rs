@@ -90,7 +90,10 @@ impl AuditLogger {
         Ok(id)
     }
 
-    /// Query audit log entries with filters
+    /// Query audit log entries with filters.
+    ///
+    /// Uses `sqlx::QueryBuilder` so every filter value is bound as a typed
+    /// parameter — the SQL string never contains user-supplied data directly.
     pub async fn query(
         &self,
         actor: Option<&str>,
@@ -101,52 +104,7 @@ impl AuditLogger {
         limit: i64,
         offset: i64,
     ) -> anyhow::Result<Vec<AuditLogEntry>> {
-        let mut query = String::from(
-            r#"
-            SELECT id, timestamp, actor, actor_ip, action, resource_type, resource_id,
-                   details, status, error_message, request_id, user_agent
-            FROM audit_log
-            WHERE 1=1
-            "#,
-        );
-
-        let mut bind_count = 0;
-        let mut bindings: Vec<Box<dyn sqlx::Encode<'_, sqlx::Postgres> + Send>> = Vec::new();
-
-        if let Some(a) = actor {
-            bind_count += 1;
-            query.push_str(&format!(" AND actor = ${}", bind_count));
-        }
-
-        if let Some(a) = action {
-            bind_count += 1;
-            query.push_str(&format!(" AND action = ${}", bind_count));
-        }
-
-        if let Some(rt) = resource_type {
-            bind_count += 1;
-            query.push_str(&format!(" AND resource_type = ${}", bind_count));
-        }
-
-        if let Some(f) = from {
-            bind_count += 1;
-            query.push_str(&format!(" AND timestamp >= ${}", bind_count));
-        }
-
-        if let Some(t) = to {
-            bind_count += 1;
-            query.push_str(&format!(" AND timestamp <= ${}", bind_count));
-        }
-
-        query.push_str(" ORDER BY timestamp DESC");
-        
-        bind_count += 1;
-        query.push_str(&format!(" LIMIT ${}", bind_count));
-        
-        bind_count += 1;
-        query.push_str(&format!(" OFFSET ${}", bind_count));
-
-        let mut q = sqlx::query_as::<_, (
+        type Row = (
             i64,
             DateTime<Utc>,
             String,
@@ -159,26 +117,34 @@ impl AuditLogger {
             Option<String>,
             Option<Uuid>,
             Option<String>,
-        )>(&query);
+        );
+
+        let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new(
+            "SELECT id, timestamp, actor, actor_ip, action, resource_type, resource_id, \
+             details, status, error_message, request_id, user_agent \
+             FROM audit_log WHERE 1=1",
+        );
 
         if let Some(a) = actor {
-            q = q.bind(a);
+            qb.push(" AND actor = ").push_bind(a);
         }
         if let Some(a) = action {
-            q = q.bind(a);
+            qb.push(" AND action = ").push_bind(a);
         }
         if let Some(rt) = resource_type {
-            q = q.bind(rt);
+            qb.push(" AND resource_type = ").push_bind(rt);
         }
         if let Some(f) = from {
-            q = q.bind(f);
+            qb.push(" AND timestamp >= ").push_bind(f);
         }
         if let Some(t) = to {
-            q = q.bind(t);
+            qb.push(" AND timestamp <= ").push_bind(t);
         }
-        q = q.bind(limit).bind(offset);
 
-        let rows = q.fetch_all(&self.pool).await?;
+        qb.push(" ORDER BY timestamp DESC LIMIT ").push_bind(limit);
+        qb.push(" OFFSET ").push_bind(offset);
+
+        let rows: Vec<Row> = qb.build_query_as().fetch_all(&self.pool).await?;
 
         Ok(rows
             .into_iter()
@@ -196,26 +162,24 @@ impl AuditLogger {
                     error_message,
                     request_id,
                     user_agent,
-                )| {
-                    AuditLogEntry {
-                        id: Some(id),
-                        timestamp,
-                        actor,
-                        actor_ip: actor_ip_str.and_then(|s| s.parse().ok()),
-                        action,
-                        resource_type,
-                        resource_id,
-                        details,
-                        status: match status.as_str() {
-                            "success" => AuditStatus::Success,
-                            "failure" => AuditStatus::Failure,
-                            "partial" => AuditStatus::Partial,
-                            _ => AuditStatus::Success,
-                        },
-                        error_message,
-                        request_id,
-                        user_agent,
-                    }
+                )| AuditLogEntry {
+                    id: Some(id),
+                    timestamp,
+                    actor,
+                    actor_ip: actor_ip_str.and_then(|s| s.parse().ok()),
+                    action,
+                    resource_type,
+                    resource_id,
+                    details,
+                    status: match status.as_str() {
+                        "success" => AuditStatus::Success,
+                        "failure" => AuditStatus::Failure,
+                        "partial" => AuditStatus::Partial,
+                        _ => AuditStatus::Success,
+                    },
+                    error_message,
+                    request_id,
+                    user_agent,
                 },
             )
             .collect())
@@ -255,6 +219,70 @@ pub struct AuditStatistics {
     pub total: i64,
     pub successful: i64,
     pub failed: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_entry(actor: &str, action: &str, status: AuditStatus) -> AuditLogEntry {
+        AuditLogEntry {
+            id: None,
+            timestamp: Utc::now(),
+            actor: actor.to_string(),
+            actor_ip: None,
+            action: action.to_string(),
+            resource_type: "market".to_string(),
+            resource_id: None,
+            details: None,
+            status,
+            error_message: None,
+            request_id: None,
+            user_agent: None,
+        }
+    }
+
+    #[test]
+    fn audit_status_display_success() {
+        assert_eq!(AuditStatus::Success.to_string(), "success");
+    }
+
+    #[test]
+    fn audit_status_display_failure() {
+        assert_eq!(AuditStatus::Failure.to_string(), "failure");
+    }
+
+    #[test]
+    fn audit_status_display_partial() {
+        assert_eq!(AuditStatus::Partial.to_string(), "partial");
+    }
+
+    #[test]
+    fn create_audit_entry_sets_expected_fields() {
+        let entry = create_audit_entry(
+            "api_key_123".to_string(),
+            None,
+            "resolve_market".to_string(),
+            "market".to_string(),
+            Some("42".to_string()),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(entry.actor, "api_key_123");
+        assert_eq!(entry.action, "resolve_market");
+        assert_eq!(entry.resource_type, "market");
+        assert_eq!(entry.resource_id, Some("42".to_string()));
+        assert!(matches!(entry.status, AuditStatus::Success));
+        assert!(entry.id.is_none());
+    }
+
+    #[test]
+    fn make_entry_helper_sets_status() {
+        let e = make_entry("admin", "delete", AuditStatus::Failure);
+        assert!(matches!(e.status, AuditStatus::Failure));
+        assert_eq!(e.actor, "admin");
+    }
 }
 
 /// Helper to create audit log entry from request context

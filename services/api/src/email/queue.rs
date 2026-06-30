@@ -10,6 +10,7 @@ use crate::cache::RedisCache;
 use crate::db::Database;
 use crate::email::service::idempotency_key;
 use crate::email::types::{EmailJobStatus, EmailJobType};
+use crate::metrics::Metrics;
 use crate::shutdown::ShutdownCoordinator;
 
 const EMAIL_QUEUE_KEY: &str = "email:queue";
@@ -267,7 +268,15 @@ impl EmailQueue {
             .collect()
     }
 
+    /// Minimum delay (seconds) before a requeued dead-letter job is eligible
+    /// for processing. Prevents immediate re-failure loops on persistent errors.
+    const DEAD_LETTER_REQUEUE_DELAY_SECS: i64 = 60;
+
     /// Move a job from the dead-letter set back to the main queue for reprocessing.
+    ///
+    /// The job is scheduled `DEAD_LETTER_REQUEUE_DELAY_SECS` seconds in the future
+    /// so a persistent failure does not cause a tight retry loop. The attempts counter
+    /// is also reset to 0 so the job gets its full retry budget again.
     pub async fn requeue_dead_letter(&self, job_id: Uuid) -> Result<bool> {
         let mut conn = self.cache.get_connection().await?;
 
@@ -280,18 +289,28 @@ impl EmailQueue {
             return Ok(false);
         }
 
-        // Reset DB status so the worker will pick it up again.
+        // Reset attempts to 0 so the job gets its full retry budget.
+        self.db
+            .email_update_job_attempts(job_id, 0, None)
+            .await?;
+
+        // Reset status to pending.
         self.db
             .email_update_job_status(job_id, crate::email::types::EmailJobStatus::Pending.as_str(), None)
             .await?;
 
-        let score = chrono::Utc::now().timestamp() as f64;
+        // Schedule processing after the cooling-off delay to prevent tight loops.
+        let eligible_at = chrono::Utc::now().timestamp() + Self::DEAD_LETTER_REQUEUE_DELAY_SECS;
         let _: () = conn
-            .zadd(EMAIL_QUEUE_KEY, job_id.to_string(), score)
+            .zadd(EMAIL_QUEUE_KEY, job_id.to_string(), eligible_at as f64)
             .await
             .context("Failed to re-enqueue dead-letter job")?;
 
-        tracing::info!("Requeued dead-letter email job: {}", job_id);
+        tracing::info!(
+            job_id = %job_id,
+            delay_secs = Self::DEAD_LETTER_REQUEUE_DELAY_SECS,
+            "Requeued dead-letter email job with cooling-off delay"
+        );
         Ok(true)
     }
 
@@ -325,6 +344,16 @@ impl EmailQueue {
             retry,
             dead_letter,
         })
+    }
+
+    /// Get the current depth of the main email queue.
+    pub async fn get_queue_depth(&self) -> Result<usize> {
+        let mut conn = self.cache.get_connection().await?;
+        let depth: usize = conn
+            .zcard(EMAIL_QUEUE_KEY)
+            .await
+            .context("Failed to get queue depth")?;
+        Ok(depth)
     }
 
     /// Re-queue any jobs stuck in the processing set (e.g. from a previous crash).
@@ -398,6 +427,7 @@ impl EmailQueue {
         shutdown: CancellationToken,
         coordinator: ShutdownCoordinator,
         stale_job_threshold_secs: u64,
+        metrics: Option<crate::metrics::Metrics>,
     ) {
         tracing::info!("Email queue worker started");
 
@@ -444,6 +474,12 @@ impl EmailQueue {
                             break;
                         }
                     }
+                }
+            }
+
+            if let Some(ref m) = metrics {
+                if let Ok(depth) = self.get_queue_depth().await {
+                    m.set_email_queue_depth(depth as i64);
                 }
             }
         }
@@ -517,6 +553,12 @@ pub struct QueueStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dead_letter_requeue_delay_is_positive() {
+        assert!(EmailQueue::DEAD_LETTER_REQUEUE_DELAY_SECS > 0,
+            "cooling-off delay must be positive to prevent immediate re-failure loops");
+    }
 
     /// Test that recover_orphaned_jobs correctly identifies stale jobs.
     /// 

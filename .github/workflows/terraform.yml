@@ -1,0 +1,204 @@
+name: Terraform Plan
+
+on:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "infrastructure/terraform/**"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  TF_WORKING_DIR: infrastructure/terraform
+  TF_VERSION: "1.9.0"
+
+jobs:
+  terraform-fmt:
+    name: Terraform Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform fmt
+        id: fmt
+        run: terraform fmt -check -recursive
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        continue-on-error: true
+
+      - name: Post fmt failure comment
+        if: steps.fmt.outcome == 'failure'
+        uses: actions/github-script@v9
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## Terraform Format Check Failed\n\nRun \`terraform fmt -recursive\` inside \`infrastructure/terraform/\` and commit the result.`
+            })
+
+      - name: Fail on fmt errors
+        if: steps.fmt.outcome == 'failure'
+        run: exit 1
+
+  terraform-validate:
+    name: Terraform Validate
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        environment: [dev, staging, production]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init (local backend for validation)
+        run: terraform init -backend=false
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+      - name: Terraform Validate
+        run: terraform validate
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+  terraform-plan:
+    name: Terraform Plan (${{ matrix.environment }})
+    runs-on: ubuntu-latest
+    needs: [terraform-fmt, terraform-validate]
+    strategy:
+      matrix:
+        environment: [dev, staging, production]
+    environment: ${{ matrix.environment }}
+    env:
+      TF_VAR_environment: ${{ matrix.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: true
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Terraform Init
+        id: init
+        run: |
+          terraform init \
+            -backend-config=backend-config.hcl \
+            -backend-config="key=${{ matrix.environment }}/terraform.tfstate"
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+      - name: Resolve var-file path
+        id: varfile
+        run: |
+          # dev uses a flat file; staging and production use a subdirectory
+          if [ -f "environments/${{ matrix.environment }}.tfvars" ]; then
+            echo "path=environments/${{ matrix.environment }}.tfvars" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=environments/${{ matrix.environment }}/terraform.tfvars" >> "$GITHUB_OUTPUT"
+          fi
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan \
+            -var-file="${{ steps.varfile.outputs.path }}" \
+            -out="${{ matrix.environment }}.tfplan" \
+            -no-color \
+            2>&1 | tee plan-output.txt
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        continue-on-error: true
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: terraform-plan-${{ matrix.environment }}-${{ github.sha }}
+          path: ${{ env.TF_WORKING_DIR }}/${{ matrix.environment }}.tfplan
+          retention-days: 7
+
+      - name: Post plan comment
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require('fs');
+            const planOutput = fs.readFileSync('${{ env.TF_WORKING_DIR }}/plan-output.txt', 'utf8');
+            const outcome = '${{ steps.plan.outcome }}';
+            const env = '${{ matrix.environment }}';
+            const statusEmoji = outcome === 'success' ? '✅' : '❌';
+
+            const truncated = planOutput.length > 60000
+              ? planOutput.slice(0, 60000) + '\n\n... (truncated — download the plan artifact for full output)'
+              : planOutput;
+
+            const body = [
+              `## ${statusEmoji} Terraform Plan — \`${env}\``,
+              '',
+              `**Status:** ${outcome}  |  **Commit:** ${context.sha.slice(0, 7)}`,
+              '',
+              '<details><summary>Show plan</summary>',
+              '',
+              '```hcl',
+              truncated,
+              '```',
+              '',
+              '</details>',
+              '',
+              `> Plan artifact: \`terraform-plan-${env}-${context.sha}\` (retained 7 days)`,
+            ].join('\n');
+
+            // Find and update an existing plan comment from this workflow if present
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const marker = `## ${statusEmoji} Terraform Plan — \`${env}\``;
+            const existing = comments.find(c =>
+              c.user.login === 'github-actions[bot]' && c.body.includes(`Terraform Plan — \`${env}\``)
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+      - name: Fail if plan failed
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
+
+  all-terraform-checks-passed:
+    name: All Terraform Checks Passed
+    needs: [terraform-fmt, terraform-validate, terraform-plan]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Success
+        run: echo "Terraform fmt, validate, and plan all passed."

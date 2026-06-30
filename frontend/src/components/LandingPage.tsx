@@ -1,8 +1,11 @@
 import React from 'react';
 import { useI18n } from '../lib/hooks/useI18n';
 import { useDarkMode } from '../lib/hooks/useDarkMode';
+import { type Locale } from '../lib/i18n';
+import { api } from '../lib/api/client';
 import { Statistics } from './Statistics';
 import { ErrorBoundary } from './ErrorBoundary';
+import { LoadingSpinner } from './LoadingSpinner';
 
 interface LandingPageProps {
   className?: string;
@@ -14,12 +17,13 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
   const [email, setEmail] = React.useState('');
   const [emailError, setEmailError] = React.useState('');
   const [isSubmitted, setIsSubmitted] = React.useState(false);
+  const [apiError, setApiError] = React.useState('');
+  const [isLoading, setIsLoading] = React.useState(false);
   const formStatusRef = React.useRef<HTMLDivElement>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    // Basic email validation
+
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!email) {
       setEmailError(t('hero.emailRequired'));
@@ -29,20 +33,31 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
       setEmailError(t('hero.emailInvalid'));
       return;
     }
-    
+
     setEmailError('');
-    setIsSubmitted(true);
-    
-    // Announce success to screen readers
-    if (formStatusRef.current) {
-      formStatusRef.current.textContent = 'Successfully subscribed to updates!';
+    setApiError('');
+    setIsLoading(true);
+
+    try {
+      const result = await api.newsletterSubscribe({ email });
+      if (result.success) {
+        setIsSubmitted(true);
+        if (formStatusRef.current) {
+          formStatusRef.current.textContent = t('hero.successMessage');
+        }
+      } else {
+        setApiError(result.message || 'Subscription failed');
+      }
+    } catch (err) {
+      setApiError(err instanceof Error ? err.message : 'Network error occurred');
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    // Allow form submission with Enter key
-    if (e.key === 'Enter' && e.currentTarget.tagName === 'FORM') {
-      handleSubmit(e as unknown as React.FormEvent);
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLFormElement>) => {
+    if (e.key === 'Enter') {
+      e.currentTarget.requestSubmit();
     }
   };
 
@@ -92,7 +107,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
                 <select
                   id="locale-select"
                   value={locale}
-                  onChange={(e) => setLocale(e.target.value as any)}
+                  onChange={(e) => setLocale(e.target.value as Locale)}
                   aria-label="Language selection"
                 >
                   {availableLocales.map((loc) => (
@@ -123,6 +138,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
             onSubmit={handleSubmit}
             onKeyDown={handleKeyDown}
             aria-labelledby="signup-heading"
+            aria-busy={isLoading}
             noValidate
           >
             <h2 id="signup-heading" className="visually-hidden">
@@ -141,26 +157,44 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
                 onChange={(e) => {
                   setEmail(e.target.value);
                   setEmailError('');
+                  setApiError('');
                 }}
                 aria-required="true"
                 aria-invalid={!!emailError}
                 aria-describedby={emailError ? 'email-error' : undefined}
                 placeholder={t('hero.emailPlaceholder')}
-                disabled={isSubmitted}
+                disabled={isSubmitted || isLoading}
               />
               {emailError && (
                 <span id="email-error" role="alert" className="error-message">
                   {emailError}
                 </span>
               )}
+              {apiError && (
+                <span id="api-error" role="alert" className="error-message">
+                  {apiError}
+                </span>
+              )}
             </div>
 
             <button 
               type="submit" 
-              disabled={isSubmitted}
-              aria-label={isSubmitted ? t('hero.subscribedButton') : t('hero.submitButton')}
+              disabled={isSubmitted || isLoading}
+              aria-label={
+                isLoading 
+                  ? 'Submitting...' 
+                  : isSubmitted 
+                    ? t('hero.subscribedButton') 
+                    : t('hero.submitButton')
+              }
             >
-              {isSubmitted ? t('hero.subscribedButton') : t('hero.submitButton')}
+              {isLoading ? (
+                <LoadingSpinner size="small" aria-label="Submitting" />
+              ) : isSubmitted ? (
+                t('hero.subscribedButton')
+              ) : (
+                t('hero.submitButton')
+              )}
             </button>
 
             {/* Screen reader announcement */}

@@ -25,6 +25,53 @@ provider "aws" {
   }
 }
 
+# The ECS tasks SG is created at root level to break the circular dependency
+# between the ecs module (which needs the ALB SG to wire the ingress rule) and
+# rds/redis modules (which need this SG ID for their ingress rules).
+# Egress rules are added separately via aws_security_group_rule so that they
+# can reference the rds/redis module outputs without creating a cycle.
+resource "aws_security_group" "ecs_tasks" {
+  name   = "predictiq-${var.environment}-ecs-tasks-sg"
+  vpc_id = module.vpc.vpc_id
+
+  tags = {
+    Name        = "predictiq-${var.environment}-ecs-tasks-sg"
+    Project     = "predictiq"
+    Environment = var.environment
+    ManagedBy   = "terraform"
+  }
+}
+
+# Outbound to RDS (PostgreSQL)
+resource "aws_security_group_rule" "ecs_tasks_egress_rds" {
+  type                     = "egress"
+  from_port                = 5432
+  to_port                  = 5432
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.ecs_tasks.id
+  source_security_group_id = module.rds.sg_id
+}
+
+# Outbound to Redis
+resource "aws_security_group_rule" "ecs_tasks_egress_redis" {
+  type                     = "egress"
+  from_port                = 6379
+  to_port                  = 6379
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.ecs_tasks.id
+  source_security_group_id = module.redis.sg_id
+}
+
+# Outbound HTTPS for AWS API calls (Secrets Manager, ECR, CloudWatch)
+resource "aws_security_group_rule" "ecs_tasks_egress_https" {
+  type              = "egress"
+  from_port         = 443
+  to_port           = 443
+  protocol          = "tcp"
+  security_group_id = aws_security_group.ecs_tasks.id
+  cidr_blocks       = ["0.0.0.0/0"]
+}
+
 module "vpc" {
   source = "./modules/vpc"
 
@@ -44,6 +91,7 @@ module "rds" {
   db_instance_class    = var.db_instance_class
   allocated_storage    = var.allocated_storage
   backup_retention     = var.backup_retention_days
+  ecs_tasks_sg_id      = aws_security_group.ecs_tasks.id
 }
 
 module "redis" {
@@ -55,6 +103,7 @@ module "redis" {
   node_type          = var.redis_node_type
   num_cache_nodes    = var.redis_num_nodes
   engine_version     = var.redis_engine_version
+  ecs_tasks_sg_id    = aws_security_group.ecs_tasks.id
 }
 
 module "ecs" {
@@ -71,6 +120,7 @@ module "ecs" {
   api_memory            = var.api_memory
   database_url          = module.rds.database_url
   redis_url             = module.redis.redis_url
+  ecs_tasks_sg_id       = aws_security_group.ecs_tasks.id
 }
 
 module "monitoring" {
