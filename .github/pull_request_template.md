@@ -15,6 +15,17 @@
 
 <!-- Describe how you tested this change. -->
 
+## Bundle Size
+
+<!-- Run `npm run analyze` in the frontend directory and fill in the table below.
+     Baseline: vendor ~220 kB, main ~90 kB, _app ~60 kB (all gzip). -->
+
+| Chunk | Before | After |
+|---|---|---|
+| vendor.js | | |
+| main*.js | | |
+| pages/_app*.js | | |
+
 ## Checklist
 
 - [ ] Tests pass locally
@@ -26,6 +37,7 @@
   git add openapi.yaml && git commit -m "chore: regenerate openapi.yaml"
   ```
 - [ ] If you **changed system architecture** (new service, database, external dependency, or network boundary), updated [`docs/architecture.md`](../docs/architecture.md)
+- [ ] Bundle size checked (if frontend changes)
 
 ## Related Issues
 
