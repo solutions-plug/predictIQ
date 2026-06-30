@@ -81,4 +81,56 @@ describe('apiCache', () => {
       expect(CACHE_TTL.LONG).toBe(30 * 60 * 1000);
     });
   });
+
+  describe('tag-based invalidation (#947)', () => {
+    it('invalidates entries matching any given tag while leaving others intact', () => {
+      apiCache.set('url/markets/featured', [{ id: 1 }], CACHE_TTL.SHORT, ['markets']);
+      apiCache.set('url/blockchain/markets/1', { id: 1 }, CACHE_TTL.MEDIUM, ['markets', 'blockchain']);
+      apiCache.set('url/statistics', { total: 100 }, CACHE_TTL.MEDIUM, ['statistics']);
+
+      apiCache.invalidateByTags(['markets']);
+
+      expect(apiCache.get('url/markets/featured')).toBeNull();
+      expect(apiCache.get('url/blockchain/markets/1')).toBeNull();
+      // statistics has a different tag and must survive
+      expect(apiCache.get('url/statistics')).toEqual({ total: 100 });
+    });
+
+    it('invalidates entries carrying multiple tags when any matches', () => {
+      apiCache.set('url/blockchain/stats', { txs: 50 }, CACHE_TTL.MEDIUM, ['blockchain', 'statistics']);
+
+      apiCache.invalidateByTags(['blockchain']);
+
+      expect(apiCache.get('url/blockchain/stats')).toBeNull();
+    });
+
+    it('does not affect entries without tags', () => {
+      apiCache.set('url/content', { items: [] }, CACHE_TTL.SHORT); // no tags
+
+      apiCache.invalidateByTags(['markets']);
+
+      expect(apiCache.get('url/content')).toEqual({ items: [] });
+    });
+
+    it('GET returns fresh data after mutation invalidates its cache tag', () => {
+      // Simulate a cached GET response tagged 'markets'.
+      apiCache.set('url/markets/featured', [{ id: 1, title: 'Old' }], CACHE_TTL.SHORT, ['markets']);
+      expect(apiCache.get('url/markets/featured')).toEqual([{ id: 1, title: 'Old' }]);
+
+      // Simulate a mutation that invalidates the 'markets' tag.
+      apiCache.invalidateByTags(['markets']);
+
+      // Cache miss — the next GET will fetch fresh data from the server.
+      expect(apiCache.get('url/markets/featured')).toBeNull();
+    });
+
+    it('is a no-op when no entries carry the given tag', () => {
+      apiCache.set('url/email/analytics', { sent: 10 }, CACHE_TTL.MEDIUM, ['email']);
+
+      // Invalidating an unrelated tag must not remove anything.
+      apiCache.invalidateByTags(['newsletter']);
+
+      expect(apiCache.get('url/email/analytics')).toEqual({ sent: 10 });
+    });
+  });
 });
