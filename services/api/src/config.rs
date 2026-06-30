@@ -1,5 +1,6 @@
 use ipnet::IpNet;
 use std::{
+    collections::HashMap,
     env,
     net::{IpAddr, SocketAddr},
     str::FromStr,
@@ -66,7 +67,7 @@ impl CorsConfig {
                     .filter(|s| !s.is_empty())
                     .collect()
             })
-            .unwrap_or_else(|| {
+            .unwrap_or_else(|_| {
                 ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
                     .iter()
                     .map(|s| s.to_string())
@@ -80,7 +81,7 @@ impl CorsConfig {
                     .filter(|s| !s.is_empty())
                     .collect()
             })
-            .unwrap_or_else(|| {
+            .unwrap_or_else(|_| {
                 ["content-type", "authorization"]
                     .iter()
                     .map(|s| s.to_string())
@@ -168,6 +169,9 @@ pub struct Config {
     pub contract_id: String,
     pub retry_attempts: u32,
     pub retry_base_delay_ms: u64,
+    /// Jitter factor for RPC retry backoff. 1.0 = full jitter (default), 0.0 = no jitter.
+    /// Configured via `RPC_BACKOFF_JITTER_FACTOR`.
+    pub rpc_backoff_jitter_factor: f64,
     pub event_poll_interval: Duration,
     pub tx_poll_interval: Duration,
     pub confirmation_ledger_lag: u32,
@@ -177,6 +181,9 @@ pub struct Config {
     pub sendgrid_api_key: Option<String>,
     pub from_email: Option<String>,
     pub base_url: String,
+    /// Server-side secret for HMAC-SHA256 email idempotency keys.
+    /// Configured via `EMAIL_IDEMPOTENCY_SECRET`. Falls back to `hmac_key` if unset.
+    pub email_idempotency_secret: String,
     pub api_keys: Vec<String>,
     pub admin_whitelist_ips: Vec<IpAddr>,
     pub trust_proxy: bool,
@@ -361,6 +368,11 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(200),
+            rpc_backoff_jitter_factor: env::var("RPC_BACKOFF_JITTER_FACTOR")
+                .ok()
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(1.0)
+                .clamp(0.0, 1.0),
             event_poll_interval: Duration::from_secs(
                 env::var("EVENT_POLL_INTERVAL_SECS")
                     .ok()
@@ -389,6 +401,9 @@ impl Config {
             sendgrid_api_key: env::var("SENDGRID_API_KEY").ok(),
             from_email: env::var("FROM_EMAIL").ok(),
             base_url: env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:8080".to_string()),
+            email_idempotency_secret: env::var("EMAIL_IDEMPOTENCY_SECRET")
+                .or_else(|_| env::var("HMAC_KEY"))
+                .unwrap_or_default(),
             api_keys: env::var("API_KEYS")
                 .ok()
                 .map(|keys| keys.split(',').map(|k| k.trim().to_string()).collect())
@@ -644,7 +659,9 @@ impl ContractKeySchema {
     }
 
     /// Validate that all templates that require `{id}` actually contain it,
-    /// and that no template is empty.
+    /// and that no template is empty.  Also detects circular dependencies
+    /// between template field references (e.g. `{market}` referring back to
+    /// `platform_stats` which refers to `market`).
     ///
     /// Returns `Err` with a list of every problem found so all issues are
     /// surfaced in a single startup log line rather than discovered one by one.
@@ -678,11 +695,97 @@ impl ContractKeySchema {
             }
         }
 
+        // Circular dependency check over template field references.
+        if let Some(cycle_path) = self.detect_cycle() {
+            errors.push(format!(
+                "contract key schema contains circular dependency: {}",
+                cycle_path
+            ));
+        }
+
         if errors.is_empty() {
             Ok(())
         } else {
             Err(SchemaValidationError { errors })
         }
+    }
+
+    /// Detect circular references between template fields.
+    ///
+    /// A template may reference another field via `{field_name}` placeholders
+    /// (excluding `{id}`, which is a runtime value, not a field reference).
+    /// This scans the dependency graph for cycles using DFS with 3-color
+    /// marking.  Returns `Some(cycle_path)` when a cycle is found, or `None`
+    /// when the graph is acyclic.
+    fn detect_cycle(&self) -> Option<String> {
+        const FIELDS: [&'static str; 5] =
+            ["market", "platform_stats", "user_bets", "oracle_result", "health_check"];
+
+        let templates = [
+            ("market", &self.market),
+            ("platform_stats", &self.platform_stats),
+            ("user_bets", &self.user_bets),
+            ("oracle_result", &self.oracle_result),
+            ("health_check", &self.health_check),
+        ];
+
+        let mut deps: HashMap<String, Vec<String>> = HashMap::new();
+        for (name, template) in &templates {
+            let mut refs = Vec::new();
+            for &field in &FIELDS {
+                let placeholder = format!("{{{}}}", field);
+                if template.contains(&placeholder) {
+                    refs.push(field.to_string());
+                }
+            }
+            deps.insert(name.to_string(), refs);
+        }
+
+        let mut colors: HashMap<String, u8> =
+            FIELDS.iter().map(|&f| (f.to_string(), 0)).collect();
+        let mut path: Vec<String> = Vec::new();
+
+        for &field in &FIELDS {
+            if *colors.get(field).unwrap_or(&0) == 0 {
+                if let Some(cycle) =
+                    Self::dfs(field, &deps, &mut colors, &mut path)
+                {
+                    return Some(cycle.join(" → "));
+                }
+            }
+        }
+
+        None
+    }
+
+    fn dfs(
+        node: &str,
+        deps: &HashMap<String, Vec<String>>,
+        colors: &mut HashMap<String, u8>,
+        path: &mut Vec<String>,
+    ) -> Option<Vec<String>> {
+        colors.insert(node.to_string(), 1);
+        path.push(node.to_string());
+
+        if let Some(neighbors) = deps.get(node) {
+            for neighbor in neighbors {
+                let color = *colors.get(neighbor.as_str()).unwrap_or(&0);
+                if color == 1 {
+                    if let Some(cycle_start) = path.iter().position(|x| x == neighbor) {
+                        let mut cycle = path[cycle_start..].to_vec();
+                        cycle.push(neighbor.clone());
+                        return Some(cycle);
+                    }
+                }
+                if let Some(result) = Self::dfs(neighbor, deps, colors, path) {
+                    return Some(result);
+                }
+            }
+        }
+
+        path.pop();
+        colors.insert(node.to_string(), 2);
+        None
     }
 
     // ── Key builders ──────────────────────────────────────────────────────────
@@ -729,6 +832,7 @@ mod tests {
             contract_id: "contract_id".to_string(),
             retry_attempts: 3,
             retry_base_delay_ms: 200,
+            rpc_backoff_jitter_factor: 1.0,
             event_poll_interval: Duration::from_secs(5),
             tx_poll_interval: Duration::from_secs(4),
             confirmation_ledger_lag: 3,
@@ -738,6 +842,7 @@ mod tests {
             sendgrid_api_key: None,
             from_email: None,
             base_url: "http://localhost:8080".to_string(),
+            email_idempotency_secret: "test-secret".to_string(),
             api_keys: vec![],
             admin_whitelist_ips: vec![],
             trust_proxy: true,
@@ -800,6 +905,7 @@ mod tests {
             contract_id: "contract_id".to_string(),
             retry_attempts: 3,
             retry_base_delay_ms: 200,
+            rpc_backoff_jitter_factor: 1.0,
             event_poll_interval: Duration::from_secs(5),
             tx_poll_interval: Duration::from_secs(4),
             confirmation_ledger_lag: 3,
@@ -809,6 +915,7 @@ mod tests {
             sendgrid_api_key: None,
             from_email: None,
             base_url: "http://localhost:8080".to_string(),
+            email_idempotency_secret: "".to_string(),
             api_keys: vec![],
             admin_whitelist_ips: vec![],
             trust_proxy: true,
@@ -871,6 +978,7 @@ mod tests {
             contract_id: "contract_id".to_string(),
             retry_attempts: 3,
             retry_base_delay_ms: 200,
+            rpc_backoff_jitter_factor: 1.0,
             event_poll_interval: Duration::from_secs(5),
             tx_poll_interval: Duration::from_secs(4),
             confirmation_ledger_lag: 3,
@@ -880,6 +988,7 @@ mod tests {
             sendgrid_api_key: None,
             from_email: None,
             base_url: "http://localhost:8080".to_string(),
+            email_idempotency_secret: "".to_string(),
             api_keys: vec![],
             admin_whitelist_ips: vec![],
             trust_proxy: true,
@@ -942,6 +1051,7 @@ mod tests {
             contract_id: "contract_id".to_string(),
             retry_attempts: 3,
             retry_base_delay_ms: 200,
+            rpc_backoff_jitter_factor: 1.0,
             event_poll_interval: Duration::from_secs(5),
             tx_poll_interval: Duration::from_secs(4),
             confirmation_ledger_lag: 3,
@@ -951,6 +1061,7 @@ mod tests {
             sendgrid_api_key: None,
             from_email: None,
             base_url: "http://localhost:8080".to_string(),
+            email_idempotency_secret: "".to_string(),
             api_keys: vec![],
             admin_whitelist_ips: vec![],
             trust_proxy: true,
@@ -989,5 +1100,81 @@ mod tests {
             },
         };
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_detects_two_node_cycle() {
+        let schema = ContractKeySchema {
+            version: "1.0.0".to_string(),
+            market: "stats:{platform_stats}:{id}".to_string(),
+            platform_stats: "markets:{market}:{id}".to_string(),
+            user_bets: "user_bets:{id}".to_string(),
+            oracle_result: "oracle_result:{id}".to_string(),
+            health_check: "health_check:{id}".to_string(),
+        };
+
+        let result = schema.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| e.contains("circular dependency")),
+            "expected circular dependency error, got: {:?}",
+            err.errors
+        );
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| e.contains("market") && e.contains("platform_stats")),
+            "expected cycle path to mention market and platform_stats, got: {:?}",
+            err.errors
+        );
+    }
+
+    #[test]
+    fn test_validate_detects_three_node_cycle() {
+        let schema = ContractKeySchema {
+            version: "1.0.0".to_string(),
+            market: "mb:{user_bets}:{id}".to_string(),
+            platform_stats: "platform:stats".to_string(),
+            user_bets: "or:{oracle_result}:{id}".to_string(),
+            oracle_result: "mk:{market}:{id}".to_string(),
+            health_check: "health_check:{id}".to_string(),
+        };
+
+        let result = schema.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| e.contains("circular dependency")),
+            "expected circular dependency error, got: {:?}",
+            err.errors
+        );
+        assert!(
+            err.errors.iter().any(|e| {
+                e.contains("market")
+                    && e.contains("user_bets")
+                    && e.contains("oracle_result")
+            }),
+            "expected cycle path to mention market, user_bets, and oracle_result, got: {:?}",
+            err.errors
+        );
+    }
+
+    #[test]
+    fn test_validate_no_cycle_on_defaults() {
+        let schema = ContractKeySchema {
+            version: "1.0.0".to_string(),
+            market: "market:{id}".to_string(),
+            platform_stats: "platform:stats".to_string(),
+            user_bets: "user_bets:{id}".to_string(),
+            oracle_result: "oracle_result:{id}".to_string(),
+            health_check: "health_check:{id}".to_string(),
+        };
+
+        assert!(schema.validate().is_ok());
     }
 }

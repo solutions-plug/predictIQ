@@ -409,6 +409,9 @@ pub fn release_creation_deposit(
 ) -> Result<(), ErrorCode> {
     let market = get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
 
+    // Only the market creator may reclaim their own deposit
+    market.creator.require_auth();
+
     if market.status != MarketStatus::Resolved {
         return Err(ErrorCode::MarketNotActive);
     }

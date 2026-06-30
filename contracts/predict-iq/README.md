@@ -2,6 +2,80 @@
 
 Soroban smart contract for the PredictIQ prediction market platform.
 
+## Fuzzing
+
+The `fuzz/` directory contains [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz)
+targets for the three primary entry points. Fuzzing requires a nightly toolchain
+and the `cargo-fuzz` binary.
+
+### Setup
+
+```bash
+rustup toolchain install nightly
+cargo install cargo-fuzz
+```
+
+### Running a target
+
+```bash
+# From contracts/predict-iq/
+cargo +nightly fuzz run fuzz_place_bet
+cargo +nightly fuzz run fuzz_resolve_market
+cargo +nightly fuzz run fuzz_withdraw
+```
+
+Run with a time limit (CI uses 60 s):
+
+```bash
+cargo +nightly fuzz run fuzz_place_bet -- -max_total_time=60
+```
+
+### Targets
+
+| Target | Entry point | What it fuzzes |
+|--------|-------------|----------------|
+| `fuzz_place_bet` | `place_bet` | Arbitrary outcome, amount, timestamp |
+| `fuzz_resolve_market` | `resolve_market` | Arbitrary market ID and winning outcome |
+| `fuzz_withdraw` | `withdraw_refund` | Arbitrary market ID on a cancelled market |
+
+### Corpus and crashes
+
+Corpora are stored in `fuzz/corpus/<target>/` (gitignored). Crash-inducing
+inputs found during a run are written to `fuzz/artifacts/<target>/` and must be
+added as regression tests under `src/modules/` before the crash is considered
+fixed.
+
+### CI
+
+The `contract-fuzz` CI job (`.github/workflows/test.yml`) runs each target for
+**60 seconds** using libFuzzer on every push to `main` / `develop`. Crashes
+upload to the `fuzz-crashes` GitHub Actions artifact.
+
+## Authorization Model
+
+Every contract function that mutates state requires authorization from the
+appropriate address via Soroban's `require_auth()` mechanism. The table below
+documents which role authorizes each category of operation.
+
+| Role | Description | Functions |
+|------|-------------|-----------|
+| **Admin** | Contract owner; set at `initialize`. Two-step transfer via `propose_admin` / `accept_admin`. | `propose_admin`, `cancel_admin_transfer`, `set_base_fee`, `set_fee_admin`, `set_oracle_result`, `resolve_market`, `set_governance_token`, `reset_monitoring`, `set_guardian`, `set_circuit_breaker`, `set_circuit_breaker_threshold`, `set_dispute_window`, `set_dispute_window_bounds`, `set_creator_reputation`, `set_creation_deposit`, `set_creation_fee`, `set_protocol_treasury`, `initialize_guardians`, `add_guardian`, `remove_guardian`, `execute_guardian_removal`, `initiate_upgrade`, `set_timelock_duration`, `cancel_market_admin` |
+| **FeeAdmin** | Optional address for fee withdrawals. Falls back to Admin when unset. | `withdraw_protocol_fees` |
+| **Guardian** | Circuit-breaker and emergency-pause operator. Set by Admin. | `pause`, `unpause` |
+| **Creator** | Market creator; authenticated at creation. | `create_market`, `create_market_with_dispute_window`, `release_creation_deposit` |
+| **Bettor** | Participant who placed a bet. | `place_bet`, `claim_winnings`, `withdraw_refund` |
+| **Voter (dispute)** | Any guardian-token holder during a dispute window. | `cast_vote`, `vote_on_guardian_removal`, `vote_for_upgrade`, `emergency_pause` |
+| **Pending admin** | The address nominated by `propose_admin`. | `accept_admin` |
+| **Referrer** | Address that referred a bet. | `claim_referral_rewards` |
+| **Permissionless** | Can be called by anyone; protected by time/state guards instead of role. | `attempt_oracle_resolution`, `finalize_resolution`, `prune_market`, `cancel_market_vote`, `execute_upgrade`, `file_dispute` |
+
+### Key invariants
+
+- `Admin` and `Guardian` are always distinct addresses (`add_guardian` / `initialize_guardians` reject the admin address).
+- `vote_on_guardian_removal` authenticates the `voter` with `require_auth()` before checking guardian membership, preventing address impersonation.
+- `release_creation_deposit` authenticates `market.creator` so no third party can race to trigger the refund path.
+- `resolve_market` (admin override) and `set_oracle_result` both call `require_admin` at the contract-interface layer (`lib.rs`) before delegating to the modules.
+
 ## WASM Size Limit
 
 The contract enforces a **64 KB (65,536 bytes)** WASM size limit. This is an internal budget target stricter than Soroban's actual limit, ensuring the contract remains performant and deployable across all networks. The limit is configured in `.github/workflows/test.yml` as `WASM_SIZE_LIMIT_BYTES` and checked during the build-optimized job.

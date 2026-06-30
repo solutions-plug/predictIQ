@@ -59,7 +59,6 @@ The following Prometheus gauges are exported on `/metrics` and updated on each s
 | `db_pool_size` | Total connections in the pool (idle + active) |
 | `db_pool_idle` | Idle connections waiting for work |
 | `db_pool_active` | Connections currently executing a query |
-| `BLOCKCHAIN_RPC_URL` | testnet default | Soroban RPC endpoint |
 | `PREDICTIQ_CONTRACT_ID` | `predictiq_contract` | On-chain contract ID |
 | `API_KEYS` | _(none)_ | Comma-separated admin API keys |
 | `ADMIN_WHITELIST_IPS` | _(none)_ | Comma-separated IPs allowed to hit admin routes |
@@ -68,6 +67,26 @@ The following Prometheus gauges are exported on `/metrics` and updated on each s
 | `HMAC_KEY` | _(required)_ | Current HMAC secret key for signing tokens |
 | `HMAC_KEY_PREVIOUS` | _(none)_ | Previous HMAC key for zero-downtime key rotation |
 | `HMAC_KEY_ROTATION_GRACE_SECONDS` | `3600` | Grace period (seconds) for accepting tokens signed with the previous key |
+
+### Blockchain network configuration
+
+| Variable | Default | Description |
+|---|---|---|
+| `BLOCKCHAIN_NETWORK` | `testnet` | Network to connect to: `testnet`, `mainnet`, or `custom` |
+| `BLOCKCHAIN_RPC_URL` | _(network default)_ | Soroban RPC endpoint |
+| `STELLAR_NETWORK_PASSPHRASE` | _(network default)_ | Expected network passphrase; validated against the RPC node at startup |
+
+Expected passphrases per `BLOCKCHAIN_NETWORK`:
+
+| Network | Passphrase |
+|---|---|
+| `testnet` | `Test SDF Network ; September 2015` |
+| `mainnet` | `Public Global Stellar Network ; September 2015` |
+| `custom` | _(empty — validation skipped)_ |
+
+At startup the API queries the RPC node's `getNetwork` endpoint. If the returned passphrase does not match the configured `STELLAR_NETWORK_PASSPHRASE`, the service rejects startup with a fatal error. This prevents silently signing transactions for the wrong network.
+
+To disable validation entirely (e.g. for a local custom network without a fixed passphrase), leave `STELLAR_NETWORK_PASSPHRASE` unset.
 
 See `DATABASE.md` for database-specific configuration.
 
