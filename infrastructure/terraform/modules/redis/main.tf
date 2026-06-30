@@ -22,6 +22,11 @@ variable "engine_version" {
   type = string
 }
 
+variable "ecs_tasks_sg_id" {
+  type        = string
+  description = "Security group ID of the ECS tasks that are allowed to connect"
+}
+
 locals {
   common_tags = {
     Project   = "predictiq"
@@ -47,18 +52,12 @@ resource "aws_security_group" "redis" {
   name   = "predictiq-${var.environment}-redis-sg"
   vpc_id = var.vpc_id
 
+  # Inbound Redis from ECS tasks only
   ingress {
-    from_port   = 6379
-    to_port     = 6379
-    protocol    = "tcp"
-    cidr_blocks = ["10.0.0.0/8"]
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    from_port       = 6379
+    to_port         = 6379
+    protocol        = "tcp"
+    security_groups = [var.ecs_tasks_sg_id]
   }
 
   tags = merge(
@@ -95,10 +94,16 @@ resource "aws_elasticache_cluster" "main" {
   )
 }
 
+output "sg_id" {
+  value = aws_security_group.redis.id
+}
+
 output "endpoint" {
-  value = aws_elasticache_cluster.main.cache_nodes[0].address
+  value     = aws_elasticache_cluster.main.cache_nodes[0].address
+  sensitive = true
 }
 
 output "redis_url" {
-  value = "redis://${aws_elasticache_cluster.main.cache_nodes[0].address}:6379"
+  value     = "redis://${aws_elasticache_cluster.main.cache_nodes[0].address}:6379"
+  sensitive = true
 }

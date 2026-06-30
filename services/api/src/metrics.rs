@@ -3,6 +3,26 @@ use std::time::Duration;
 use anyhow::Context;
 use prometheus::{Encoder, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec, Registry, TextEncoder};
 
+const MAX_LABEL_VALUE_LEN: usize = 48;
+
+fn normalize_label(value: &str) -> String {
+    let sanitized: String = value
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+        .collect();
+    let sanitized = sanitized.trim_matches('_').to_string();
+    if sanitized.len() > MAX_LABEL_VALUE_LEN {
+        let head = &sanitized[..(MAX_LABEL_VALUE_LEN - 8)];
+        format!("{}_hotlbl", head)
+    } else {
+        sanitized
+    }
+}
+
+fn normalize_label_values(vals: &[&str]) -> Vec<String> {
+    vals.iter().map(|v| normalize_label(v)).collect()
+}
+
 #[derive(Clone)]
 pub struct Metrics {
     registry: Registry,
@@ -14,10 +34,12 @@ pub struct Metrics {
     rpc_fallbacks: IntCounterVec,
     db_timeouts: IntCounterVec,
     email_dlq_size: IntGauge,
+    email_queue_depth: IntGauge,
     db_pool_connections_active: IntGaugeVec,
     db_pool_connections_idle: IntGaugeVec,
     db_pool_acquire_duration: HistogramVec,
     rate_limit_rejections: IntCounterVec,
+    cache_circuit_breaker_state: IntGauge,
 }
 
 impl Metrics {
@@ -81,6 +103,12 @@ impl Metrics {
         )
         .context("email_dlq_size metric")?;
 
+        let email_queue_depth = IntGauge::new(
+            "email_queue_depth",
+            "Number of email jobs currently in the main queue",
+        )
+        .context("email_queue_depth metric")?;
+
         let db_pool_connections_active = IntGaugeVec::new(
             prometheus::Opts::new(
                 "db_pool_connections_active",
@@ -120,6 +148,12 @@ impl Metrics {
         )
         .context("rate_limit_rejections metric")?;
 
+        let cache_circuit_breaker_state = IntGauge::new(
+            "cache_circuit_breaker_state",
+            "Current Redis cache circuit breaker state (0=closed, 1=open, 2=half_open)",
+        )
+        .context("cache_circuit_breaker_state metric")?;
+
         registry.register(Box::new(cache_hits.clone()))?;
         registry.register(Box::new(cache_misses.clone()))?;
         registry.register(Box::new(invalidations.clone()))?;
@@ -128,10 +162,12 @@ impl Metrics {
         registry.register(Box::new(rpc_fallbacks.clone()))?;
         registry.register(Box::new(db_timeouts.clone()))?;
         registry.register(Box::new(email_dlq_size.clone()))?;
+        registry.register(Box::new(email_queue_depth.clone()))?;
         registry.register(Box::new(db_pool_connections_active.clone()))?;
         registry.register(Box::new(db_pool_connections_idle.clone()))?;
         registry.register(Box::new(db_pool_acquire_duration.clone()))?;
         registry.register(Box::new(rate_limit_rejections.clone()))?;
+        registry.register(Box::new(cache_circuit_breaker_state.clone()))?;
 
         Ok(Self {
             registry,
@@ -143,52 +179,64 @@ impl Metrics {
             rpc_fallbacks,
             db_timeouts,
             email_dlq_size,
+            email_queue_depth,
             db_pool_connections_active,
             db_pool_connections_idle,
             db_pool_acquire_duration,
             rate_limit_rejections,
+            cache_circuit_breaker_state,
         })
     }
 
     pub fn observe_hit(&self, layer: &str, endpoint: &str) {
-        self.cache_hits.with_label_values(&[layer, endpoint]).inc();
+        let labels = normalize_label_values(&[layer, endpoint]);
+        self.cache_hits.with_label_values(&[&labels[0], &labels[1]]).inc();
     }
 
     pub fn observe_miss(&self, layer: &str, endpoint: &str) {
+        let labels = normalize_label_values(&[layer, endpoint]);
         self.cache_misses
-            .with_label_values(&[layer, endpoint])
+            .with_label_values(&[&labels[0], &labels[1]])
             .inc();
     }
 
     pub fn observe_invalidation(&self, scope: &str, count: usize) {
         if count > 0 {
+            let labels = normalize_label_values(&[scope]);
             self.invalidations
-                .with_label_values(&[scope])
+                .with_label_values(&[&labels[0]])
                 .inc_by(count as u64);
         }
     }
 
-
-    pub fn observe_request(&self, route: &str, status_code: &str, duration: Duration) {
+    pub fn observe_request(&self, route: &str, status_code: u16, duration: f64) {
+        let labels = normalize_label_values(&[route, &status_code.to_string()]);
         self.request_latency
-            .with_label_values(&[route, status_code])
-            .observe(duration.as_secs_f64());
+            .with_label_values(&[&labels[0], &labels[1]])
+            .observe(duration);
     }
 
     pub fn observe_rpc_error(&self, method: &str) {
-        self.rpc_errors.with_label_values(&[method]).inc();
+        let labels = normalize_label_values(&[method]);
+        self.rpc_errors.with_label_values(&[&labels[0]]).inc();
     }
 
     pub fn observe_rpc_fallback(&self, endpoint: &str) {
-        self.rpc_fallbacks.with_label_values(&[endpoint]).inc();
+        let labels = normalize_label_values(&[endpoint]);
+        self.rpc_fallbacks.with_label_values(&[&labels[0]]).inc();
     }
 
     pub fn observe_db_timeout(&self, operation: &str) {
-        self.db_timeouts.with_label_values(&[operation]).inc();
+        let labels = normalize_label_values(&[operation]);
+        self.db_timeouts.with_label_values(&[&labels[0]]).inc();
     }
 
     pub fn set_dlq_size(&self, n: i64) {
         self.email_dlq_size.set(n);
+    }
+
+    pub fn set_email_queue_depth(&self, n: i64) {
+        self.email_queue_depth.set(n);
     }
 
     pub fn observe_tx_eviction(&self, count: u64) {
@@ -199,31 +247,49 @@ impl Metrics {
         }
     }
 
-
     /// Update connection pool utilisation gauges.
     /// Call this on each pool event (connection acquired, released, opened, closed).
-    pub fn observe_pool_connections(&self, pool: &str, active: i64, idle: i64) {
+    pub fn observe_pool_connections(&self, pool_label: &str, active: i64, idle: i64) {
+        let labels = normalize_label_values(&[pool_label]);
         self.db_pool_connections_active
-            .with_label_values(&[pool])
+            .with_label_values(&[&labels[0]])
             .set(active);
         self.db_pool_connections_idle
-            .with_label_values(&[pool])
+            .with_label_values(&[&labels[0]])
+            .set(idle);
+    }
+
+    /// Snapshot the current pool size and idle count into Prometheus gauges.
+    /// Call this before rendering `/metrics` so the values are current.
+    pub fn record_pool_metrics(&self, max: u32, idle: i64) {
+        let pool_label = format!("pool_{}", max);
+        self.db_pool_connections_active
+            .with_label_values(&[&pool_label])
+            .set((max as i64).saturating_sub(idle));
+        self.db_pool_connections_idle
+            .with_label_values(&[&pool_label])
             .set(idle);
     }
 
     /// Record how long the caller waited to acquire a connection from the pool.
     pub fn observe_pool_acquire(&self, pool: &str, duration: Duration) {
+        let labels = normalize_label_values(&[pool]);
         self.db_pool_acquire_duration
-            .with_label_values(&[pool])
+            .with_label_values(&[&labels[0]])
             .observe(duration.as_secs_f64());
     }
 
     /// Increment the rate-limit rejection counter for a route.
     /// Call this whenever a request is rejected with 429 Too Many Requests.
     pub fn observe_rate_limit_rejection(&self, route: &str) {
+        let labels = normalize_label_values(&[route]);
         self.rate_limit_rejections
-            .with_label_values(&[route])
+            .with_label_values(&[&labels[0]])
             .inc();
+    }
+
+    pub fn set_circuit_breaker_state(&self, state: i64) {
+        self.cache_circuit_breaker_state.set(state);
     }
 
     pub fn render(&self) -> anyhow::Result<String> {
@@ -234,3 +300,118 @@ impl Metrics {
         Ok(String::from_utf8(buffer)?)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── normalize_label ────────────────────────────────────────────────────────
+
+    #[test]
+    fn normalize_label_lowercases_and_sanitises() {
+        assert_eq!(normalize_label("ApiV1_Statistics"), "api_v1_statistics");
+        assert_eq!(normalize_label("featured-markets"), "featured_markets");
+    }
+
+    #[test]
+    fn normalize_label_strips_leading_and_trailing_underscores() {
+        assert_eq!(normalize_label("_hello_world_"), "hello_world");
+        assert_eq!(normalize_label("___"), "");
+    }
+
+    #[test]
+    fn normalize_label_truncates_long_values_and_appends_hotlbl() {
+        let long = "a".repeat(60);
+        let result = normalize_label(&long);
+        assert!(result.ends_with("_hotlbl"), "{}", result);
+        assert!(result.len() <= MAX_LABEL_VALUE_LEN, "{}", result);
+    }
+
+    #[test]
+    fn normalize_label_values_applies_to_all_elements() {
+        let vals = normalize_label_values(&["Layer-API", "Endpoint/V1"]);
+        assert_eq!(vals[0], "layer_api");
+        assert_eq!(vals[1], "endpoint_v1");
+    }
+
+    // ── Metrics construction ───────────────────────────────────────────────────
+
+    #[test]
+    fn metrics_new_registers_all_collectors() {
+        let m = Metrics::new().expect("metrics construction must not fail");
+        // Calling observation methods must not panic.
+        m.observe_hit("db", "statistics");
+        m.observe_miss("api", "featured_markets");
+        m.observe_invalidation("market_resolve", 5);
+        m.observe_request("statistics", 200, 0.05);
+        m.observe_rpc_error("getContractData");
+        m.observe_rpc_fallback("market_data");
+        m.observe_db_timeout("statistics");
+        m.record_pool_metrics(10, 4);
+        m.observe_pool_acquire("pool_10", Duration::from_millis(2));
+        m.observe_rate_limit_rejection("ratelimit");
+        m.observe_tx_eviction(3);
+        m.set_dlq_size(7);
+        m.set_email_queue_depth(12);
+        m.set_circuit_breaker_state(0);
+        let rendered = m.render().expect("render must not fail");
+        assert!(rendered.contains("cache_hits_total"));
+        assert!(rendered.contains("http_request_duration_seconds"));
+    }
+
+    // ── record_pool_metrics ────────────────────────────────────────────────────
+
+    #[test]
+    fn record_pool_metrics_sets_active_and_idle_gauges() {
+        let m = Metrics::new().unwrap();
+        m.record_pool_metrics(10, 3);
+        let rendered = m.render().unwrap();
+        assert!(rendered.contains("db_pool_connections_active{pool=\"pool_10\"} 7"));
+        assert!(rendered.contains("db_pool_connections_idle{pool=\"pool_10\"} 3"));
+    }
+
+    #[test]
+    fn record_pool_metrics_with_zero_active() {
+        let m = Metrics::new().unwrap();
+        m.record_pool_metrics(20, 0);
+        let rendered = m.render().unwrap();
+        assert!(rendered.contains("db_pool_connections_active{pool=\"pool_20\"} 20"));
+        assert!(rendered.contains("db_pool_connections_idle{pool=\"pool_20\"} 0"));
+    }
+
+    // ── Cardinality guard: observe_request normalises labels ───────────────────
+
+    #[test]
+    fn observe_request_normalises_route_label() {
+        let m = Metrics::new().unwrap();
+        m.observe_request("StatistIcs", 200, 0.1);
+        let rendered = m.render().unwrap();
+        assert!(rendered.contains("route=\"statistics\""));
+    }
+
+    // ── Long label values trigger _hotlbl suffix ───────────────────────────────
+
+    #[test]
+    fn long_label_is_truncated_with_hotlbl() {
+        let long_route = "x".repeat(60);
+        let m = Metrics::new().unwrap();
+        m.observe_request(&long_route, 500, 0.01);
+        let rendered = m.render().unwrap();
+        assert!(rendered.contains("_hotlbl"));
+    }
+
+    // ── observe_hit / observe_miss normalise both labels ──────────────────────
+
+    #[test]
+    fn cache_metrics_normalise_layer_and_endpoint() {
+        let m = Metrics::new().unwrap();
+        m.observe_hit("API", "featured-markets");
+        m.observe_miss("CHAIN", "oracle_result");
+        let rendered = m.render().unwrap();
+        assert!(rendered.contains("layer=\"api\""));
+        assert!(rendered.contains("endpoint=\"featured_markets\""));
+        assert!(rendered.contains("layer=\"chain\""));
+        assert!(rendered.contains("endpoint=\"oracle_result\""));
+    }
+}
+

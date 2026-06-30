@@ -29,16 +29,19 @@
     "axe": "node scripts/axe-audit.js",
     "a11y:manual": "node scripts/manual-testing-checklist.js",
     "a11y:all": "npm run test:a11y && npm run lighthouse && npm run axe",
-    "playwright:install": "playwright install --with-deps"
+    "playwright:install": "playwright install --with-deps",
+    "analyze": "ANALYZE=true npm run build",
+    "bundlewatch": "bundlewatch"
   },
   "dependencies": {
     "next": "16.2.6",
-    "react": "19.2.6",
+    "react": "19.2.7",
     "react-dom": "19.2.6",
     "zod": "4.4.3"
   },
   "devDependencies": {
     "@axe-core/react": "^4.12.1",
+    "@next/bundle-analyzer": "15.3.4",
     "@playwright/test": "^1.60.0",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.1.5",
@@ -46,13 +49,14 @@
     "@testing-library/user-event": "^14.5.1",
     "@types/jest": "^30.0.0",
     "@types/node": "^25.9.1",
-    "@types/react": "^19.2.15",
+    "@types/react": "^19.2.16",
     "@types/react-dom": "^19.2.3",
     "axe-core": "^4.11.4",
+    "bundlewatch": "2.3.3",
     "jest": "^30.4.2",
     "jest-axe": "^10.0.0",
     "jest-environment-jsdom": "^30.4.1",
-    "lighthouse": "^13.3.0",
+    "lighthouse": "^13.4.0",
     "openapi-typescript": "^7.0.0",
     "pa11y": "^9.1.1",
     "typescript": "^6.0.3"

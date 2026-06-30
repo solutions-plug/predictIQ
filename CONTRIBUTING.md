@@ -267,6 +267,47 @@ Sensitive paths have designated reviewers defined in [`.github/CODEOWNERS`](.git
 
 ---
 
+## SAST and Security Tooling
+
+This project enforces security scanning at every stage of the development lifecycle.
+
+### Tools and thresholds
+
+| Tool | Scope | Threshold |
+|------|-------|-----------|
+| [cargo-audit](https://github.com/RustSec/rustsec/tree/main/cargo-audit) | Rust dependencies (contracts + API) | Fails CI on any known CVE |
+| [Semgrep](https://semgrep.dev/) | Rust, Node.js, TypeScript, JavaScript source | Fails CI on `error`-level findings; rulesets: `p/security-audit`, `p/rust`, `p/nodejs`, `p/typescript`, `p/javascript` |
+| [Gitleaks](https://github.com/gitleaks/gitleaks) | Git history and staged changes | Fails CI and pre-push hook on any detected secret |
+| [TruffleHog](https://github.com/trufflesecurity/trufflehog) | Git history (verified secrets only) | Fails CI on verified secrets |
+| [Trivy](https://github.com/aquasecurity/trivy) | Filesystem and container images | Fails CI on `CRITICAL` or `HIGH` findings |
+| [CodeQL](https://codeql.github.com/) | JavaScript, TypeScript, Rust | Fails CI on security-extended queries |
+
+### Local setup
+
+Install and activate the gitleaks pre-push hook to catch secrets before they reach CI:
+
+```bash
+# Install gitleaks (macOS)
+brew install gitleaks
+
+# Or on Linux
+wget https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks_linux_amd64 -O gitleaks
+sudo install gitleaks /usr/local/bin/
+
+# Activate the project hook (run once after cloning)
+git config core.hooksPath .githooks
+```
+
+The hook runs `gitleaks protect --staged` on every `git push`, scanning staged commits against `.gitleaks.toml`. To skip in an emergency (e.g. a false positive you've already triaged):
+
+```bash
+SKIP=gitleaks git push
+```
+
+Custom rules for Stellar keys and API tokens are defined in `.gitleaks.toml`.
+
+---
+
 ## Questions?
 
 Open an issue or start a discussion on [GitHub](https://github.com/solutions-plug/predictIQ/issues).
