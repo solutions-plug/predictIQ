@@ -1,5 +1,9 @@
 pub mod audit;
 pub mod audit_middleware;
+pub mod body_redact;
+pub mod client_ip;
+pub mod content_type;
+pub mod csrf;
 #[cfg(test)]
 mod resolve_market_tests;
 pub mod blockchain;
@@ -21,6 +25,7 @@ pub mod shutdown;
 pub mod tracing_config;
 pub mod validation;
 pub mod versioning;
+pub mod openapi_spec;
 
 // Re-export AppState so integration tests can construct it.
 pub use crate::app_state::AppState;
