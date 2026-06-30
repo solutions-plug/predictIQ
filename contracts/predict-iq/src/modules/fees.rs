@@ -94,25 +94,26 @@ pub fn calculate_tiered_fee(e: &Env, amount: i128, tier: &MarketTier) -> Result<
     calculate_tiered_fee_with_base(amount, base_fee, tier)
 }
 
-pub fn collect_fee(e: &Env, token: Address, amount: i128) {
+pub fn collect_fee(e: &Env, token: Address, amount: i128) -> Result<(), ErrorCode> {
     let key = DataKey::FeeRevenue(token.clone());
-    let mut total: i128 = e.storage().persistent().get(&key).unwrap_or(0);
-    total += amount;
-    e.storage().persistent().set(&key, &total);
+    let total: i128 = e.storage().persistent().get(&key).unwrap_or(0);
+    let new_total = total.checked_add(amount).ok_or(ErrorCode::ArithmeticOverflow)?;
+    e.storage().persistent().set(&key, &new_total);
 
-    let mut overall: i128 = e
+    let overall: i128 = e
         .storage()
         .persistent()
         .get(&DataKey::TotalFeesCollected)
         .unwrap_or(0);
-    overall += amount;
+    let new_overall = overall.checked_add(amount).ok_or(ErrorCode::ArithmeticOverflow)?;
     e.storage()
         .persistent()
-        .set(&DataKey::TotalFeesCollected, &overall);
+        .set(&DataKey::TotalFeesCollected, &new_overall);
 
     // Emit standardized fee collection event using centralized emitter
     let contract_addr = e.current_contract_address();
     crate::modules::events::emit_fee_collected(e, 0, contract_addr, amount);
+    Ok(())
 }
 
 pub fn get_revenue(e: &Env, token: Address) -> i128 {
