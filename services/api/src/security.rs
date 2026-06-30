@@ -130,6 +130,19 @@ pub fn extract_client_ip(
 /// CIDR-aware variant. When `trusted_cidrs` is non-empty the connecting IP
 /// must be contained in one of the CIDRs before proxy headers are trusted.
 /// When `trusted_cidrs` is empty, falls back to the `trust_proxy` boolean.
+///
+/// # IPv6 handling
+/// Each candidate IP string from a proxy header is parsed via
+/// `str::parse::<IpAddr>()`, which handles both IPv4 and IPv6.  On parse
+/// failure a `WARN`-level log is emitted and that candidate is skipped;
+/// processing continues with the next value rather than panicking or silently
+/// using a potentially malicious string as a rate-limit key.
+///
+/// IPv6 addresses that parse successfully are stored in their **canonical**
+/// (compressed, lowercase) form produced by `IpAddr::to_string()`, e.g.
+/// `"2001:db8::1"` rather than the zero-expanded form sent by some proxies.
+/// This guarantees that the same logical address always maps to the same
+/// rate-limit bucket key.
 pub fn extract_client_ip_cidrs(
     headers: &HeaderMap,
     connect_info: Option<&ConnectInfo<std::net::SocketAddr>>,
@@ -147,27 +160,54 @@ pub fn extract_client_ip_cidrs(
     };
 
     if proxy_trusted {
-        // 1. Check X-Forwarded-For header (from proxy/load balancer)
+        // 1. Check X-Forwarded-For header (may contain a comma-separated list).
+        //    Iterate from left to right; return the first well-formed address.
+        //    Malformed entries are logged as warnings and skipped.
         if let Some(forwarded_for) = headers.get("x-forwarded-for").and_then(|h| h.to_str().ok()) {
-            for ip_str in forwarded_for.split(',') {
-                let ip_str = ip_str.trim();
-                if !ip_str.is_empty() && ip_str.parse::<IpAddr>().is_ok() {
-                    return ip_str.to_string();
+            for raw in forwarded_for.split(',') {
+                let candidate = raw.trim();
+                if candidate.is_empty() {
+                    continue;
+                }
+                match candidate.parse::<IpAddr>() {
+                    Ok(addr) => {
+                        // Return canonical form — critical for IPv6 rate-limit keys.
+                        return addr.to_string();
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            header = "x-forwarded-for",
+                            value = candidate,
+                            "IP parse failure in proxy header; skipping candidate"
+                        );
+                    }
                 }
             }
         }
-        // 2. Check X-Real-IP header
+
+        // 2. Check X-Real-IP header (single value expected).
         if let Some(real_ip) = headers.get("x-real-ip").and_then(|h| h.to_str().ok()) {
-            let ip_str = real_ip.trim();
-            if !ip_str.is_empty() && ip_str.parse::<IpAddr>().is_ok() {
-                return ip_str.to_string();
+            let candidate = real_ip.trim();
+            if !candidate.is_empty() {
+                match candidate.parse::<IpAddr>() {
+                    Ok(addr) => return addr.to_string(),
+                    Err(_) => {
+                        tracing::warn!(
+                            header = "x-real-ip",
+                            value = candidate,
+                            "IP parse failure in proxy header; falling back to socket address"
+                        );
+                    }
+                }
             }
         }
     }
-    // 3. Fallback to connection info (Socket)
+
+    // 3. Fallback to the raw TCP socket address — always well-formed.
     if let Some(conn_info) = connect_info {
         return conn_info.0.ip().to_string();
     }
+
     "unknown".to_string()
 }
 
@@ -195,10 +235,12 @@ pub async fn security_headers_middleware(request: Request, next: Next) -> Respon
     let headers = response.headers_mut();
 
     // Content Security Policy
+    // The API serves JSON only — a "null" CSP prevents browsers from rendering
+    // API responses as HTML pages, blocking any injected script execution.
     headers.insert(
         "content-security-policy",
         HeaderValue::from_static(
-            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none';"
+            "default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none';"
         ),
     );
 
@@ -220,7 +262,7 @@ pub async fn security_headers_middleware(request: Request, next: Next) -> Respon
     // Strict-Transport-Security (HSTS)
     headers.insert(
         "strict-transport-security",
-        HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+        HeaderValue::from_static("max-age=31536000; includeSubDomains; preload"),
     );
 
     // Referrer-Policy
@@ -287,21 +329,119 @@ pub mod sanitize {
     }
 }
 
-/// API Key authentication for admin endpoints
-#[derive(Clone)]
-pub struct ApiKeyAuth {
-    valid_keys: Arc<Vec<String>>,
-}
+/// Newtype so `require_https: bool` can be injected as Axum `State`.
+#[derive(Clone, Copy, Debug)]
+pub struct RequireHttps(pub bool);
 
-impl ApiKeyAuth {
-    pub fn new(keys: Vec<String>) -> Self {
-        Self {
-            valid_keys: Arc::new(keys),
+/// HTTP → HTTPS redirect middleware.
+///
+/// When `RequireHttps(true)` is set and the incoming request arrives over plain
+/// HTTP (detected via the `X-Forwarded-Proto: http` header set by the ALB),
+/// the middleware issues a `301 Moved Permanently` redirect to the HTTPS
+/// equivalent of the same URL.
+///
+/// Requests that already carry `X-Forwarded-Proto: https` or have no proto
+/// header (direct connections, health checks from the VPC) are passed through
+/// unchanged.
+pub async fn https_redirect_middleware(
+    State(RequireHttps(require)): State<RequireHttps>,
+    headers: HeaderMap,
+    request: Request,
+    next: Next,
+) -> Response {
+    if require {
+        let proto = headers
+            .get("x-forwarded-proto")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+
+        if proto == "http" {
+            // Build the HTTPS redirect URL from the Host header + request URI.
+            let host = headers
+                .get("host")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            let path_and_query = request
+                .uri()
+                .path_and_query()
+                .map(|pq| pq.as_str())
+                .unwrap_or("/");
+            let redirect_url = format!("https://{}{}", host, path_and_query);
+
+            let mut response = axum::response::Response::new(axum::body::Body::empty());
+            *response.status_mut() = StatusCode::MOVED_PERMANENTLY;
+            if let Ok(loc) = HeaderValue::from_str(&redirect_url) {
+                response.headers_mut().insert("location", loc);
+            }
+            return response;
         }
     }
 
+    next.run(request).await
+}
+
+/// API Key authentication for admin endpoints.
+///
+/// Supports two key stores that are checked in order:
+/// 1. Static env-var keys (`API_KEYS`).
+/// 2. Database-backed keys (table `api_keys`) when a `db` handle is provided.
+///
+/// This dual-store design allows zero-downtime migration from static env-var
+/// keys to fully DB-managed keys with rotation support (issue #892).
+#[derive(Clone)]
+pub struct ApiKeyAuth {
+    valid_keys: Arc<Vec<String>>,
+    db: Option<Arc<crate::db::Database>>,
+}
+
+impl ApiKeyAuth {
+    /// Create an auth instance backed only by static env-var keys.
+    pub fn new(keys: Vec<String>) -> Self {
+        Self {
+            valid_keys: Arc::new(keys),
+            db: None,
+        }
+    }
+
+    /// Create an auth instance backed by both static keys and a database.
+    pub fn new_with_db(keys: Vec<String>, db: Arc<crate::db::Database>) -> Self {
+        Self {
+            valid_keys: Arc::new(keys),
+            db: Some(db),
+        }
+    }
+
+    /// Synchronous check against static env-var keys only.
     pub fn verify(&self, key: &str) -> bool {
         !self.valid_keys.is_empty() && self.valid_keys.iter().any(|k| k == key)
+    }
+
+    /// Asynchronous check that consults both static keys and the database.
+    ///
+    /// The static-key check is always tried first (fast path, no I/O).
+    /// If that fails and a database handle is available, the key's SHA-256
+    /// hash is looked up in the `api_keys` table.  Keys that are revoked or
+    /// past their `expires_at` overlap window are rejected by the query.
+    pub async fn verify_async(&self, key: &str) -> bool {
+        // Fast path: static env-var keys.
+        if self.verify(key) {
+            return true;
+        }
+
+        // Slow path: database-backed keys.
+        if let Some(ref db) = self.db {
+            use sha2::{Digest, Sha256};
+            let hash = hex::encode(Sha256::digest(key.as_bytes()));
+            match db.api_key_validate(&hash).await {
+                Ok(Some(_)) => return true,
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!(error = %e, "api_key_validate db error");
+                }
+            }
+        }
+
+        false
     }
 }
 
@@ -310,7 +450,10 @@ struct ApiKeyErrorBody {
     error: &'static str,
 }
 
-/// API key authentication middleware
+/// API key authentication middleware.
+///
+/// Accepts keys validated by [`ApiKeyAuth::verify_async`], which checks both
+/// the static `API_KEYS` env-var list and the database-backed `api_keys` table.
 pub async fn api_key_middleware(
     State(auth): State<Arc<ApiKeyAuth>>,
     headers: HeaderMap,
@@ -322,7 +465,7 @@ pub async fn api_key_middleware(
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
 
-    if !auth.verify(api_key) {
+    if !auth.verify_async(api_key).await {
         let mut resp = (
             StatusCode::UNAUTHORIZED,
             Json(ApiKeyErrorBody {
@@ -751,6 +894,96 @@ mod tests {
     fn test_extract_client_ip_ipv6() {
         let headers = xff("2001:db8::1, 192.168.1.1");
         assert_eq!(extract_client_ip(&headers, None, true), "2001:db8::1");
+    }
+
+    // ── #898: IPv6 parse-error handling tests ────────────────────────────
+
+    /// Malformed IPv6 in X-Forwarded-For must be skipped; the next valid entry
+    /// is used instead of returning the malformed string.
+    #[test]
+    fn malformed_ipv6_in_xff_is_skipped_falls_back_to_next_valid() {
+        // First entry is malformed IPv6, second is valid IPv4
+        let headers = xff("::gggg:1, 1.2.3.4");
+        let ci = addr("5.5.5.5:80");
+        assert_eq!(
+            extract_client_ip(&headers, Some(&ci), true),
+            "1.2.3.4",
+            "malformed IPv6 must be skipped; valid subsequent entry should be used"
+        );
+    }
+
+    /// All entries in X-Forwarded-For are malformed — must fall back to socket.
+    #[test]
+    fn all_malformed_xff_entries_fall_back_to_socket() {
+        let headers = xff("not-an-ip, :::bad:::, 999.999.999.999");
+        let ci = addr("10.0.0.1:8080");
+        assert_eq!(
+            extract_client_ip(&headers, Some(&ci), true),
+            "10.0.0.1",
+            "when all XFF entries are malformed, socket address must be used"
+        );
+    }
+
+    /// Empty X-Forwarded-For header falls back to socket address.
+    #[test]
+    fn empty_xff_header_falls_back_to_socket() {
+        let headers = xff("");
+        let ci = addr("192.168.1.1:9090");
+        assert_eq!(extract_client_ip(&headers, Some(&ci), true), "192.168.1.1");
+    }
+
+    /// Malformed X-Real-IP falls back to socket address.
+    #[test]
+    fn malformed_x_real_ip_falls_back_to_socket() {
+        let headers = xri("::invalid-ipv6");
+        let ci = addr("172.16.0.1:80");
+        assert_eq!(
+            extract_client_ip(&headers, Some(&ci), true),
+            "172.16.0.1",
+            "malformed X-Real-IP must be discarded; socket address must be used"
+        );
+    }
+
+    /// Valid IPv6 address is returned in canonical (compressed) form so that
+    /// rate-limit keys are consistent regardless of input formatting.
+    #[test]
+    fn ipv6_address_returned_in_canonical_form() {
+        // Zero-expanded form that some proxies emit
+        let headers = xff("2001:0db8:0000:0000:0000:0000:0000:0001");
+        let result = extract_client_ip(&headers, None, true);
+        // Rust's IpAddr::to_string() compresses this to 2001:db8::1
+        assert_eq!(
+            result, "2001:db8::1",
+            "IPv6 must be returned in canonical compressed form"
+        );
+    }
+
+    /// Multiple comma-separated IPv4 addresses: first valid one is returned.
+    #[test]
+    fn multiple_comma_separated_xff_returns_first_valid() {
+        let headers = xff("203.0.113.1, 198.51.100.2, 192.0.2.3");
+        assert_eq!(
+            extract_client_ip(&headers, None, true),
+            "203.0.113.1"
+        );
+    }
+
+    /// Mixed malformed + valid IPv6 in a multi-value XFF header.
+    #[test]
+    fn mixed_malformed_valid_ipv6_xff() {
+        let headers = xff("not-valid, 2001:db8::cafe, 10.0.0.1");
+        assert_eq!(
+            extract_client_ip(&headers, None, true),
+            "2001:db8::cafe",
+            "should skip malformed entry and return the first valid IPv6"
+        );
+    }
+
+    /// No headers and no connect info returns "unknown".
+    #[test]
+    fn no_headers_no_connect_info_returns_unknown() {
+        let headers = HeaderMap::new();
+        assert_eq!(extract_client_ip(&headers, None, true), "unknown");
     }
 
     // ── trust-boundary tests (issue #281) ────────────────────────────────

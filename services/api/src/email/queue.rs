@@ -10,6 +10,7 @@ use crate::cache::RedisCache;
 use crate::db::Database;
 use crate::email::service::idempotency_key;
 use crate::email::types::{EmailJobStatus, EmailJobType};
+use crate::metrics::Metrics;
 use crate::shutdown::ShutdownCoordinator;
 
 const EMAIL_QUEUE_KEY: &str = "email:queue";
@@ -345,6 +346,16 @@ impl EmailQueue {
         })
     }
 
+    /// Get the current depth of the main email queue.
+    pub async fn get_queue_depth(&self) -> Result<usize> {
+        let mut conn = self.cache.get_connection().await?;
+        let depth: usize = conn
+            .zcard(EMAIL_QUEUE_KEY)
+            .await
+            .context("Failed to get queue depth")?;
+        Ok(depth)
+    }
+
     /// Re-queue any jobs stuck in the processing set (e.g. from a previous crash).
     ///
     /// Recovers jobs that have been in processing longer than the configured
@@ -416,14 +427,35 @@ impl EmailQueue {
         shutdown: CancellationToken,
         coordinator: ShutdownCoordinator,
         stale_job_threshold_secs: u64,
+        metrics: Option<crate::metrics::Metrics>,
     ) {
+        const WORKER_NAME: &str = "email_queue";
+        
+        // Set worker status to running
+        if let Some(ref m) = metrics {
+            m.set_worker_status(WORKER_NAME, true);
+        }
+        
         tracing::info!("Email queue worker started");
 
         if let Err(e) = self.recover_orphaned_jobs(stale_job_threshold_secs).await {
             tracing::warn!("Failed to recover orphaned jobs: {}", e);
         }
 
+        let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(30));
+        heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         loop {
+            // Update heartbeat
+            tokio::select! {
+                _ = heartbeat_interval.tick() => {
+                    if let Some(ref m) = metrics {
+                        m.set_worker_status(WORKER_NAME, true);
+                    }
+                }
+                else => {}
+            }
+            
             // Do not pick up new work after shutdown signal.
             if shutdown.is_cancelled() {
                 tracing::info!("Email queue worker: shutdown signal received, draining stops");
@@ -464,8 +496,19 @@ impl EmailQueue {
                     }
                 }
             }
+
+            if let Some(ref m) = metrics {
+                if let Ok(depth) = self.get_queue_depth().await {
+                    m.set_email_queue_depth(depth as i64);
+                }
+            }
         }
 
+        // Set worker status to stopped
+        if let Some(ref m) = metrics {
+            m.set_worker_status(WORKER_NAME, false);
+        }
+        
         tracing::info!("Email queue worker stopped");
         coordinator.worker_completed();
     }
@@ -496,7 +539,7 @@ impl EmailQueue {
         let idem = idempotency_key(
             &job.recipient_email,
             &job.template_name,
-            &job.template_data,
+            &service.idempotency_secret,
         );
 
         // Send email (deduplication handled inside send_email_idempotent)
