@@ -56,11 +56,11 @@ tower_governor = "0.8"
 sha2 = "0.10"
 argon2 = "0.5"
 hmac = "0.12"
-rand = "0.8"
+rand = { version = "0.8", features = ["getrandom"] }
 hex = "0.4"
 base64 = "0.22"
 subtle = "2.5"
-rand = { version = "0.8", features = ["getrandom"] }
+secrecy = { version = "0.8", features = ["serde"] }
 ipnet = "2"
 fastrand = "2.4.1"
 utoipa = { version = "4", features = ["yaml"] }

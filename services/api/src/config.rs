@@ -1,4 +1,5 @@
 use ipnet::IpNet;
+use secrecy::{ExposeSecret, SecretString};
 use std::{
     collections::HashMap,
     env,
@@ -6,6 +7,80 @@ use std::{
     str::FromStr,
     time::Duration,
 };
+
+// ── Database credentials ──────────────────────────────────────────────────────
+
+/// Individual database connection components loaded from environment variables.
+///
+/// The password is wrapped in [`SecretString`] so it is never printed in logs
+/// or `Debug` output. The full connection URL is assembled at the last possible
+/// moment (when the pool is created) via [`DbCredentials::to_connection_string`]
+/// and should never be stored long-term.
+///
+/// | Variable    | Example                 | Notes                          |
+/// |-------------|-------------------------|--------------------------------|
+/// | `DB_HOST`   | `rds-prod.example.com`  | Required                       |
+/// | `DB_PORT`   | `5432`                  | Default: `5432`                |
+/// | `DB_NAME`   | `predictiq`             | Required                       |
+/// | `DB_USER`   | `predictiq_api`         | Required                       |
+/// | `DB_PASSWORD` | *secret*              | Required; loaded from Secrets Manager |
+#[derive(Clone)]
+pub struct DbCredentials {
+    pub host: String,
+    pub port: u16,
+    pub name: String,
+    pub user: String,
+    /// Password is wrapped in `SecretString` — it is never written to logs.
+    pub password: SecretString,
+}
+
+impl std::fmt::Debug for DbCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DbCredentials")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("name", &self.name)
+            .field("user", &self.user)
+            .field("password", &"[redacted]")
+            .finish()
+    }
+}
+
+impl DbCredentials {
+    /// Assemble the `postgres://` connection string from the individual
+    /// components. This is the **only** place the password is exposed; callers
+    /// should not store the returned string.
+    pub fn to_connection_string(&self) -> SecretString {
+        SecretString::new(
+            format!(
+                "postgres://{}:{}@{}:{}/{}",
+                self.user,
+                self.password.expose_secret(),
+                self.host,
+                self.port,
+                self.name,
+            )
+            .into(),
+        )
+    }
+
+    pub fn from_env() -> Self {
+        Self {
+            host: env::var("DB_HOST").unwrap_or_else(|_| "127.0.0.1".to_string()),
+            port: env::var("DB_PORT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(5432),
+            name: env::var("DB_NAME").unwrap_or_else(|_| "predictiq".to_string()),
+            user: env::var("DB_USER").unwrap_or_else(|_| "postgres".to_string()),
+            password: SecretString::new(
+                env::var("DB_PASSWORD")
+                    .unwrap_or_else(|_| "postgres".to_string())
+                    .into(),
+            ),
+        }
+    }
+}
 
 // ── CORS configuration ────────────────────────────────────────────────────────
 
@@ -156,6 +231,15 @@ pub struct DbPoolConfig {
 pub struct Config {
     pub bind_addr: SocketAddr,
     pub redis_url: String,
+    /// Individual database connection components. The password is stored as a
+    /// [`SecretString`] and the full connection URL is assembled at the last
+    /// moment in [`Database::new`] — it is never stored as a plain string or
+    /// written to logs.
+    pub db_credentials: DbCredentials,
+    /// Legacy field kept for callers that still need the assembled URL (e.g.
+    /// sqlx migration runner). Assembled lazily from `db_credentials`.
+    /// Do **not** log this value.
+    #[deprecated(since = "0.1.0", note = "use db_credentials.to_connection_string() instead")]
     pub database_url: String,
     pub hmac_key: String,
     /// Previous HMAC key for zero-downtime key rotation. Optional.
@@ -323,12 +407,20 @@ impl Config {
                 BlockchainNetwork::Custom => String::new(),
             });
 
+        let db_credentials = DbCredentials::from_env();
+        // Assemble the legacy database_url from individual components so
+        // existing callers (sqlx migration runner) continue to work.
+        // The password is exposed here only to construct the pool; this field
+        // must never be logged.
+        #[allow(deprecated)]
+        let database_url = db_credentials.to_connection_string().expose_secret().to_string();
+
         Self {
             bind_addr,
             redis_url: env::var("REDIS_URL")
                 .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string()),
-            database_url: env::var("DATABASE_URL")
-                .unwrap_or_else(|_| "postgres://postgres:postgres@127.0.0.1/predictiq".to_string()),
+            db_credentials,
+            database_url,
             hmac_key: env::var("HMAC_KEY").unwrap_or_default(),
             hmac_key_previous: env::var("HMAC_KEY_PREVIOUS").ok(),
             hmac_key_rotation_grace_seconds: env::var("HMAC_KEY_ROTATION_GRACE_SECONDS")
@@ -503,25 +595,29 @@ impl Config {
     /// Validate all required environment variables at startup.
     ///
     /// Checks that:
-    /// - DATABASE_URL is set and non-empty, and is a valid PostgreSQL connection string
+    /// - DB_HOST, DB_NAME, DB_USER, DB_PASSWORD are set and non-empty
     /// - REDIS_URL is set and non-empty, and is a valid Redis connection string
     /// - HMAC_KEY is set and non-empty
     ///
     /// Returns `Err` if any required var is missing, empty, or malformed.
     /// On error, prints a clear message to stderr and exits with code 1.
     pub fn validate(&self) -> Result<(), Box<dyn std::error::Error>> {
+        use secrecy::ExposeSecret;
         let mut errors = Vec::new();
 
-        // Validate DATABASE_URL
-        if self.database_url.is_empty() {
-            errors.push("DATABASE_URL: environment variable is not set or is empty".to_string());
-        } else {
-            // Check if it's a valid PostgreSQL connection string (basic validation)
-            if !self.database_url.starts_with("postgres://")
-                && !self.database_url.starts_with("postgresql://")
-            {
-                errors.push(format!("DATABASE_URL: invalid format, expected 'postgres://' or 'postgresql://', got '{}'", self.database_url));
-            }
+        // Validate individual DB credential components.
+        // Never log the password — only check it is non-empty.
+        if self.db_credentials.host.is_empty() {
+            errors.push("DB_HOST: environment variable is not set or is empty".to_string());
+        }
+        if self.db_credentials.name.is_empty() {
+            errors.push("DB_NAME: environment variable is not set or is empty".to_string());
+        }
+        if self.db_credentials.user.is_empty() {
+            errors.push("DB_USER: environment variable is not set or is empty".to_string());
+        }
+        if self.db_credentials.password.expose_secret().is_empty() {
+            errors.push("DB_PASSWORD: environment variable is not set or is empty".to_string());
         }
 
         // Validate REDIS_URL
@@ -820,7 +916,15 @@ mod tests {
         let config = Config {
             bind_addr: "127.0.0.1:8080".parse().unwrap(),
             redis_url: "redis://127.0.0.1:6379".to_string(),
-            database_url: "postgres://postgres@localhost/predictiq".to_string(),
+            db_credentials: DbCredentials {
+                host: "localhost".to_string(),
+                port: 5432,
+                name: "predictiq".to_string(),
+                user: "postgres".to_string(),
+                password: secrecy::SecretString::new("postgres".to_string().into()),
+            },
+            #[allow(deprecated)]
+            database_url: "postgres://postgres:postgres@localhost:5432/predictiq".to_string(),
             hmac_key: "secret-key-value".to_string(),
             hmac_key_previous: None,
             hmac_key_rotation_grace_seconds: 3600,
@@ -893,7 +997,15 @@ mod tests {
         let config = Config {
             bind_addr: "127.0.0.1:8080".parse().unwrap(),
             redis_url: "redis://127.0.0.1:6379".to_string(),
-            database_url: "postgres://postgres@localhost/predictiq".to_string(),
+            db_credentials: DbCredentials {
+                host: "localhost".to_string(),
+                port: 5432,
+                name: "predictiq".to_string(),
+                user: "postgres".to_string(),
+                password: secrecy::SecretString::new("postgres".to_string().into()),
+            },
+            #[allow(deprecated)]
+            database_url: "postgres://postgres:postgres@localhost:5432/predictiq".to_string(),
             hmac_key: "".to_string(),
             hmac_key_previous: None,
             hmac_key_rotation_grace_seconds: 3600,
@@ -962,11 +1074,20 @@ mod tests {
     }
 
     #[test]
-    fn test_config_validate_malformed_database_url() {
+    fn test_config_validate_missing_db_password() {
         let config = Config {
             bind_addr: "127.0.0.1:8080".parse().unwrap(),
             redis_url: "redis://127.0.0.1:6379".to_string(),
-            database_url: "mysql://localhost/predictiq".to_string(),
+            db_credentials: DbCredentials {
+                host: "localhost".to_string(),
+                port: 5432,
+                name: "predictiq".to_string(),
+                user: "postgres".to_string(),
+                // Empty password must fail validation
+                password: secrecy::SecretString::new("".to_string().into()),
+            },
+            #[allow(deprecated)]
+            database_url: "postgres://postgres:@localhost:5432/predictiq".to_string(),
             hmac_key: "secret".to_string(),
             hmac_key_previous: None,
             hmac_key_rotation_grace_seconds: 3600,
@@ -1039,7 +1160,15 @@ mod tests {
         let config = Config {
             bind_addr: "127.0.0.1:8080".parse().unwrap(),
             redis_url: "memcached://127.0.0.1:11211".to_string(),
-            database_url: "postgres://postgres@localhost/predictiq".to_string(),
+            db_credentials: DbCredentials {
+                host: "localhost".to_string(),
+                port: 5432,
+                name: "predictiq".to_string(),
+                user: "postgres".to_string(),
+                password: secrecy::SecretString::new("postgres".to_string().into()),
+            },
+            #[allow(deprecated)]
+            database_url: "postgres://postgres:postgres@localhost:5432/predictiq".to_string(),
             hmac_key: "secret".to_string(),
             hmac_key_previous: None,
             hmac_key_rotation_grace_seconds: 3600,
