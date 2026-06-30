@@ -71,6 +71,9 @@ module "ecs" {
   api_memory            = var.api_memory
   database_url          = module.rds.database_url
   redis_url             = module.redis.redis_url
+  hmac_key              = var.hmac_key
+  sendgrid_api_key      = var.sendgrid_api_key
+  api_signing_key       = var.api_signing_key
 }
 
 module "monitoring" {
