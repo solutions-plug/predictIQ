@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Context};
+use rand::Rng as _;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -26,6 +27,7 @@ pub struct BlockchainClient {
     key_schema: ContractKeySchema,
     retry_attempts: u32,
     retry_base_delay_ms: u64,
+    rpc_backoff_jitter_factor: f64,
     event_poll_interval: Duration,
     tx_poll_interval: Duration,
     confirmation_ledger_lag: u32,
@@ -228,6 +230,7 @@ impl BlockchainClient {
             key_schema,
             retry_attempts: config.retry_attempts.max(1),
             retry_base_delay_ms: config.retry_base_delay_ms.max(50),
+            rpc_backoff_jitter_factor: config.rpc_backoff_jitter_factor,
             event_poll_interval: config.event_poll_interval,
             tx_poll_interval: config.tx_poll_interval,
             confirmation_ledger_lag: config.confirmation_ledger_lag.max(1),
@@ -362,9 +365,16 @@ impl BlockchainClient {
                 }
             }
 
-            // Exponential backoff: base_delay * 2^(attempt-1), capped at 60 s.
-            let backoff_ms = (self.retry_base_delay_ms * (1u64 << (attempt - 1).min(10)))
-                .min(60_000);
+            // Full-jitter backoff: delay = random(0, min(cap, base * 2^attempt))
+            // RPC_BACKOFF_JITTER_FACTOR controls the jitter fraction (1.0 = full).
+            let cap_ms = (self.retry_base_delay_ms * (1u64 << (attempt - 1).min(10))).min(60_000);
+            let backoff_ms = if self.rpc_backoff_jitter_factor > 0.0 {
+                let jitter_range = (cap_ms as f64 * self.rpc_backoff_jitter_factor) as u64;
+                let deterministic = cap_ms.saturating_sub(jitter_range);
+                deterministic + rand::thread_rng().gen_range(0..=jitter_range)
+            } else {
+                cap_ms
+            };
             tracing::warn!(method, attempt, backoff_ms, "rpc retry scheduled");
             sleep(Duration::from_millis(backoff_ms)).await;
         }
@@ -884,6 +894,8 @@ impl BlockchainClient {
         tracing::info!("Blockchain sync worker started");
 
         let cursor_key = keys::chain_sync_cursor(&self.network);
+        let checkpoint_key = format!("{}:ledger_checkpoint:{}", keys::CHAIN_PREFIX, &self.network);
+
         let mut cursor = self
             .cache
             .get_json::<u32>(&cursor_key)
@@ -891,6 +903,33 @@ impl BlockchainClient {
             .ok()
             .flatten()
             .unwrap_or(0);
+
+        // On restart, check for a gap between stored checkpoint and current ledger.
+        if cursor > 0 {
+            if let Ok(Some(checkpoint)) = self.cache.get_json::<u32>(&checkpoint_key).await {
+                if let Ok(current) = self.latest_ledger().await {
+                    if current > checkpoint + 1 {
+                        let gap = current - checkpoint - 1;
+                        tracing::warn!(
+                            checkpoint,
+                            current_ledger = current,
+                            gap_size = gap,
+                            "Ledger gap detected on restart — replaying missed range"
+                        );
+                        self.metrics.observe_ledger_gap(gap);
+                        if gap > 10 {
+                            tracing::error!(
+                                gap_size = gap,
+                                "ALERT: ledger gap exceeds 10 — market state may be inconsistent"
+                            );
+                        }
+                        cursor = checkpoint;
+                    }
+                }
+            }
+        }
+
+        loop {
 
         let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(30));
         heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -912,19 +951,42 @@ impl BlockchainClient {
                 break;
             }
 
-            // Do the work — always runs to completion even if cancelled mid-way.
             match self.sync_once(cursor).await {
                 Ok(next_cursor) => {
-                    cursor = next_cursor;
-                    let _ = self
-                        .cache
-                        .set_json(&cursor_key, &cursor, Duration::from_secs(24 * 60 * 60))
-                        .await;
+                    if next_cursor > cursor {
+                        let expected_next = cursor + 1;
+                        if next_cursor > expected_next {
+                            let gap = next_cursor - expected_next;
+                            tracing::warn!(
+                                last_processed = cursor,
+                                current_ledger = next_cursor,
+                                gap_size = gap,
+                                "Ledger sequence gap detected during sync"
+                            );
+                            self.metrics.observe_ledger_gap(gap);
+                            if gap > 10 {
+                                tracing::error!(
+                                    gap_size = gap,
+                                    "ALERT: ledger gap exceeds 10 — market state may be inconsistent"
+                                );
+                            }
+                        }
+
+                        cursor = next_cursor;
+                        let _ = self
+                            .cache
+                            .set_json(&cursor_key, &cursor, Duration::from_secs(24 * 60 * 60))
+                            .await;
+                        let _ = self
+                            .cache
+                            .set_json(&checkpoint_key, &cursor, Duration::from_secs(7 * 24 * 60 * 60))
+                            .await;
+                    }
+                    self.metrics.observe_sync_worker_heartbeat();
                 }
                 Err(err) => tracing::warn!("sync loop error: {err}"),
             }
 
-            // Wait for the poll interval OR an early shutdown signal.
             tokio::select! {
                 _ = sleep(self.event_poll_interval) => {}
                 _ = shutdown.cancelled() => {
@@ -940,6 +1002,16 @@ impl BlockchainClient {
         }
         
         tracing::info!("Blockchain sync worker stopped");
+    }
+
+    /// Sync worker — wraps `run_sync_loop` and signals the coordinator on exit.
+    /// Use `start_background_tasks` for supervised (auto-restart) execution.
+    pub async fn run_sync_worker(
+        self: Arc<Self>,
+        shutdown: tokio_util::sync::CancellationToken,
+        coordinator: ShutdownCoordinator,
+    ) {
+        self.run_sync_loop(shutdown).await;
         coordinator.worker_completed();
     }
 
@@ -1091,6 +1163,15 @@ impl BlockchainClient {
         Ok(progress)
     }
 
+    /// Spawn both background workers and return their handles.
+    /// The sync worker is wrapped in a supervised restart loop: if it panics or
+    /// exits unexpectedly, it is restarted and the restart counter incremented.
+    /// Each worker holds a child cancellation token and reports completion
+    /// to the coordinator when it exits.
+    pub fn start_background_tasks(self: Arc<Self>, coordinator: &ShutdownCoordinator) -> Vec<WorkerHandle> {
+        // ── Supervised sync worker ────────────────────────────────────────────
+        let sync_token = coordinator.token();
+        let sync_coord = coordinator.clone();
     /// Test-only constructor that accepts an externally built HTTP client so
     /// tests can configure short timeouts and point at a local mock RPC server.
     #[cfg(test)]
@@ -1118,12 +1199,35 @@ impl BlockchainClient {
         }
     }
 
-    pub fn start_background_tasks(self: Arc<Self>) {
         let sync_client = self.clone();
         let sync_handle = tokio::spawn(async move {
-            sync_client.run_sync_worker(sync_token, sync_coord).await;
+            loop {
+                if sync_token.is_cancelled() {
+                    break;
+                }
+                let token = sync_token.clone();
+                let client = sync_client.clone();
+                let result = tokio::spawn(async move {
+                    client.run_sync_loop(token).await;
+                })
+                .await;
+
+                match result {
+                    Ok(_) => break, // clean shutdown exit
+                    Err(e) => {
+                        sync_client.metrics.observe_sync_worker_restart();
+                        tracing::error!(error = %e, "FATAL: blockchain sync worker panicked — restarting");
+                        if sync_token.is_cancelled() {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                }
+            }
+            sync_coord.worker_completed();
         });
 
+        // ── Transaction monitor ───────────────────────────────────────────────
         let mon_token = coordinator.token();
         let mon_coord = coordinator.clone();
         let mon_client = self;
@@ -1166,6 +1270,61 @@ mod tests {
             let back: DataSource = serde_json::from_str(&json).unwrap();
             assert_eq!(back, variant);
         }
+    }
+
+    // ── #935: full-jitter backoff ─────────────────────────────────────────────
+
+    /// Simulates 100 retry delay calculations with full jitter and verifies
+    /// no two delays are identical (extremely unlikely with random values).
+    #[test]
+    fn jitter_backoff_produces_unique_delays() {
+        use rand::Rng as _;
+        let base_ms: u64 = 200;
+        let jitter_factor: f64 = 1.0;
+        let attempt: u32 = 3;
+
+        let cap_ms = (base_ms * (1u64 << (attempt - 1).min(10))).min(60_000);
+        let jitter_range = (cap_ms as f64 * jitter_factor) as u64;
+        let deterministic = cap_ms.saturating_sub(jitter_range);
+
+        let mut rng = rand::thread_rng();
+        let delays: Vec<u64> = (0..100)
+            .map(|_| deterministic + rng.gen_range(0..=jitter_range))
+            .collect();
+
+        // With full jitter over range [0, 800ms] the probability of any two
+        // being equal is negligible; assert at least 90% unique values.
+        let unique: std::collections::HashSet<u64> = delays.iter().cloned().collect();
+        assert!(unique.len() >= 90, "expected >= 90 unique delays, got {}", unique.len());
+    }
+
+    /// With jitter_factor=0.0 (no jitter) all delays are identical.
+    #[test]
+    fn zero_jitter_produces_deterministic_delays() {
+        let base_ms: u64 = 200;
+        let jitter_factor: f64 = 0.0;
+        let attempt: u32 = 3;
+
+        let cap_ms = (base_ms * (1u64 << (attempt - 1).min(10))).min(60_000);
+        let jitter_range = (cap_ms as f64 * jitter_factor) as u64;
+        let deterministic = cap_ms.saturating_sub(jitter_range);
+
+        let delays: Vec<u64> = (0..100)
+            .map(|_| {
+                // With jitter_factor=0, jitter_range=0, all delays are deterministic.
+                if jitter_factor > 0.0 {
+                    let mut rng = rand::thread_rng();
+                    deterministic + rng.gen_range(0..=jitter_range)
+                } else {
+                    cap_ms
+                }
+            })
+            .collect();
+
+        assert!(
+            delays.iter().all(|&d| d == cap_ms),
+            "all delays must equal cap_ms when jitter_factor=0"
+        );
     }
 
     // ── #462: fetch_events_since pagination ──────────────────────────────────

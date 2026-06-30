@@ -169,6 +169,9 @@ pub struct Config {
     pub contract_id: String,
     pub retry_attempts: u32,
     pub retry_base_delay_ms: u64,
+    /// Jitter factor for RPC retry backoff. 1.0 = full jitter (default), 0.0 = no jitter.
+    /// Configured via `RPC_BACKOFF_JITTER_FACTOR`.
+    pub rpc_backoff_jitter_factor: f64,
     pub event_poll_interval: Duration,
     pub tx_poll_interval: Duration,
     pub confirmation_ledger_lag: u32,
@@ -178,6 +181,9 @@ pub struct Config {
     pub sendgrid_api_key: Option<String>,
     pub from_email: Option<String>,
     pub base_url: String,
+    /// Server-side secret for HMAC-SHA256 email idempotency keys.
+    /// Configured via `EMAIL_IDEMPOTENCY_SECRET`. Falls back to `hmac_key` if unset.
+    pub email_idempotency_secret: String,
     pub api_keys: Vec<String>,
     pub admin_whitelist_ips: Vec<IpAddr>,
     pub trust_proxy: bool,
@@ -354,6 +360,11 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(200),
+            rpc_backoff_jitter_factor: env::var("RPC_BACKOFF_JITTER_FACTOR")
+                .ok()
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(1.0)
+                .clamp(0.0, 1.0),
             event_poll_interval: Duration::from_secs(
                 env::var("EVENT_POLL_INTERVAL_SECS")
                     .ok()
@@ -382,6 +393,9 @@ impl Config {
             sendgrid_api_key: env::var("SENDGRID_API_KEY").ok(),
             from_email: env::var("FROM_EMAIL").ok(),
             base_url: env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:8080".to_string()),
+            email_idempotency_secret: env::var("EMAIL_IDEMPOTENCY_SECRET")
+                .or_else(|_| env::var("HMAC_KEY"))
+                .unwrap_or_default(),
             api_keys: env::var("API_KEYS")
                 .ok()
                 .map(|keys| keys.split(',').map(|k| k.trim().to_string()).collect())
@@ -789,6 +803,7 @@ mod tests {
             contract_id: "contract_id".to_string(),
             retry_attempts: 3,
             retry_base_delay_ms: 200,
+            rpc_backoff_jitter_factor: 1.0,
             event_poll_interval: Duration::from_secs(5),
             tx_poll_interval: Duration::from_secs(4),
             confirmation_ledger_lag: 3,
@@ -798,6 +813,7 @@ mod tests {
             sendgrid_api_key: None,
             from_email: None,
             base_url: "http://localhost:8080".to_string(),
+            email_idempotency_secret: "test-secret".to_string(),
             api_keys: vec![],
             admin_whitelist_ips: vec![],
             trust_proxy: true,
@@ -860,6 +876,7 @@ mod tests {
             contract_id: "contract_id".to_string(),
             retry_attempts: 3,
             retry_base_delay_ms: 200,
+            rpc_backoff_jitter_factor: 1.0,
             event_poll_interval: Duration::from_secs(5),
             tx_poll_interval: Duration::from_secs(4),
             confirmation_ledger_lag: 3,
@@ -869,6 +886,7 @@ mod tests {
             sendgrid_api_key: None,
             from_email: None,
             base_url: "http://localhost:8080".to_string(),
+            email_idempotency_secret: "".to_string(),
             api_keys: vec![],
             admin_whitelist_ips: vec![],
             trust_proxy: true,
@@ -931,6 +949,7 @@ mod tests {
             contract_id: "contract_id".to_string(),
             retry_attempts: 3,
             retry_base_delay_ms: 200,
+            rpc_backoff_jitter_factor: 1.0,
             event_poll_interval: Duration::from_secs(5),
             tx_poll_interval: Duration::from_secs(4),
             confirmation_ledger_lag: 3,
@@ -940,6 +959,7 @@ mod tests {
             sendgrid_api_key: None,
             from_email: None,
             base_url: "http://localhost:8080".to_string(),
+            email_idempotency_secret: "".to_string(),
             api_keys: vec![],
             admin_whitelist_ips: vec![],
             trust_proxy: true,
@@ -1002,6 +1022,7 @@ mod tests {
             contract_id: "contract_id".to_string(),
             retry_attempts: 3,
             retry_base_delay_ms: 200,
+            rpc_backoff_jitter_factor: 1.0,
             event_poll_interval: Duration::from_secs(5),
             tx_poll_interval: Duration::from_secs(4),
             confirmation_ledger_lag: 3,
@@ -1011,6 +1032,7 @@ mod tests {
             sendgrid_api_key: None,
             from_email: None,
             base_url: "http://localhost:8080".to_string(),
+            email_idempotency_secret: "".to_string(),
             api_keys: vec![],
             admin_whitelist_ips: vec![],
             trust_proxy: true,

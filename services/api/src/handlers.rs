@@ -185,6 +185,35 @@ pub async fn health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> i
     (StatusCode::OK, Json(health_status))
 }
 
+/// Readiness probe — returns 503 if the blockchain sync worker heartbeat
+/// has not been emitted within the last 60 seconds.
+pub async fn health_ready(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    const HEARTBEAT_TIMEOUT_SECS: i64 = 60;
+
+    let last_ts = state.metrics.sync_worker_last_heartbeat_ts();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    let age_secs = now - last_ts;
+    let sync_worker_healthy = last_ts > 0 && age_secs <= HEARTBEAT_TIMEOUT_SECS;
+
+    let body = serde_json::json!({
+        "ready": sync_worker_healthy,
+        "sync_worker": {
+            "last_heartbeat_age_secs": age_secs,
+            "healthy": sync_worker_healthy,
+        }
+    });
+
+    if sync_worker_healthy {
+        (StatusCode::OK, Json(body))
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, Json(body))
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 pub struct NewsletterSubscribeRequest {
     pub email: String,
