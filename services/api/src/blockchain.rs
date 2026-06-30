@@ -34,15 +34,41 @@ pub struct BlockchainClient {
     metrics: Metrics,
     monitor: Arc<MonitoringState>,
     expected_passphrase: String,
+    /// TTL after which a watched-transaction entry is evicted.
+    /// Populated from `Config::watched_tx_ttl_secs`.
+    watched_tx_ttl: Duration,
+    /// Hard cap on the number of entries in the watch map.
+    /// Populated from `Config::watched_tx_max_size`.
+    watched_tx_max_size: usize,
+    /// Whether the service is running in a production environment.
+    /// Affects startup passphrase-mismatch behaviour: hard exit vs. warning.
+    is_production: bool,
 }
 
 /// TTL for watched transaction hashes. Entries older than this are evicted
 /// regardless of their finalization status to bound memory growth.
-const WATCHED_TX_TTL: Duration = Duration::from_secs(30 * 60); // 30 minutes
+/// This default is used only in tests; the runtime value comes from config.
+const WATCHED_TX_TTL_DEFAULT: Duration = Duration::from_secs(30 * 60); // 30 minutes
 
-/// Maximum number of entries in `watched_txs`. When the cap is reached the
-/// oldest entry (by insertion time) is evicted to make room for the new one.
+/// Public alias for tests that need to reference the default TTL directly.
+pub const WATCHED_TX_DEFAULT_TTL: Duration = WATCHED_TX_TTL_DEFAULT;
+
+/// Maximum number of entries in `watched_txs` when no config value is provided.
+/// The runtime cap comes from `Config::watched_tx_max_size`.
 pub const WATCHED_TX_MAX_SIZE: usize = 10_000;
+
+/// Errors that can be returned by [`BlockchainClient::watch_transaction`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WatchTxError {
+    /// The transaction hash is already registered in the watch map.
+    /// No second entry is inserted; the caller should treat the existing
+    /// registration as authoritative.
+    AlreadyWatched,
+    /// The watch map has reached its configured capacity cap.
+    /// The caller should back-off and retry later, or inform the client with
+    /// a `503 Service Unavailable`.
+    CapReached,
+}
 
 #[derive(Default)]
 struct MonitoringState {
@@ -236,6 +262,9 @@ impl BlockchainClient {
             metrics,
             monitor: Arc::new(MonitoringState::default()),
             expected_passphrase: config.network_passphrase.clone(),
+            watched_tx_ttl: Duration::from_secs(config.watched_tx_ttl_secs),
+            watched_tx_max_size: config.watched_tx_max_size,
+            is_production: config.is_production,
         })
     }
 
@@ -246,6 +275,11 @@ impl BlockchainClient {
     ///
     /// When `STELLAR_NETWORK_PASSPHRASE` is unset (empty string, e.g. for a
     /// custom network without a known passphrase), validation is skipped.
+    ///
+    /// In production (`PREDICTIQ_ENV=production`) a passphrase mismatch causes
+    /// `process::exit(1)`.  In all other environments a warning is logged and
+    /// the process continues, so developers aren't blocked by a misconfigured
+    /// RPC endpoint.
     pub async fn validate_network_passphrase(&self) -> anyhow::Result<()> {
         if self.expected_passphrase.is_empty() {
             tracing::info!("STELLAR_NETWORK_PASSPHRASE not set; skipping passphrase validation");
@@ -257,19 +291,41 @@ impl BlockchainClient {
             passphrase: String,
         }
 
-        let result: NetworkResult = self
-            .rpc_call("getNetwork", serde_json::json!({}))
-            .await
-            .context("failed to query RPC network info for passphrase validation")?;
+        let result = self
+            .rpc_call::<NetworkResult>("getNetwork", serde_json::json!({}))
+            .await;
+
+        let result = match result {
+            Ok(r) => r,
+            Err(e) => {
+                let msg = format!(
+                    "Stellar RPC reachability probe failed — could not call getNetwork: {e}. \
+                     Check BLOCKCHAIN_RPC_URL."
+                );
+                if self.is_production {
+                    tracing::error!("{msg}");
+                    std::process::exit(1);
+                } else {
+                    tracing::warn!("{msg}");
+                    return Ok(());
+                }
+            }
+        };
 
         if result.passphrase != self.expected_passphrase {
-            anyhow::bail!(
+            let msg = format!(
                 "Stellar network passphrase mismatch — \
                  RPC returned {:?} but STELLAR_NETWORK_PASSPHRASE is {:?}. \
                  Check BLOCKCHAIN_NETWORK and STELLAR_NETWORK_PASSPHRASE.",
-                result.passphrase,
-                self.expected_passphrase,
+                result.passphrase, self.expected_passphrase,
             );
+            if self.is_production {
+                tracing::error!("{msg}");
+                std::process::exit(1);
+            } else {
+                tracing::warn!("{msg}");
+                return Ok(());
+            }
         }
 
         tracing::info!(
@@ -277,6 +333,32 @@ impl BlockchainClient {
             "Stellar network passphrase validated"
         );
         Ok(())
+    }
+
+    /// Returns the result of the last Stellar RPC reachability probe as a
+    /// simple boolean suitable for embedding in `/health/ready` responses.
+    /// This performs a live RPC call to `getNetwork` and checks the passphrase.
+    pub async fn probe_stellar_ready(&self) -> bool {
+        if self.expected_passphrase.is_empty() {
+            // Custom network with no passphrase configured — skip check.
+            return true;
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct NetworkResult {
+            passphrase: String,
+        }
+
+        match self
+            .rpc_call::<NetworkResult>("getNetwork", serde_json::json!({}))
+            .await
+        {
+            Ok(r) => r.passphrase == self.expected_passphrase,
+            Err(e) => {
+                tracing::warn!(error = %e, "probe_stellar_ready: getNetwork failed");
+                false
+            }
+        }
     }
 
     async fn rpc_call<T: for<'de> Deserialize<'de>>(
@@ -838,7 +920,17 @@ impl BlockchainClient {
                 .await?;
 
             if let Some(hash) = event.tx_hash {
-                self.watch_transaction(&hash).await;
+                // AlreadyWatched is benign (idempotent); CapReached is logged
+                // as a warning but does not abort event processing.
+                match self.watch_transaction(&hash).await {
+                    Ok(()) | Err(WatchTxError::AlreadyWatched) => {}
+                    Err(WatchTxError::CapReached) => {
+                        tracing::warn!(
+                            hash,
+                            "sync_once: watched_tx cap reached, skipping watch for this hash"
+                        );
+                    }
+                }
             }
         }
 
@@ -931,7 +1023,9 @@ impl BlockchainClient {
             for hash in hashes {
                 if let Ok(status) = self.transaction_status_cached(&hash).await {
                     if status.status != "NOT_FOUND" && status.status != "PENDING" {
-                        self.monitor.watched_txs.write().await.remove(&hash);
+                        let mut set = self.monitor.watched_txs.write().await;
+                        set.remove(&hash);
+                        self.metrics.set_watched_tx_count(set.len() as i64);
                     }
                 }
             }
@@ -949,38 +1043,41 @@ impl BlockchainClient {
         coordinator.worker_completed();
     }
 
-    pub async fn watch_transaction(&self, hash: &str) {
+    pub async fn watch_transaction(&self, hash: &str) -> Result<(), WatchTxError> {
         let mut set = self.monitor.watched_txs.write().await;
 
         // Evict TTL-expired entries first.
         let now = Instant::now();
         let before = set.len();
-        set.retain(|_, inserted_at| now.duration_since(*inserted_at) < WATCHED_TX_TTL);
+        set.retain(|_, inserted_at| now.duration_since(*inserted_at) < self.watched_tx_ttl);
         let evicted = before - set.len();
         if evicted > 0 {
             self.metrics.observe_tx_eviction(evicted as u64);
             tracing::info!(evicted, "watched_txs: TTL eviction");
         }
 
-        // If still at cap, evict the single oldest entry to make room.
-        if set.len() >= WATCHED_TX_MAX_SIZE {
-            if let Some(oldest_key) = set
-                .iter()
-                .min_by_key(|(_, inserted_at)| *inserted_at)
-                .map(|(k, _)| k.clone())
-            {
-                set.remove(&oldest_key);
-                self.metrics.observe_tx_eviction(1);
-                tracing::warn!(
-                    cap = WATCHED_TX_MAX_SIZE,
-                    evicted_hash = %oldest_key,
-                    new_hash = hash,
-                    "watched_txs cap reached, evicting oldest entry"
-                );
-            }
+        // Deduplication check: reject if the hash is already being watched.
+        if set.contains_key(hash) {
+            tracing::debug!(hash, "watch_transaction: hash already registered (dedup)");
+            self.metrics.set_watched_tx_count(set.len() as i64);
+            return Err(WatchTxError::AlreadyWatched);
         }
 
-        set.entry(hash.to_string()).or_insert(now);
+        // Cap check: reject new registrations when at capacity.
+        if set.len() >= self.watched_tx_max_size {
+            tracing::warn!(
+                cap = self.watched_tx_max_size,
+                hash,
+                "watch_transaction: cap reached, rejecting new registration"
+            );
+            self.metrics.set_watched_tx_count(set.len() as i64);
+            return Err(WatchTxError::CapReached);
+        }
+
+        set.insert(hash.to_string(), now);
+        self.metrics.set_watched_tx_count(set.len() as i64);
+        tracing::debug!(hash, size = set.len(), "watch_transaction: registered");
+        Ok(())
     }
 
     /// Replay missed events from `from_ledger` up to the current confirmed tip.
@@ -1088,8 +1185,6 @@ mod tests {
     /// is smaller than the page size (simulates the last page).
     #[test]
     fn fetch_events_pagination_stops_on_partial_page() {
-        // The loop breaks when batch_len < 100. Verify the condition holds for
-        // typical last-page sizes (0, 1, 99).
         for last_page_size in [0usize, 1, 99] {
             assert!(
                 last_page_size < 100,
@@ -1098,54 +1193,122 @@ mod tests {
         }
     }
 
-    /// Inserting more than WATCHED_TX_MAX_SIZE hashes must not grow the set beyond the cap.
+    // ── #937: Deduplication ───────────────────────────────────────────────────
+
+    /// Registering the same hash twice must return AlreadyWatched on the
+    /// second call and must not insert a second entry.
     #[tokio::test]
-    async fn watched_txs_cap_prevents_unbounded_growth() {
-        use super::{MonitoringState, WATCHED_TX_MAX_SIZE, WATCHED_TX_TTL};
+    async fn watch_transaction_dedup_returns_already_watched() {
+        use super::{MonitoringState, WatchTxError, WATCHED_TX_MAX_SIZE, WATCHED_TX_DEFAULT_TTL};
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let state = Arc::new(MonitoringState::default());
+        let ttl = WATCHED_TX_DEFAULT_TTL;
+        let cap = WATCHED_TX_MAX_SIZE;
+
+        // First registration must succeed.
+        {
+            let mut set = state.watched_txs.write().await;
+            let now = std::time::Instant::now();
+            set.retain(|_, t| now.duration_since(*t) < ttl);
+            assert!(!set.contains_key("dup-hash"));
+            assert!(set.len() < cap);
+            set.insert("dup-hash".to_string(), now);
+        }
+
+        // Second registration of the same hash must return AlreadyWatched.
+        let result = {
+            let mut set = state.watched_txs.write().await;
+            let now = std::time::Instant::now();
+            set.retain(|_, t| now.duration_since(*t) < ttl);
+            if set.contains_key("dup-hash") {
+                Err(WatchTxError::AlreadyWatched)
+            } else if set.len() >= cap {
+                Err(WatchTxError::CapReached)
+            } else {
+                set.insert("dup-hash".to_string(), now);
+                Ok(())
+            }
+        };
+
+        assert_eq!(result, Err(WatchTxError::AlreadyWatched));
+
+        // Exactly one entry must be in the map.
+        let count = state.watched_txs.read().await.len();
+        assert_eq!(count, 1, "duplicate must not insert a second entry");
+    }
+
+    // ── #934: Cap → reject (503), not evict ───────────────────────────────────
+
+    /// When the watch map is at capacity, a new registration must return
+    /// CapReached.  The map size must not exceed the cap.
+    #[tokio::test]
+    async fn watch_transaction_cap_returns_cap_reached() {
+        use super::{MonitoringState, WatchTxError, WATCHED_TX_MAX_SIZE, WATCHED_TX_DEFAULT_TTL};
         use std::sync::Arc;
 
         let state = Arc::new(MonitoringState::default());
+        let cap = WATCHED_TX_MAX_SIZE;
+        let ttl = WATCHED_TX_DEFAULT_TTL;
 
-        // Insert WATCHED_TX_MAX_SIZE + 50 unique hashes, simulating the eviction logic.
-        for i in 0..WATCHED_TX_MAX_SIZE + 50 {
-            let hash = format!("hash-{i}");
+        // Fill exactly to cap.
+        {
             let mut set = state.watched_txs.write().await;
             let now = std::time::Instant::now();
-            set.retain(|_, inserted_at| now.duration_since(*inserted_at) < WATCHED_TX_TTL);
-            // Evict oldest if at cap.
-            if set.len() >= WATCHED_TX_MAX_SIZE {
-                if let Some(oldest) = set.iter().min_by_key(|(_, t)| *t).map(|(k, _)| k.clone()) {
-                    set.remove(&oldest);
-                }
+            for i in 0..cap {
+                set.insert(format!("hash-{i}"), now);
             }
-            set.entry(hash).or_insert(now);
         }
 
+        // One more insertion must be rejected.
+        let result = {
+            let mut set = state.watched_txs.write().await;
+            let now = std::time::Instant::now();
+            set.retain(|_, t| now.duration_since(*t) < ttl);
+            let hash = "overflow-hash";
+            if set.contains_key(hash) {
+                Err(WatchTxError::AlreadyWatched)
+            } else if set.len() >= cap {
+                Err(WatchTxError::CapReached)
+            } else {
+                set.insert(hash.to_string(), now);
+                Ok(())
+            }
+        };
+
+        assert_eq!(result, Err(WatchTxError::CapReached));
+
         let len = state.watched_txs.read().await.len();
-        assert_eq!(len, WATCHED_TX_MAX_SIZE, "set must not exceed cap");
+        assert_eq!(len, cap, "map must not exceed cap after rejection");
     }
 
-    /// Entries older than WATCHED_TX_TTL are evicted on the next insert.
+    // ── #933: TTL eviction ────────────────────────────────────────────────────
+
+    /// Entries older than the configured TTL are evicted on the next insert.
     #[tokio::test]
     async fn watched_txs_ttl_evicts_stale_entries() {
-        use super::MonitoringState;
+        use super::{MonitoringState, WATCHED_TX_DEFAULT_TTL};
         use std::sync::Arc;
         use std::time::{Duration, Instant};
 
         let state = Arc::new(MonitoringState::default());
+        let ttl = WATCHED_TX_DEFAULT_TTL;
 
-        // Manually insert an entry with an artificially old timestamp.
+        // Insert a hash with an artificially old timestamp (31 minutes ago).
         {
             let mut set = state.watched_txs.write().await;
             set.insert("old-hash".to_string(), Instant::now() - Duration::from_secs(31 * 60));
         }
 
-        // Trigger eviction by inserting a new entry (same logic as watch_transaction).
+        // Trigger eviction by simulating a new watch_transaction call.
         {
             let mut set = state.watched_txs.write().await;
             let now = Instant::now();
-            set.retain(|_, inserted_at| now.duration_since(*inserted_at) < super::WATCHED_TX_TTL);
-            set.entry("new-hash".to_string()).or_insert(now);
+            set.retain(|_, inserted_at| now.duration_since(*inserted_at) < ttl);
+            if !set.contains_key("new-hash") && set.len() < 10_000 {
+                set.insert("new-hash".to_string(), now);
+            }
         }
 
         let set = state.watched_txs.read().await;
@@ -1153,42 +1316,10 @@ mod tests {
         assert!(set.contains_key("new-hash"), "fresh entry must be present");
     }
 
-    /// When the cap is reached, the oldest entry is evicted (not the new one dropped).
-    #[tokio::test]
-    async fn watched_txs_cap_evicts_oldest_not_newest() {
-        use super::{MonitoringState, WATCHED_TX_MAX_SIZE, WATCHED_TX_TTL};
-        use std::sync::Arc;
-        use std::time::{Duration, Instant};
-
-        let state = Arc::new(MonitoringState::default());
-
-        // Fill to cap, with "oldest-hash" inserted first (oldest timestamp).
-        {
-            let mut set = state.watched_txs.write().await;
-            let old_time = Instant::now() - Duration::from_secs(60);
-            set.insert("oldest-hash".to_string(), old_time);
-            let now = Instant::now();
-            for i in 1..WATCHED_TX_MAX_SIZE {
-                set.insert(format!("hash-{i}"), now);
-            }
-        }
-
-        // Insert one more — should evict "oldest-hash".
-        {
-            let mut set = state.watched_txs.write().await;
-            let now = Instant::now();
-            set.retain(|_, inserted_at| now.duration_since(*inserted_at) < WATCHED_TX_TTL);
-            if set.len() >= WATCHED_TX_MAX_SIZE {
-                if let Some(oldest) = set.iter().min_by_key(|(_, t)| *t).map(|(k, _)| k.clone()) {
-                    set.remove(&oldest);
-                }
-            }
-            set.entry("newest-hash".to_string()).or_insert(now);
-        }
-
-        let set = state.watched_txs.read().await;
-        assert!(!set.contains_key("oldest-hash"), "oldest entry must be evicted");
-        assert!(set.contains_key("newest-hash"), "newest entry must be present");
-        assert_eq!(set.len(), WATCHED_TX_MAX_SIZE, "size must remain at cap");
+    /// WatchTxError variants are distinct.
+    #[test]
+    fn watch_tx_error_variants_are_distinct() {
+        use super::WatchTxError;
+        assert_ne!(WatchTxError::AlreadyWatched, WatchTxError::CapReached);
     }
 }

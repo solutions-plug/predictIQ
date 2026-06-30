@@ -284,3 +284,36 @@ groups:
           summary: "Email queue depth is high"
           description: "Email queue depth is {{ $value }}, exceeding 100 for more than 5 minutes"
           runbook_url: "https://docs.predictiq.com/runbooks/email-queue-depth-high"
+
+  - name: blockchain_watch_map
+    interval: 30s
+    rules:
+      - alert: WatchedTxCountHigh
+        expr: watched_tx_count > 8000
+        for: 5m
+        labels:
+          severity: warning
+          component: blockchain
+        annotations:
+          summary: "Watched transaction map is above 80% capacity"
+          description: >
+            watched_tx_count is {{ $value }}, which exceeds 80% of the default
+            10 000-entry cap (WATCHED_TX_MAX_SIZE). New watch registrations will
+            be rejected with 503 when the map is full. Consider increasing
+            WATCHED_TX_MAX_SIZE or reducing WATCHED_TX_TTL_SECS.
+          runbook_url: "https://docs.predictiq.com/runbooks/watched-tx-count-high"
+
+      - alert: WatchedTxCountCritical
+        expr: watched_tx_count >= 10000
+        for: 1m
+        labels:
+          severity: critical
+          component: blockchain
+        annotations:
+          summary: "Watched transaction map is full — new registrations are being rejected"
+          description: >
+            watched_tx_count is {{ $value }}, which equals or exceeds the
+            configured cap (WATCHED_TX_MAX_SIZE). All new watch registration
+            requests are returning 503 Service Unavailable. Immediate action
+            required: increase WATCHED_TX_MAX_SIZE or reduce WATCHED_TX_TTL_SECS.
+          runbook_url: "https://docs.predictiq.com/runbooks/watched-tx-count-high"

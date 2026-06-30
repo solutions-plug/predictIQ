@@ -177,6 +177,39 @@ pub async fn health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> i
     (StatusCode::OK, Json(health_status))
 }
 
+/// Readiness probe: verifies that the Stellar RPC node is reachable and
+/// returns the expected network passphrase.
+///
+/// Returns `200 OK` with `{ "ready": true, "stellar_rpc": "ok" }` when the
+/// probe passes, or `503 Service Unavailable` with `{ "ready": false,
+/// "stellar_rpc": "unreachable" }` when it fails.
+///
+/// Kubernetes / load-balancer readiness probes should hit this endpoint.
+/// Requests are not counted as application traffic and should not be rate-limited.
+pub async fn health_ready(
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    let stellar_ok = state.blockchain.probe_stellar_ready().await;
+
+    if stellar_ok {
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "ready": true,
+                "stellar_rpc": "ok",
+            })),
+        )
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "ready": false,
+                "stellar_rpc": "unreachable",
+            })),
+        )
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct NewsletterSubscribeRequest {
     pub email: String,
@@ -864,7 +897,23 @@ pub async fn blockchain_tx_status(
     State(state): State<Arc<AppState>>,
     Path(tx_hash): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    state.blockchain.watch_transaction(&tx_hash).await;
+    use crate::blockchain::WatchTxError;
+
+    match state.blockchain.watch_transaction(&tx_hash).await {
+        Ok(()) => {}
+        Err(WatchTxError::AlreadyWatched) => {
+            // Idempotent: the hash is already registered.  Continue to return
+            // the current status so the caller gets a useful response.
+        }
+        Err(WatchTxError::CapReached) => {
+            return Err(ApiError::service_unavailable(
+                "Transaction watch map is at capacity. \
+                 Too many concurrent transactions are being monitored. \
+                 Please retry later.",
+            ));
+        }
+    }
+
     let data = state
         .blockchain
         .transaction_status_cached(&tx_hash)

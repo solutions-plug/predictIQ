@@ -190,6 +190,7 @@ async fn main() -> anyhow::Result<()> {
     // ── Routes ────────────────────────────────────────────────────────────────
     let public_routes = Router::new()
         .route("/health", get(handlers::health))
+        .route("/health/ready", get(handlers::health_ready))
         .route("/api/v1/blockchain/health", get(handlers::blockchain_health))
         .route("/api/v1/blockchain/markets/:market_id", get(handlers::blockchain_market_data))
         .route("/api/v1/blockchain/stats", get(handlers::blockchain_platform_stats))

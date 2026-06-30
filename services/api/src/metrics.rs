@@ -40,6 +40,7 @@ pub struct Metrics {
     db_pool_acquire_duration: HistogramVec,
     rate_limit_rejections: IntCounterVec,
     cache_circuit_breaker_state: IntGauge,
+    watched_tx_count: IntGauge,
 }
 
 impl Metrics {
@@ -154,6 +155,12 @@ impl Metrics {
         )
         .context("cache_circuit_breaker_state metric")?;
 
+        let watched_tx_count = IntGauge::new(
+            "watched_tx_count",
+            "Current number of transaction hashes being monitored in the watch map",
+        )
+        .context("watched_tx_count metric")?;
+
         registry.register(Box::new(cache_hits.clone()))?;
         registry.register(Box::new(cache_misses.clone()))?;
         registry.register(Box::new(invalidations.clone()))?;
@@ -168,6 +175,7 @@ impl Metrics {
         registry.register(Box::new(db_pool_acquire_duration.clone()))?;
         registry.register(Box::new(rate_limit_rejections.clone()))?;
         registry.register(Box::new(cache_circuit_breaker_state.clone()))?;
+        registry.register(Box::new(watched_tx_count.clone()))?;
 
         Ok(Self {
             registry,
@@ -185,6 +193,7 @@ impl Metrics {
             db_pool_acquire_duration,
             rate_limit_rejections,
             cache_circuit_breaker_state,
+            watched_tx_count,
         })
     }
 
@@ -292,6 +301,12 @@ impl Metrics {
         self.cache_circuit_breaker_state.set(state);
     }
 
+    /// Update the gauge tracking the current number of watched transactions.
+    /// Call this after every insert, eviction, or removal from the watch map.
+    pub fn set_watched_tx_count(&self, n: i64) {
+        self.watched_tx_count.set(n);
+    }
+
     pub fn render(&self) -> anyhow::Result<String> {
         let mut buffer = vec![];
         let encoder = TextEncoder::new();
@@ -354,9 +369,11 @@ mod tests {
         m.set_dlq_size(7);
         m.set_email_queue_depth(12);
         m.set_circuit_breaker_state(0);
+        m.set_watched_tx_count(42);
         let rendered = m.render().expect("render must not fail");
         assert!(rendered.contains("cache_hits_total"));
         assert!(rendered.contains("http_request_duration_seconds"));
+        assert!(rendered.contains("watched_tx_count 42"));
     }
 
     // ── record_pool_metrics ────────────────────────────────────────────────────

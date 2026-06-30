@@ -231,6 +231,21 @@ pub struct Config {
     /// startup. Configured via `STELLAR_NETWORK_PASSPHRASE`; defaults to the
     /// canonical passphrase for the configured `BLOCKCHAIN_NETWORK`.
     pub network_passphrase: String,
+    /// TTL (in seconds) for entries in the watched-transaction map.
+    /// Entries older than this are evicted on the next insert regardless of
+    /// their finalization status, bounding memory growth.
+    /// Default: 1800 (30 minutes). Set via `WATCHED_TX_TTL_SECS`.
+    pub watched_tx_ttl_secs: u64,
+    /// Maximum number of transaction hashes that may be tracked simultaneously
+    /// in the in-memory watch map.  When the cap is reached new registrations
+    /// are rejected with 503 Service Unavailable rather than silently evicting
+    /// older entries.  Default: 10000.  Set via `WATCHED_TX_MAX_SIZE`.
+    pub watched_tx_max_size: usize,
+    /// Whether the service is running in a production environment.
+    /// When `true` a Stellar network passphrase mismatch at startup causes a
+    /// hard `process::exit(1)`.  When `false` only a warning is logged.
+    /// Default: `false`.  Set `PREDICTIQ_ENV=production` to enable.
+    pub is_production: bool,
 }
 
 impl Config {
@@ -458,6 +473,17 @@ impl Config {
             cors: CorsConfig::from_env(),
             contract_key_schema: ContractKeySchema::from_env(),
             network_passphrase,
+            watched_tx_ttl_secs: env::var("WATCHED_TX_TTL_SECS")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(1800),
+            watched_tx_max_size: env::var("WATCHED_TX_MAX_SIZE")
+                .ok()
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(10_000),
+            is_production: env::var("PREDICTIQ_ENV")
+                .map(|v| v.eq_ignore_ascii_case("production"))
+                .unwrap_or(false),
         }
     }
 
@@ -783,6 +809,8 @@ mod tests {
                 idle_timeout: None,
                 max_lifetime: None,
                 query_timeout: Duration::from_secs(30),
+                statement_timeout_ms: 30_000,
+                lock_timeout_ms: 10_000,
             },
             blockchain_rpc_url: "https://testnet.soroban.org".to_string(),
             blockchain_network: BlockchainNetwork::Testnet,
@@ -834,6 +862,10 @@ mod tests {
                 oracle_result: "oracle_result:{id}".to_string(),
                 health_check: "platform:stats".to_string(),
             },
+            network_passphrase: "Test SDF Network ; September 2015".to_string(),
+            watched_tx_ttl_secs: 1800,
+            watched_tx_max_size: 10_000,
+            is_production: false,
         };
         assert!(config.validate().is_ok());
     }
@@ -854,6 +886,8 @@ mod tests {
                 idle_timeout: None,
                 max_lifetime: None,
                 query_timeout: Duration::from_secs(30),
+                statement_timeout_ms: 30_000,
+                lock_timeout_ms: 10_000,
             },
             blockchain_rpc_url: "https://testnet.soroban.org".to_string(),
             blockchain_network: BlockchainNetwork::Testnet,
@@ -905,6 +939,10 @@ mod tests {
                 oracle_result: "oracle_result:{id}".to_string(),
                 health_check: "platform:stats".to_string(),
             },
+            network_passphrase: "Test SDF Network ; September 2015".to_string(),
+            watched_tx_ttl_secs: 1800,
+            watched_tx_max_size: 10_000,
+            is_production: false,
         };
         assert!(config.validate().is_err());
     }
@@ -925,6 +963,8 @@ mod tests {
                 idle_timeout: None,
                 max_lifetime: None,
                 query_timeout: Duration::from_secs(30),
+                statement_timeout_ms: 30_000,
+                lock_timeout_ms: 10_000,
             },
             blockchain_rpc_url: "https://testnet.soroban.org".to_string(),
             blockchain_network: BlockchainNetwork::Testnet,
@@ -976,6 +1016,10 @@ mod tests {
                 oracle_result: "oracle_result:{id}".to_string(),
                 health_check: "platform:stats".to_string(),
             },
+            network_passphrase: "Test SDF Network ; September 2015".to_string(),
+            watched_tx_ttl_secs: 1800,
+            watched_tx_max_size: 10_000,
+            is_production: false,
         };
         assert!(config.validate().is_err());
     }
@@ -996,6 +1040,8 @@ mod tests {
                 idle_timeout: None,
                 max_lifetime: None,
                 query_timeout: Duration::from_secs(30),
+                statement_timeout_ms: 30_000,
+                lock_timeout_ms: 10_000,
             },
             blockchain_rpc_url: "https://testnet.soroban.org".to_string(),
             blockchain_network: BlockchainNetwork::Testnet,
@@ -1047,6 +1093,10 @@ mod tests {
                 oracle_result: "oracle_result:{id}".to_string(),
                 health_check: "platform:stats".to_string(),
             },
+            network_passphrase: "Test SDF Network ; September 2015".to_string(),
+            watched_tx_ttl_secs: 1800,
+            watched_tx_max_size: 10_000,
+            is_production: false,
         };
         assert!(config.validate().is_err());
     }

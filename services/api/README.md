@@ -75,6 +75,9 @@ The following Prometheus gauges are exported on `/metrics` and updated on each s
 | `BLOCKCHAIN_NETWORK` | `testnet` | Network to connect to: `testnet`, `mainnet`, or `custom` |
 | `BLOCKCHAIN_RPC_URL` | _(network default)_ | Soroban RPC endpoint |
 | `STELLAR_NETWORK_PASSPHRASE` | _(network default)_ | Expected network passphrase; validated against the RPC node at startup |
+| `WATCHED_TX_TTL_SECS` | `1800` | TTL (seconds) for entries in the in-memory watched-transaction map. Entries older than this are evicted on the next write regardless of finalization status. Applied to the `expires_at` column of the `watched_transactions` DB table too. |
+| `WATCHED_TX_MAX_SIZE` | `10000` | Maximum number of transaction hashes that may be tracked simultaneously. When the cap is reached, new `GET /api/v1/blockchain/tx/:hash` registrations return `503 Service Unavailable`. |
+| `PREDICTIQ_ENV` | _(empty)_ | Set to `production` to make the Stellar RPC reachability startup probe fail-fast with `exit(1)` on failure. In all other environments only a warning is logged. |
 
 Expected passphrases per `BLOCKCHAIN_NETWORK`:
 
@@ -86,7 +89,26 @@ Expected passphrases per `BLOCKCHAIN_NETWORK`:
 
 At startup the API queries the RPC node's `getNetwork` endpoint. If the returned passphrase does not match the configured `STELLAR_NETWORK_PASSPHRASE`, the service rejects startup with a fatal error. This prevents silently signing transactions for the wrong network.
 
+In production (`PREDICTIQ_ENV=production`) a mismatch or unreachable RPC causes `process::exit(1)`.  In development environments only a warning is logged and the process continues.
+
 To disable validation entirely (e.g. for a local custom network without a fixed passphrase), leave `STELLAR_NETWORK_PASSPHRASE` unset.
+
+### Health endpoints
+
+| Endpoint | Description |
+|---|---|
+| `GET /health` | Liveness probe — checks Redis, DB, and email queue worker status |
+| `GET /health/ready` | Readiness probe — validates the Stellar RPC endpoint is reachable and returns the expected network passphrase. Returns `200 OK` with `{ "ready": true, "stellar_rpc": "ok" }` on success, or `503 Service Unavailable` with `{ "ready": false, "stellar_rpc": "unreachable" }` on failure. Use this for Kubernetes `readinessProbe` configuration. |
+
+### Watched-transaction metrics
+
+The following Prometheus gauge is exported on `/metrics`:
+
+| Metric | Description |
+|---|---|
+| `watched_tx_count` | Current number of transaction hashes being monitored in the in-memory watch map |
+
+An alert (`WatchedTxCountHigh`) fires when `watched_tx_count` exceeds 8 000 (80% of the default 10 000 cap). A critical alert (`WatchedTxCountCritical`) fires when the map is full and new registrations are being rejected.
 
 See `DATABASE.md` for database-specific configuration.
 
