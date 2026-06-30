@@ -1,0 +1,37 @@
+[package]
+name = "predict-iq-fuzz"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[[bin]]
+name = "fuzz_place_bet"
+path = "fuzz_targets/fuzz_place_bet.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_resolve_market"
+path = "fuzz_targets/fuzz_resolve_market.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_withdraw"
+path = "fuzz_targets/fuzz_withdraw.rs"
+test = false
+doc = false
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.predict-iq]
+path = ".."
+features = ["testutils"]
+
+[dependencies.soroban-sdk]
+version = "26.0.1"
+features = ["testutils"]

@@ -9,6 +9,7 @@ use validator::ValidateEmail;
 use crate::cache::RedisCache;
 use crate::config::Config;
 use crate::email::templates::EmailTemplateEngine;
+use crate::metrics::Metrics;
 
 /// Configuration for email idempotency deduplication.
 #[derive(Clone, Debug)]
@@ -102,6 +103,8 @@ pub struct EmailService {
     cache: Option<RedisCache>,
     pub idempotency: IdempotencyConfig,
     pub(crate) idempotency_secret: String,
+    metrics: Option<Metrics>,
+    sendgrid_base_url: String,
 }
 
 impl EmailService {
@@ -116,6 +119,15 @@ impl EmailService {
         idempotency: IdempotencyConfig,
         idempotency_secret: String,
     ) -> Result<Self> {
+        Self::with_cache_and_metrics(config, cache, idempotency, None)
+    }
+
+    pub fn with_cache_and_metrics(
+        config: Config,
+        cache: Option<RedisCache>,
+        idempotency: IdempotencyConfig,
+        metrics: Option<Metrics>,
+    ) -> Result<Self> {
         let template_engine = EmailTemplateEngine::new()?;
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
@@ -128,7 +140,15 @@ impl EmailService {
             cache,
             idempotency,
             idempotency_secret,
+            metrics,
+            sendgrid_base_url: "https://api.sendgrid.com".to_string(),
         })
+    }
+
+    #[cfg(test)]
+    pub fn with_base_url(mut self, base_url: String) -> Self {
+        self.sendgrid_base_url = base_url;
+        self
     }
 
     /// Probe SendGrid API reachability. Returns Ok if the API key is valid and
@@ -183,7 +203,7 @@ impl EmailService {
         // --- idempotency check ---
         if let (Some(cache), Some(key)) = (&self.cache, idem_key) {
             let redis_key = format!("email:idem:{key}");
-            let mut conn = cache.manager.clone();
+            let mut conn = cache.get_connection().await.context("idempotency Redis connection failed")?;
 
             // Try SET NX — only succeeds for the first send.
             let acquired: Option<String> = redis::cmd("SET")
@@ -262,38 +282,78 @@ impl EmailService {
             }
         });
 
-        // Send via SendGrid
-        let response = self
-            .client
-            .post("https://api.sendgrid.com/v3/mail/send")
-            .bearer_auth(api_key)
-            .json(&payload)
-            .send()
-            .await
-            .context("Failed to send email via SendGrid")?;
+        // Send via SendGrid with retry (max 3 attempts, exp backoff + jitter)
+        const MAX_ATTEMPTS: u32 = 3;
+        let mut last_error = String::new();
 
-        if !response.status().is_success() {
+        for attempt in 0..MAX_ATTEMPTS {
+            let response = self
+                .client
+                .post(format!("{}/v3/mail/send", self.sendgrid_base_url))
+                .bearer_auth(api_key)
+                .json(&payload)
+                .send()
+                .await
+                .context("Failed to send email via SendGrid")?;
+
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            anyhow::bail!("SendGrid API error {}: {}", status, body);
+
+            if status.is_success() {
+                let message_id = response
+                    .headers()
+                    .get("x-message-id")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("unknown")
+                    .to_string();
+
+                tracing::info!(
+                    "Email sent successfully to {} using template {} (message_id: {})",
+                    recipient,
+                    template_name,
+                    message_id
+                );
+                return Ok(message_id);
+            }
+
+            let should_retry = status.as_u16() == 429 || status.is_server_error();
+            let retry_after_header = response
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok());
+
+            if !should_retry || attempt + 1 == MAX_ATTEMPTS {
+                last_error = format!("SendGrid API error {}", status);
+                break;
+            }
+
+            let reason = if status.as_u16() == 429 { "rate_limited" } else { "server_error" };
+            if let Some(m) = &self.metrics {
+                m.observe_sendgrid_retry(reason);
+            }
+
+            // Respect Retry-After (seconds) if present, else exp backoff + jitter
+            let delay_ms: u64 = if let Some(secs) = retry_after_header {
+                secs * 1_000
+            } else {
+                let jitter = (std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .subsec_millis() % 100) as u64;
+                (1u64 << attempt) * 100 + jitter
+            };
+
+            tracing::warn!(
+                attempt = attempt + 1,
+                delay_ms,
+                reason,
+                "SendGrid transient error {}, retrying",
+                status
+            );
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
         }
 
-        // Extract message ID from response headers
-        let message_id = response
-            .headers()
-            .get("x-message-id")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("unknown")
-            .to_string();
-
-        tracing::info!(
-            "Email sent successfully to {} using template {} (message_id: {})",
-            recipient,
-            template_name,
-            message_id
-        );
-
-        Ok(message_id)
+        anyhow::bail!(last_error);
     }
 
     /// Preview email without sending (for testing/development)
@@ -434,6 +494,61 @@ mod tests {
         assert_eq!(
             key_attempt_1, key_attempt_2,
             "retry must produce the same idempotency key"
+        );
+    }
+
+    /// Two 429s followed by a 202: the service should succeed on the third attempt.
+    #[tokio::test]
+    async fn retry_succeeds_after_two_429s() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+
+        // First two calls return 429, third returns 202.
+        Mock::given(method("POST"))
+            .and(path("/v3/mail/send"))
+            .respond_with(ResponseTemplate::new(429))
+            .up_to_n_times(2)
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/v3/mail/send"))
+            .respond_with(
+                ResponseTemplate::new(202)
+                    .insert_header("x-message-id", "test-msg-id"),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let mut config = Config::from_env();
+        config.sendgrid_api_key = Some("test-key".to_string());
+        config.from_email = Some("from@example.com".to_string());
+
+        let metrics = crate::metrics::Metrics::new().unwrap();
+        let service = EmailService::with_cache_and_metrics(
+            config,
+            None,
+            IdempotencyConfig::default(),
+            Some(metrics.clone()),
+        )
+        .unwrap()
+        .with_base_url(mock_server.uri());
+
+        let data = serde_json::json!({"confirm_url": "https://example.com/confirm?token=abc"});
+        let result = service
+            .send_email("user@example.com", "newsletter_confirmation", &data)
+            .await;
+
+        assert!(result.is_ok(), "expected success after retries, got: {:?}", result);
+        assert_eq!(result.unwrap(), "test-msg-id");
+
+        // Verify the retry counter was incremented twice (one per 429)
+        let rendered = metrics.render().unwrap();
+        assert!(
+            rendered.contains(r#"sendgrid_retries_total{reason="rate_limited"} 2"#),
+            "expected 2 rate_limited retries in metrics:\n{rendered}"
         );
     }
 

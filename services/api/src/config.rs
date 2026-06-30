@@ -67,7 +67,7 @@ impl CorsConfig {
                     .filter(|s| !s.is_empty())
                     .collect()
             })
-            .unwrap_or_else(|| {
+            .unwrap_or_else(|_| {
                 ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
                     .iter()
                     .map(|s| s.to_string())
@@ -81,7 +81,7 @@ impl CorsConfig {
                     .filter(|s| !s.is_empty())
                     .collect()
             })
-            .unwrap_or_else(|| {
+            .unwrap_or_else(|_| {
                 ["content-type", "authorization"]
                     .iter()
                     .map(|s| s.to_string())
