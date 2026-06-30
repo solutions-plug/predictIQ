@@ -102,7 +102,7 @@ async fn main() -> anyhow::Result<()> {
 
     let email_service = EmailService::new(config.clone())?;
     let email_queue = EmailQueue::new(cache.clone(), db.clone());
-    let webhook_handler = WebhookHandler::new(db.clone());
+    let webhook_handler = WebhookHandler::new(db.clone(), cache.clone(), config.webhook_replay_window_secs);
     let audit_logger = AuditLogger::new(db.pool());
 
     let bind_addr = config.bind_addr;

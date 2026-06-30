@@ -113,3 +113,12 @@ jobs:
             echo "❌ Container failed to start"
             exit 1
           fi
+
+      - name: Assert CORS_DEV_MODE is not set in production image
+        run: |
+          ENV_VARS=$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' predictiq-api:test)
+          if echo "$ENV_VARS" | grep -q "^CORS_DEV_MODE=true"; then
+            echo "❌ CORS_DEV_MODE=true found in production Docker image environment!"
+            exit 1
+          fi
+          echo "✅ CORS_DEV_MODE=true is not baked into the production Docker image"

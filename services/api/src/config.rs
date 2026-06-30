@@ -1,3 +1,4 @@
+use base64::Engine as _;
 use ipnet::IpNet;
 use std::{
     env,
@@ -5,6 +6,21 @@ use std::{
     str::FromStr,
     time::Duration,
 };
+
+fn hmac_key_entropy(data: &[u8]) -> f64 {
+    if data.is_empty() {
+        return 0.0;
+    }
+    let mut counts = [0u32; 256];
+    for &b in data {
+        counts[b as usize] += 1;
+    }
+    let len = data.len() as f64;
+    counts.iter()
+        .filter(|&&c| c > 0)
+        .map(|&c| { let p = c as f64 / len; -p * p.log2() })
+        .sum()
+}
 
 // ── CORS configuration ────────────────────────────────────────────────────────
 
@@ -505,9 +521,45 @@ impl Config {
             }
         }
 
-        // Validate HMAC_KEY
+        // Validate HMAC_KEY — must be at least 32 bytes (256 bits) after decoding.
         if self.hmac_key.is_empty() {
             errors.push("HMAC_KEY: environment variable is not set or is empty".to_string());
+        } else {
+            let key_bytes: Vec<u8> = if let Ok(decoded) = hex::decode(&self.hmac_key) {
+                decoded
+            } else if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(&self.hmac_key) {
+                decoded
+            } else {
+                self.hmac_key.as_bytes().to_vec()
+            };
+
+            if key_bytes.len() < 32 {
+                errors.push(format!(
+                    "HMAC_KEY: must be at least 32 bytes (256 bits) after decoding; \
+                     got {} bytes. Generate a secure key with: openssl rand -hex 32",
+                    key_bytes.len()
+                ));
+            } else {
+                let entropy = hmac_key_entropy(&key_bytes);
+                if entropy < 3.5 {
+                    eprintln!(
+                        "Warning: HMAC_KEY appears to have low entropy ({:.2} bits/byte). \
+                         Use a randomly generated key: openssl rand -hex 32",
+                        entropy
+                    );
+                }
+            }
+        }
+
+        // Validate CORS_DEV_MODE is not enabled in production.
+        if self.cors.dev_mode {
+            let rust_env = std::env::var("RUST_ENV").unwrap_or_default();
+            if rust_env.eq_ignore_ascii_case("production") || rust_env.eq_ignore_ascii_case("prod") {
+                errors.push(
+                    "CORS_DEV_MODE=true is not allowed when RUST_ENV=production. \
+                     Remove or set CORS_DEV_MODE=false before deploying.".to_string()
+                );
+            }
         }
 
         // Warn if no API keys are configured — admin endpoints will reject all requests.

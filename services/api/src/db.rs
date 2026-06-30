@@ -738,24 +738,25 @@ impl Database {
     }
 
     /// Check whether an email event already exists (replay-attack guard).
+    ///
+    /// Deduplicates on (message_id, event_type, recipient_email) using server-side
+    /// created_at — the SendGrid-supplied timestamp is intentionally excluded because
+    /// it originates from an external, potentially spoofed source.
     pub async fn email_event_exists(
         &self,
         message_id: Option<&str>,
         event_type: &str,
         email: &str,
-        timestamp: i64,
     ) -> anyhow::Result<bool> {
         let count: i64 = self.with_timeout("email_event_exists", sqlx::query_scalar(
             "SELECT COUNT(*) FROM email_events
              WHERE message_id IS NOT DISTINCT FROM $1
                AND event_type = $2
-               AND recipient_email = $3
-               AND created_at = to_timestamp($4)",
+               AND recipient_email = $3",
         )
         .bind(message_id)
         .bind(event_type)
         .bind(email)
-        .bind(timestamp as f64)
         .fetch_one(&self.pool)).await.unwrap_or(0);
         Ok(count > 0)
     }
