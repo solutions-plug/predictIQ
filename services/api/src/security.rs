@@ -130,6 +130,19 @@ pub fn extract_client_ip(
 /// CIDR-aware variant. When `trusted_cidrs` is non-empty the connecting IP
 /// must be contained in one of the CIDRs before proxy headers are trusted.
 /// When `trusted_cidrs` is empty, falls back to the `trust_proxy` boolean.
+///
+/// # IPv6 handling
+/// Each candidate IP string from a proxy header is parsed via
+/// `str::parse::<IpAddr>()`, which handles both IPv4 and IPv6.  On parse
+/// failure a `WARN`-level log is emitted and that candidate is skipped;
+/// processing continues with the next value rather than panicking or silently
+/// using a potentially malicious string as a rate-limit key.
+///
+/// IPv6 addresses that parse successfully are stored in their **canonical**
+/// (compressed, lowercase) form produced by `IpAddr::to_string()`, e.g.
+/// `"2001:db8::1"` rather than the zero-expanded form sent by some proxies.
+/// This guarantees that the same logical address always maps to the same
+/// rate-limit bucket key.
 pub fn extract_client_ip_cidrs(
     headers: &HeaderMap,
     connect_info: Option<&ConnectInfo<std::net::SocketAddr>>,
@@ -147,27 +160,54 @@ pub fn extract_client_ip_cidrs(
     };
 
     if proxy_trusted {
-        // 1. Check X-Forwarded-For header (from proxy/load balancer)
+        // 1. Check X-Forwarded-For header (may contain a comma-separated list).
+        //    Iterate from left to right; return the first well-formed address.
+        //    Malformed entries are logged as warnings and skipped.
         if let Some(forwarded_for) = headers.get("x-forwarded-for").and_then(|h| h.to_str().ok()) {
-            for ip_str in forwarded_for.split(',') {
-                let ip_str = ip_str.trim();
-                if !ip_str.is_empty() && ip_str.parse::<IpAddr>().is_ok() {
-                    return ip_str.to_string();
+            for raw in forwarded_for.split(',') {
+                let candidate = raw.trim();
+                if candidate.is_empty() {
+                    continue;
+                }
+                match candidate.parse::<IpAddr>() {
+                    Ok(addr) => {
+                        // Return canonical form — critical for IPv6 rate-limit keys.
+                        return addr.to_string();
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            header = "x-forwarded-for",
+                            value = candidate,
+                            "IP parse failure in proxy header; skipping candidate"
+                        );
+                    }
                 }
             }
         }
-        // 2. Check X-Real-IP header
+
+        // 2. Check X-Real-IP header (single value expected).
         if let Some(real_ip) = headers.get("x-real-ip").and_then(|h| h.to_str().ok()) {
-            let ip_str = real_ip.trim();
-            if !ip_str.is_empty() && ip_str.parse::<IpAddr>().is_ok() {
-                return ip_str.to_string();
+            let candidate = real_ip.trim();
+            if !candidate.is_empty() {
+                match candidate.parse::<IpAddr>() {
+                    Ok(addr) => return addr.to_string(),
+                    Err(_) => {
+                        tracing::warn!(
+                            header = "x-real-ip",
+                            value = candidate,
+                            "IP parse failure in proxy header; falling back to socket address"
+                        );
+                    }
+                }
             }
         }
     }
-    // 3. Fallback to connection info (Socket)
+
+    // 3. Fallback to the raw TCP socket address — always well-formed.
     if let Some(conn_info) = connect_info {
         return conn_info.0.ip().to_string();
     }
+
     "unknown".to_string()
 }
 
@@ -751,6 +791,96 @@ mod tests {
     fn test_extract_client_ip_ipv6() {
         let headers = xff("2001:db8::1, 192.168.1.1");
         assert_eq!(extract_client_ip(&headers, None, true), "2001:db8::1");
+    }
+
+    // ── #898: IPv6 parse-error handling tests ────────────────────────────
+
+    /// Malformed IPv6 in X-Forwarded-For must be skipped; the next valid entry
+    /// is used instead of returning the malformed string.
+    #[test]
+    fn malformed_ipv6_in_xff_is_skipped_falls_back_to_next_valid() {
+        // First entry is malformed IPv6, second is valid IPv4
+        let headers = xff("::gggg:1, 1.2.3.4");
+        let ci = addr("5.5.5.5:80");
+        assert_eq!(
+            extract_client_ip(&headers, Some(&ci), true),
+            "1.2.3.4",
+            "malformed IPv6 must be skipped; valid subsequent entry should be used"
+        );
+    }
+
+    /// All entries in X-Forwarded-For are malformed — must fall back to socket.
+    #[test]
+    fn all_malformed_xff_entries_fall_back_to_socket() {
+        let headers = xff("not-an-ip, :::bad:::, 999.999.999.999");
+        let ci = addr("10.0.0.1:8080");
+        assert_eq!(
+            extract_client_ip(&headers, Some(&ci), true),
+            "10.0.0.1",
+            "when all XFF entries are malformed, socket address must be used"
+        );
+    }
+
+    /// Empty X-Forwarded-For header falls back to socket address.
+    #[test]
+    fn empty_xff_header_falls_back_to_socket() {
+        let headers = xff("");
+        let ci = addr("192.168.1.1:9090");
+        assert_eq!(extract_client_ip(&headers, Some(&ci), true), "192.168.1.1");
+    }
+
+    /// Malformed X-Real-IP falls back to socket address.
+    #[test]
+    fn malformed_x_real_ip_falls_back_to_socket() {
+        let headers = xri("::invalid-ipv6");
+        let ci = addr("172.16.0.1:80");
+        assert_eq!(
+            extract_client_ip(&headers, Some(&ci), true),
+            "172.16.0.1",
+            "malformed X-Real-IP must be discarded; socket address must be used"
+        );
+    }
+
+    /// Valid IPv6 address is returned in canonical (compressed) form so that
+    /// rate-limit keys are consistent regardless of input formatting.
+    #[test]
+    fn ipv6_address_returned_in_canonical_form() {
+        // Zero-expanded form that some proxies emit
+        let headers = xff("2001:0db8:0000:0000:0000:0000:0000:0001");
+        let result = extract_client_ip(&headers, None, true);
+        // Rust's IpAddr::to_string() compresses this to 2001:db8::1
+        assert_eq!(
+            result, "2001:db8::1",
+            "IPv6 must be returned in canonical compressed form"
+        );
+    }
+
+    /// Multiple comma-separated IPv4 addresses: first valid one is returned.
+    #[test]
+    fn multiple_comma_separated_xff_returns_first_valid() {
+        let headers = xff("203.0.113.1, 198.51.100.2, 192.0.2.3");
+        assert_eq!(
+            extract_client_ip(&headers, None, true),
+            "203.0.113.1"
+        );
+    }
+
+    /// Mixed malformed + valid IPv6 in a multi-value XFF header.
+    #[test]
+    fn mixed_malformed_valid_ipv6_xff() {
+        let headers = xff("not-valid, 2001:db8::cafe, 10.0.0.1");
+        assert_eq!(
+            extract_client_ip(&headers, None, true),
+            "2001:db8::cafe",
+            "should skip malformed entry and return the first valid IPv6"
+        );
+    }
+
+    /// No headers and no connect info returns "unknown".
+    #[test]
+    fn no_headers_no_connect_info_returns_unknown() {
+        let headers = HeaderMap::new();
+        assert_eq!(extract_client_ip(&headers, None, true), "unknown");
     }
 
     // ── trust-boundary tests (issue #281) ────────────────────────────────
