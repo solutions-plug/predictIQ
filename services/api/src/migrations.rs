@@ -15,7 +15,7 @@
 use anyhow::{bail, Context};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Returns true when the `MIGRATE_DRY_RUN` environment variable is set to `"true"`.
 fn is_dry_run() -> bool {

@@ -1,3 +1,18 @@
+## [Unreleased]
+
+### Contract WASM Size Tracking
+
+Size is measured on the optimized binary produced by `soroban contract optimize`.
+The CI `build-optimized` job prints both unoptimized and optimized sizes on every
+build so contributors can track the trend. The enforced budget is **65,536 bytes**
+(64 KB), configured as `WASM_SIZE_LIMIT_BYTES` in `.github/workflows/test.yml`.
+
+| Release | Optimized WASM size |
+|---------|---------------------|
+| v1.0.1  | (tracking begins — run `cargo build --target wasm32-unknown-unknown --release` and `soroban contract optimize` locally to measure) |
+
+---
+
 ## [1.0.1](https://github.com/popsman01/predictIQ/compare/v1.0.0...v1.0.1) (2026-05-27)
 
 

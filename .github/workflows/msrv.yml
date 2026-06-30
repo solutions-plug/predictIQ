@@ -1,0 +1,54 @@
+name: MSRV Check
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "services/api/**"
+      - ".github/workflows/msrv.yml"
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - "services/api/**"
+      - ".github/workflows/msrv.yml"
+
+jobs:
+  msrv:
+    name: Build with Minimum Supported Rust Version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read MSRV from Cargo.toml
+        id: msrv
+        run: |
+          MSRV=$(grep '^rust-version' services/api/Cargo.toml | sed 's/.*= *"\(.*\)"/\1/')
+          echo "version=$MSRV" >> "$GITHUB_OUTPUT"
+          echo "MSRV detected: $MSRV"
+
+      - name: Install MSRV toolchain (${{ steps.msrv.outputs.version }})
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+
+      - name: Cache cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            services/api/target
+          key: ${{ runner.os }}-cargo-msrv-${{ hashFiles('services/api/Cargo.lock') }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev
+
+      - name: cargo check (MSRV)
+        run: cargo check --all-targets
+        working-directory: services/api
+
+      - name: cargo build (MSRV)
+        run: cargo build --release
+        working-directory: services/api

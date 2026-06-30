@@ -267,6 +267,16 @@ resource "aws_ecs_service" "api" {
   desired_count   = var.api_desired_count
   launch_type     = "FARGATE"
 
+  # Zero-downtime rolling deploy: always keep 100 % capacity during updates,
+  # allow up to 200 % so new tasks start before old ones are drained.
+  deployment_minimum_healthy_percent = 100
+  deployment_maximum_percent         = 200
+
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
   network_configuration {
     subnets          = var.private_subnet_ids
     security_groups  = [var.ecs_tasks_sg_id]
