@@ -133,6 +133,31 @@ impl EmailService {
         self
     }
 
+    /// Probe SendGrid API reachability. Returns Ok if the API key is valid and
+    /// SendGrid is reachable; returns Err on timeout, network failure, or a
+    /// non-2xx response. Uses a 3-second timeout to keep health checks fast.
+    pub async fn probe_sendgrid(&self) -> Result<()> {
+        let api_key = self
+            .config
+            .sendgrid_api_key
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("SENDGRID_API_KEY not configured"))?;
+        let fut = self
+            .client
+            .get("https://api.sendgrid.com/v3/user/email")
+            .bearer_auth(api_key)
+            .send();
+        let resp = tokio::time::timeout(Duration::from_secs(3), fut)
+            .await
+            .map_err(|_| anyhow::anyhow!("SendGrid probe timed out after 3s"))?
+            .map_err(|e| anyhow::anyhow!("SendGrid probe request failed: {e}"))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            anyhow::bail!("SendGrid probe returned non-2xx status {}", resp.status())
+        }
+    }
+
     /// Send an email using SendGrid
     pub async fn send_email(
         &self,

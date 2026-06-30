@@ -35,6 +35,8 @@ tags:
   - name: newsletter
   - name: email
   - name: webhooks
+  - name: audit
+    description: Audit log retrieval and statistics (admin, requires ApiKeyAuth)
 
 paths:
   /health:

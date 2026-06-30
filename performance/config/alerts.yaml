@@ -63,6 +63,17 @@ groups:
           description: "Cache hit rate is {{ $value | humanizePercentage }}, below 80% threshold"
           runbook_url: "https://docs.predictiq.com/runbooks/low-cache-hit-rate"
 
+      - alert: CacheCircuitBreakerOpen
+        expr: cache_circuit_breaker_state == 1
+        for: 2m
+        labels:
+          severity: page
+          component: cache
+        annotations:
+          summary: "Redis cache circuit breaker is open"
+          description: "The Redis cache circuit breaker has been open for more than 2 minutes. All cache reads are failing open, causing increased load on the database and RPC endpoints. Immediate operator response required."
+          runbook_url: "https://docs.predictiq.com/runbooks/cache-circuit-breaker-open"
+
   - name: database_performance
     interval: 30s
     rules:
@@ -259,3 +270,17 @@ groups:
           summary: "Performance degradation alert threshold reached"
           description: "Response time has degraded by more than 5% compared to 24h ago (alert threshold)"
           runbook_url: "https://docs.predictiq.com/runbooks/significant-performance-degradation"
+
+  - name: email_queue
+    interval: 30s
+    rules:
+      - alert: EmailQueueDepthHigh
+        expr: email_queue_depth > 100
+        for: 5m
+        labels:
+          severity: warning
+          component: email
+        annotations:
+          summary: "Email queue depth is high"
+          description: "Email queue depth is {{ $value }}, exceeding 100 for more than 5 minutes"
+          runbook_url: "https://docs.predictiq.com/runbooks/email-queue-depth-high"
