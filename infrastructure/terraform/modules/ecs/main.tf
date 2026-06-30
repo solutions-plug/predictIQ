@@ -34,14 +34,40 @@ variable "api_memory" {
   type = number
 }
 
-variable "database_url" {
+variable "redis_url" {
   type      = string
   sensitive = true
 }
 
-variable "redis_url" {
-  type      = string
-  sensitive = true
+# Individual database credential components.
+# Each is stored as its own Secrets Manager secret so they can be rotated
+# independently, and the assembled connection string (containing the password)
+# is never stored anywhere in plaintext.
+variable "db_host" {
+  type        = string
+  description = "PostgreSQL hostname, e.g. rds-prod.cluster-xxxx.eu-west-1.rds.amazonaws.com"
+}
+
+variable "db_port" {
+  type        = number
+  default     = 5432
+  description = "PostgreSQL port (default: 5432)"
+}
+
+variable "db_name" {
+  type        = string
+  description = "PostgreSQL database name, e.g. predictiq"
+}
+
+variable "db_user" {
+  type        = string
+  description = "PostgreSQL application user, e.g. predictiq_api"
+}
+
+variable "db_password" {
+  type        = string
+  sensitive   = true
+  description = "PostgreSQL password for db_user. Store in your CI/CD secret store."
 }
 
 locals {
@@ -110,8 +136,24 @@ resource "aws_ecs_task_definition" "api" {
       ]
       secrets = [
         {
-          name      = "DATABASE_URL"
-          valueFrom = aws_secretsmanager_secret.database_url.arn
+          name      = "DB_HOST"
+          valueFrom = aws_secretsmanager_secret.db_host.arn
+        },
+        {
+          name      = "DB_PORT"
+          valueFrom = aws_secretsmanager_secret.db_port.arn
+        },
+        {
+          name      = "DB_NAME"
+          valueFrom = aws_secretsmanager_secret.db_name.arn
+        },
+        {
+          name      = "DB_USER"
+          valueFrom = aws_secretsmanager_secret.db_user.arn
+        },
+        {
+          name      = "DB_PASSWORD"
+          valueFrom = aws_secretsmanager_secret.db_password.arn
         },
         {
           name      = "REDIS_URL"
@@ -275,22 +317,6 @@ resource "aws_ecs_service" "api" {
   )
 }
 
-resource "aws_secretsmanager_secret" "database_url" {
-  name = "predictiq/${var.environment}/database-url"
-
-  tags = merge(
-    local.common_tags,
-    {
-      Name = "predictiq-${var.environment}-database-url"
-    }
-  )
-}
-
-resource "aws_secretsmanager_secret_version" "database_url" {
-  secret_id       = aws_secretsmanager_secret.database_url.id
-  secret_string   = var.database_url
-}
-
 resource "aws_secretsmanager_secret" "redis_url" {
   name = "predictiq/${var.environment}/redis-url"
 
@@ -305,6 +331,64 @@ resource "aws_secretsmanager_secret" "redis_url" {
 resource "aws_secretsmanager_secret_version" "redis_url" {
   secret_id       = aws_secretsmanager_secret.redis_url.id
   secret_string   = var.redis_url
+}
+
+# ── Database credentials (individual secrets) ────────────────────────────────
+# Storing each component separately means the password can be rotated without
+# touching the host/name/user, and the assembled connection string (with the
+# password in the URL) never appears in Terraform state, ECS task logs, or
+# CloudWatch Logs. The application assembles the connection string at runtime
+# inside a secrecy::SecretString — see services/api/src/config.rs.
+
+resource "aws_secretsmanager_secret" "db_host" {
+  name = "predictiq/${var.environment}/db-host"
+  tags = merge(local.common_tags, { Name = "predictiq-${var.environment}-db-host" })
+}
+
+resource "aws_secretsmanager_secret_version" "db_host" {
+  secret_id     = aws_secretsmanager_secret.db_host.id
+  secret_string = var.db_host
+}
+
+resource "aws_secretsmanager_secret" "db_port" {
+  name = "predictiq/${var.environment}/db-port"
+  tags = merge(local.common_tags, { Name = "predictiq-${var.environment}-db-port" })
+}
+
+resource "aws_secretsmanager_secret_version" "db_port" {
+  secret_id     = aws_secretsmanager_secret.db_port.id
+  secret_string = tostring(var.db_port)
+}
+
+resource "aws_secretsmanager_secret" "db_name" {
+  name = "predictiq/${var.environment}/db-name"
+  tags = merge(local.common_tags, { Name = "predictiq-${var.environment}-db-name" })
+}
+
+resource "aws_secretsmanager_secret_version" "db_name" {
+  secret_id     = aws_secretsmanager_secret.db_name.id
+  secret_string = var.db_name
+}
+
+resource "aws_secretsmanager_secret" "db_user" {
+  name = "predictiq/${var.environment}/db-user"
+  tags = merge(local.common_tags, { Name = "predictiq-${var.environment}-db-user" })
+}
+
+resource "aws_secretsmanager_secret_version" "db_user" {
+  secret_id     = aws_secretsmanager_secret.db_user.id
+  secret_string = var.db_user
+}
+
+resource "aws_secretsmanager_secret" "db_password" {
+  name        = "predictiq/${var.environment}/db-password"
+  description = "PostgreSQL password for the predictIQ application user. Never assembled into DATABASE_URL."
+  tags = merge(local.common_tags, { Name = "predictiq-${var.environment}-db-password" })
+}
+
+resource "aws_secretsmanager_secret_version" "db_password" {
+  secret_id     = aws_secretsmanager_secret.db_password.id
+  secret_string = var.db_password
 }
 
 resource "aws_iam_role" "ecs_task_execution_role" {
@@ -349,7 +433,11 @@ resource "aws_iam_role_policy" "ecs_task_execution_secrets" {
           "secretsmanager:GetSecretValue"
         ]
         Resource = [
-          aws_secretsmanager_secret.database_url.arn,
+          aws_secretsmanager_secret.db_host.arn,
+          aws_secretsmanager_secret.db_port.arn,
+          aws_secretsmanager_secret.db_name.arn,
+          aws_secretsmanager_secret.db_user.arn,
+          aws_secretsmanager_secret.db_password.arn,
           aws_secretsmanager_secret.redis_url.arn
         ]
       }
