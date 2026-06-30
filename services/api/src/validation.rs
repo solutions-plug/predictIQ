@@ -8,10 +8,52 @@
 //!
 //! This is a defence-in-depth layer; the frontend MUST also escape output.
 
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
-use axum::Json;
+use axum::{
+    body::Body,
+    http::{Request, StatusCode},
+    middleware::Next,
+    response::{IntoResponse, Response},
+    Json,
+};
 use serde::Serialize;
+
+const MAX_REQUEST_BODY_BYTES: u64 = 1 * 1024 * 1024; // 1 MB
+
+#[derive(Serialize)]
+struct RequestTooLargeError {
+    error:      &'static str,
+    message:    String,
+    max_bytes:  u64,
+}
+
+pub async fn content_type_validation_middleware(req: Request<Body>, next: Next) -> Response {
+    crate::content_type::require_json_content_type(req, next).await
+}
+
+pub async fn request_size_validation_middleware(req: Request<Body>, next: Next) -> Response {
+    if let Some(content_length) = req
+        .headers()
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+    {
+        if content_length > MAX_REQUEST_BODY_BYTES {
+            let body = RequestTooLargeError {
+                error:     "request_too_large",
+                message:   format!(
+                    "Request body exceeds the {MAX_REQUEST_BODY_BYTES}-byte limit."
+                ),
+                max_bytes: MAX_REQUEST_BODY_BYTES,
+            };
+            return (StatusCode::PAYLOAD_TOO_LARGE, Json(body)).into_response();
+        }
+    }
+    next.run(req).await
+}
+
+pub async fn request_validation_middleware(req: Request<Body>, next: Next) -> Response {
+    request_size_validation_middleware(req, next).await
+}
 
 #[derive(Debug, Serialize)]
 pub struct ValidationError {
