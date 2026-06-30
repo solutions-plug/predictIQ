@@ -1,12 +1,22 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { axe, toHaveNoViolations } from 'jest-axe';
 import LandingPage from '../LandingPage';
 
 expect.extend(toHaveNoViolations);
 
+const originalFetch = global.fetch;
+
 describe('LandingPage Accessibility Tests', () => {
+  beforeEach(() => {
+    global.fetch = jest.fn();
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    jest.restoreAllMocks();
+  });
   describe('Automated Accessibility (jest-axe)', () => {
     it('should have no axe violations on initial render', async () => {
       const { container } = render(<LandingPage />);
@@ -25,6 +35,11 @@ describe('LandingPage Accessibility Tests', () => {
     });
 
     it('should have no axe violations after successful submission', async () => {
+      (global.fetch as jest.Mock).mockResolvedValueOnce({
+        ok: true,
+        text: async () => JSON.stringify({ success: true, message: 'Subscribed' }),
+      });
+
       const { container } = render(<LandingPage />);
       const emailInput = screen.getByLabelText(/email address/i);
       const submitButton = screen.getByRole('button', { name: /get early access/i });
@@ -32,6 +47,10 @@ describe('LandingPage Accessibility Tests', () => {
       await userEvent.type(emailInput, 'test@example.com');
       await userEvent.click(submitButton);
       
+      await waitFor(() => {
+        expect(emailInput).toBeDisabled();
+      });
+
       const results = await axe(container);
       expect(results).toHaveNoViolations();
     });
@@ -149,6 +168,11 @@ describe('LandingPage Accessibility Tests', () => {
     });
 
     it('should allow keyboard navigation through form', async () => {
+      (global.fetch as jest.Mock).mockResolvedValueOnce({
+        ok: true,
+        text: async () => JSON.stringify({ success: true, message: 'Subscribed' }),
+      });
+
       render(<LandingPage />);
       
       const emailInput = screen.getByLabelText(/email address/i);
@@ -168,7 +192,9 @@ describe('LandingPage Accessibility Tests', () => {
       // Press Enter to submit
       await userEvent.keyboard('{Enter}');
       
-      expect(screen.getByText(/subscribed!/i)).toBeInTheDocument();
+      await waitFor(() => {
+        expect(screen.getByText(/subscribed!/i)).toBeInTheDocument();
+      });
     });
 
     it('should allow keyboard navigation through navigation links', async () => {
@@ -256,6 +282,11 @@ describe('LandingPage Accessibility Tests', () => {
     });
 
     it('should disable form after successful submission', async () => {
+      (global.fetch as jest.Mock).mockResolvedValueOnce({
+        ok: true,
+        text: async () => JSON.stringify({ success: true, message: 'Subscribed' }),
+      });
+
       render(<LandingPage />);
       
       const emailInput = screen.getByLabelText(/email address/i);
@@ -264,8 +295,10 @@ describe('LandingPage Accessibility Tests', () => {
       await userEvent.type(emailInput, 'test@example.com');
       await userEvent.click(submitButton);
       
-      expect(emailInput).toBeDisabled();
-      expect(submitButton).toBeDisabled();
+      await waitFor(() => {
+        expect(emailInput).toBeDisabled();
+        expect(submitButton).toBeDisabled();
+      });
     });
   });
 
@@ -327,6 +360,11 @@ describe('LandingPage Accessibility Tests', () => {
 
   describe('Screen Reader Compatibility', () => {
     it('should announce form submission success', async () => {
+      (global.fetch as jest.Mock).mockResolvedValueOnce({
+        ok: true,
+        text: async () => JSON.stringify({ success: true, message: 'Subscribed' }),
+      });
+
       const { container } = render(<LandingPage />);
       
       const emailInput = screen.getByLabelText(/email address/i);
@@ -335,8 +373,10 @@ describe('LandingPage Accessibility Tests', () => {
       await userEvent.type(emailInput, 'test@example.com');
       await userEvent.click(submitButton);
       
-      const statusRegion = container.querySelector('#form-status');
-      expect(statusRegion).toHaveTextContent(/successfully subscribed/i);
+      await waitFor(() => {
+        const statusRegion = container.querySelector('#form-status');
+        expect(statusRegion).toHaveTextContent(/successfully subscribed/i);
+      });
     });
 
     it('should have visually hidden text for screen readers', () => {
@@ -354,6 +394,11 @@ describe('LandingPage Accessibility Tests', () => {
     });
 
     it('should update button label after submission', async () => {
+      (global.fetch as jest.Mock).mockResolvedValueOnce({
+        ok: true,
+        text: async () => JSON.stringify({ success: true, message: 'Subscribed' }),
+      });
+
       render(<LandingPage />);
       
       const emailInput = screen.getByLabelText(/email address/i);
@@ -362,8 +407,10 @@ describe('LandingPage Accessibility Tests', () => {
       await userEvent.type(emailInput, 'test@example.com');
       await userEvent.click(submitButton);
       
-      submitButton = screen.getByRole('button', { name: /already subscribed/i });
-      expect(submitButton).toBeInTheDocument();
+      await waitFor(() => {
+        submitButton = screen.getByRole('button', { name: /already subscribed/i });
+        expect(submitButton).toBeInTheDocument();
+      });
     });
   });
 
