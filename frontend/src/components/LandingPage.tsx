@@ -215,6 +215,13 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
             <h2 id="statistics-heading">Platform Statistics</h2>
             <div className="error-message" role="alert">
               <p>Unable to load statistics at this time. Please try again later.</p>
+              <button
+                className="retry-button"
+                onClick={() => window.location.reload()}
+                aria-label="Retry loading statistics"
+              >
+                Retry
+              </button>
             </div>
           </section>
         }>
