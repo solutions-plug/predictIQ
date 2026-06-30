@@ -35,9 +35,26 @@ This service uses PostgreSQL. Schema and seed scripts are in:
 | 010b | `010_create_audit_log.sql` | Append-only `audit_log` table (bigserial PK) |
 | 011 | `011_create_markets.sql` | `markets` table |
 | 012 | `012_add_performance_indexes.sql` | Composite indexes on `markets` and `content` (promoted from `sql/`) |
+| 013 | `013_add_email_queue_composite_index.sql` | Composite index for priority-ordered email queue scans |
+| 014 | `014_add_email_events_composite_index.sql` | Composite index for ordered email event lookups by job |
+| 015 | `015_add_newsletter_cleanup_index.sql` | Partial index for hourly unconfirmed-subscriber cleanup |
+| 016 | `016_add_markets_deadline_index.sql` | Partial index for deadline-based active market queries |
+| 017 | `017_add_soft_delete_markets.sql` | Adds `deleted_at` to `markets` + cleanup function |
+| 018 | `018_add_varchar_constraints.sql` | CHECK constraints on user-supplied TEXT columns |
 
 > **Note:** Two migration files share the `010_` prefix. Apply them in lexicographic
 > order (`010_add_soft_delete_newsletter.sql` before `010_create_audit_log.sql`).
+
+## Migration Immutability Guarantee
+
+Migration files are embedded at compile time and their SHA-256 checksums are
+stored in `schema_migrations` when first applied. At every startup the
+`MigrationRunner` compares the checksum of each embedded migration file against
+the stored value. If any mismatch is detected the service **refuses to start**
+and logs a `FATAL` error identifying the affected migration version and name.
+
+**Do not edit a migration file after it has been applied to any environment.**
+Instead, create a new migration that applies the desired change incrementally.
 
 ## Apply Migrations
 
@@ -78,6 +95,13 @@ exact changes made by their paired migration.
 | `010_add_soft_delete_newsletter.sql` | `rollbacks/010_add_soft_delete_newsletter_down.sql` |
 | `010_create_audit_log.sql` | `rollbacks/010_create_audit_log_down.sql` |
 | `011_create_markets.sql` | `rollbacks/011_create_markets_down.sql` |
+| `012_add_performance_indexes.sql` | `rollbacks/012_add_performance_indexes_down.sql` |
+| `013_add_email_queue_composite_index.sql` | `rollbacks/013_add_email_queue_composite_index_down.sql` |
+| `014_add_email_events_composite_index.sql` | `rollbacks/014_add_email_events_composite_index_down.sql` |
+| `015_add_newsletter_cleanup_index.sql` | `rollbacks/015_add_newsletter_cleanup_index_down.sql` |
+| `016_add_markets_deadline_index.sql` | `rollbacks/016_add_markets_deadline_index_down.sql` |
+| `017_add_soft_delete_markets.sql` | `rollbacks/017_add_soft_delete_markets_down.sql` |
+| `018_add_varchar_constraints.sql` | `rollbacks/018_add_varchar_constraints_down.sql` |
 
 ### Rolling back a single migration
 
@@ -109,7 +133,7 @@ done
 
 When rolling back multiple migrations, respect foreign-key dependencies:
 
-1. `011` → `010b` → `010a` → `009` → `008` → `007` → `006` → `005` → `004` → `003` → `002` → `001` → `000`
+1. `018` → `017` → `016` → `015` → `014` → `013` → `012` → `011` → `010b` → `010a` → `009` → `008` → `007` → `006` → `005` → `004` → `003` → `002` → `001` → `000`
 
 `analytics_events` (006) references `content_management` (005), and
 `audit_logs` (007) references several earlier tables — roll them back before
@@ -197,5 +221,5 @@ done
 
 - UUID primary keys via `gen_random_uuid()` (most tables); `audit_log` uses `BIGSERIAL`.
 - All tables include `created_at` / `updated_at` timestamps.
-- Soft deletes via `deleted_at` in `content_management`, `audit_logs`, and `newsletter_subscribers`.
+- Soft deletes via `deleted_at` in `content_management`, `audit_logs`, `newsletter_subscribers`, and `markets`. All query helpers filter `WHERE deleted_at IS NULL` by default. Rows soft-deleted for more than 30 days are eligible for hard-deletion via the `cleanup_soft_deleted_markets()` database function.
 - Indexes on high-frequency query fields (`email`, `status`, `created_at`).
