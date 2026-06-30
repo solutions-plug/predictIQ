@@ -71,6 +71,7 @@ module "ecs" {
   api_memory            = var.api_memory
   database_url          = module.rds.database_url
   redis_url             = module.redis.redis_url
+  acm_certificate_arn   = var.acm_certificate_arn
 }
 
 module "monitoring" {

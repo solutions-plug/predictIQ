@@ -3,13 +3,14 @@ use predictiq_api::{
     blockchain::BlockchainClient,
     cache::RedisCache,
     config::{Config, CorsConfig},
+    csrf::{CsrfConfig, csrf_protection_middleware},
     db::Database,
     email::{queue::EmailQueue, service::EmailService, webhook::WebhookHandler},
     handlers,
     idempotency, correlation, versioning, validation, rate_limit, audit_middleware,
     metrics::Metrics,
     newsletter::IpRateLimiter,
-    security::{self, ApiKeyAuth, IpWhitelist, MetricsAuthConfig, RateLimiter},
+    security::{self, ApiKeyAuth, IpWhitelist, MetricsAuthConfig, RateLimiter, RequireHttps},
     shutdown::{self as shutdown, wait_for_signal, ShutdownCoordinator},
     tracing_config, compression,
     AppState,
@@ -91,12 +92,16 @@ async fn main() -> anyhow::Result<()> {
         config.trace_sample_rate,
     )?;
 
-    // Validate required configuration before proceeding
+    // Validate required configuration before proceeding.
     config.validate()?;
+
+    // Warn if production environment does not enforce HTTPS.
+    config.check_https_config();
 
     let metrics = Metrics::new()?;
     let cache = RedisCache::new(&config.redis_url).await?;
     let db = Database::new(&config.database_url, cache.clone(), metrics.clone(), &config.db_pool).await?;
+    let db_arc = Arc::new(db.clone());
     let blockchain = BlockchainClient::new(&config, cache.clone(), metrics.clone())?;
     blockchain.validate_network_passphrase().await?;
 
@@ -106,11 +111,22 @@ async fn main() -> anyhow::Result<()> {
     let audit_logger = AuditLogger::new(db.pool());
 
     let bind_addr = config.bind_addr;
+    let require_https = config.require_https;
 
     let rate_limiter = Arc::new(RateLimiter::new());
-    let api_key_auth = Arc::new(ApiKeyAuth::new(config.api_keys.clone()));
+    // Use DB-backed ApiKeyAuth for zero-downtime key rotation (issue #892).
+    let api_key_auth = Arc::new(ApiKeyAuth::new_with_db(
+        config.api_keys.clone(),
+        db_arc.clone(),
+    ));
     let ip_whitelist = Arc::new(IpWhitelist::new(config.admin_whitelist_ips.clone()));
     let config_trust_proxy = config.trust_proxy;
+
+    // CSRF config: derive allowed origins from the CORS config so the two
+    // lists stay in sync.
+    let csrf_config = Arc::new(CsrfConfig {
+        allowed_origins: config.cors.allowed_origins.clone(),
+    });
 
     // ── Shutdown coordinators ─────────────────────────────────────────────────
     // Email queue gets its own coordinator so it can be drained with a dedicated
@@ -162,6 +178,22 @@ async fn main() -> anyhow::Result<()> {
             match db_cleanup.db.newsletter_delete_expired_pending(ttl, batch).await {
                 Ok(n) if n > 0 => tracing::info!("[newsletter] cleaned up {n} expired pending subscriptions"),
                 Err(e) => tracing::warn!("[newsletter] cleanup error: {e}"),
+                _ => {}
+            }
+        }
+    });
+
+    // ── API key cleanup (fire-and-forget) ─────────────────────────────────────
+    // Hard-deletes keys whose overlap window has expired (expires_at <= NOW()).
+    // Runs every hour; failed iterations are logged and retried on the next tick.
+    let db_api_key_cleanup = db_arc.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(3600));
+        loop {
+            interval.tick().await;
+            match db_api_key_cleanup.api_key_delete_expired().await {
+                Ok(n) if n > 0 => tracing::info!("[api-keys] cleaned up {n} expired keys"),
+                Err(e) => tracing::warn!("[api-keys] cleanup error: {e}"),
                 _ => {}
             }
         }
@@ -233,6 +265,8 @@ async fn main() -> anyhow::Result<()> {
         .layer(middleware::from_fn_with_state(state.clone(), idempotency::idempotency_middleware))
         .layer(middleware::from_fn(validation::content_type_validation_middleware))
         .layer(middleware::from_fn(validation::request_size_validation_middleware))
+        // CSRF defense-in-depth: validate Origin/Referer on state-changing requests.
+        .layer(middleware::from_fn_with_state(csrf_config, csrf_protection_middleware))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             rate_limit::newsletter_rate_limit_middleware,
@@ -313,6 +347,15 @@ async fn main() -> anyhow::Result<()> {
             "/api/v1/audit/statistics",
             get(handlers::audit_statistics),
         )
+        // ── API key rotation endpoints (issue #892) ────────────────────────────
+        .route(
+            "/api/v1/admin/api-keys",
+            get(handlers::list_api_keys),
+        )
+        .route(
+            "/api/v1/admin/api-keys/rotate",
+            post(handlers::rotate_api_key),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             idempotency::idempotency_middleware,
@@ -343,7 +386,13 @@ async fn main() -> anyhow::Result<()> {
         .layer(middleware::from_fn(validation::request_size_validation_middleware))
         .layer(middleware::from_fn(security::security_headers_middleware))
         .layer(compression::compression_layer())
-        .layer(cors_layer);
+        .layer(cors_layer)
+        // HTTPS redirect is the outermost layer: it runs before any other
+        // middleware so plain-HTTP requests are bounced before touching app logic.
+        .layer(middleware::from_fn_with_state(
+            RequireHttps(require_https),
+            security::https_redirect_middleware,
+        ));
 
     // ── Server + graceful shutdown ────────────────────────────────────────────
     let listener = TcpListener::bind(bind_addr).await?;

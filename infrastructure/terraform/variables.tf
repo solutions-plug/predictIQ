@@ -181,3 +181,13 @@ variable "api_memory" {
     error_message = "API memory must be one of: 512, 1024, 2048, 3072, 4096, 5120, 6144, 7168, 8192."
   }
 }
+
+variable "acm_certificate_arn" {
+  description = "ARN of the ACM certificate used by the ALB HTTPS listener."
+  type        = string
+
+  validation {
+    condition     = can(regex("^arn:aws:acm:", var.acm_certificate_arn))
+    error_message = "acm_certificate_arn must be a valid ACM certificate ARN."
+  }
+}
