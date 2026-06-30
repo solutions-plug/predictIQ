@@ -35,13 +35,15 @@ pub struct Metrics {
     db_query_duration: HistogramVec,
     db_timeouts: IntCounterVec,
     db_pool_exhaustion: IntCounterVec,
+    ledger_gaps: IntCounterVec,
     email_dlq_size: IntGauge,
     email_queue_depth: IntGauge,
     db_pool_connections_active: IntGaugeVec,
     db_pool_connections_idle: IntGaugeVec,
     db_pool_acquire_duration: HistogramVec,
     rate_limit_rejections: IntCounterVec,
-    cache_circuit_breaker_state: IntGauge,
+    worker_status: IntGaugeVec,
+    cache_circuit_breaker_state: IntGaugeVec,
 }
 
 impl Metrics {
@@ -120,6 +122,15 @@ impl Metrics {
         )
         .context("db_pool_exhaustion metric")?;
 
+        let ledger_gaps = IntCounterVec::new(
+            prometheus::Opts::new(
+                "blockchain_ledger_gaps_total",
+                "Ledger gap events detected during blockchain sync, labelled by network",
+            ),
+            &["network"],
+        )
+        .context("ledger_gaps metric")?;
+
         let email_dlq_size = IntGauge::new(
             "email_dlq_size",
             "Number of email jobs currently in the dead-letter queue",
@@ -171,9 +182,21 @@ impl Metrics {
         )
         .context("rate_limit_rejections metric")?;
 
-        let cache_circuit_breaker_state = IntGauge::new(
-            "cache_circuit_breaker_state",
-            "Current Redis cache circuit breaker state (0=closed, 1=open, 2=half_open)",
+        let worker_status = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "worker_status",
+                "Background worker health status (1=running, 0=stopped)",
+            ),
+            &["name"],
+        )
+        .context("worker_status metric")?;
+
+        let cache_circuit_breaker_state = IntGaugeVec::new(
+            prometheus::Opts::new(
+                "cache_circuit_breaker_state",
+                "Redis cache circuit breaker state (0=closed, 1=open, 2=half-open)",
+            ),
+            &["state"],
         )
         .context("cache_circuit_breaker_state metric")?;
 
@@ -186,12 +209,14 @@ impl Metrics {
         registry.register(Box::new(db_query_duration.clone()))?;
         registry.register(Box::new(db_timeouts.clone()))?;
         registry.register(Box::new(db_pool_exhaustion.clone()))?;
+        registry.register(Box::new(ledger_gaps.clone()))?;
         registry.register(Box::new(email_dlq_size.clone()))?;
         registry.register(Box::new(email_queue_depth.clone()))?;
         registry.register(Box::new(db_pool_connections_active.clone()))?;
         registry.register(Box::new(db_pool_connections_idle.clone()))?;
         registry.register(Box::new(db_pool_acquire_duration.clone()))?;
         registry.register(Box::new(rate_limit_rejections.clone()))?;
+        registry.register(Box::new(worker_status.clone()))?;
         registry.register(Box::new(cache_circuit_breaker_state.clone()))?;
 
         Ok(Self {
@@ -205,12 +230,14 @@ impl Metrics {
             db_query_duration,
             db_timeouts,
             db_pool_exhaustion,
+            ledger_gaps,
             email_dlq_size,
             email_queue_depth,
             db_pool_connections_active,
             db_pool_connections_idle,
             db_pool_acquire_duration,
             rate_limit_rejections,
+            worker_status,
             cache_circuit_breaker_state,
         })
     }
@@ -270,6 +297,15 @@ impl Metrics {
             .inc();
     }
 
+    /// Record a ledger-gap event on `network`, incrementing the counter by `gap_size` ledgers.
+    pub fn observe_ledger_gap(&self, network: &str, gap_size: u32) {
+        if gap_size > 0 {
+            self.ledger_gaps
+                .with_label_values(&[network])
+                .inc_by(u64::from(gap_size));
+        }
+    }
+
     pub fn set_dlq_size(&self, n: i64) {
         self.email_dlq_size.set(n);
     }
@@ -327,8 +363,54 @@ impl Metrics {
             .inc();
     }
 
+    /// Set worker status to running (1) or stopped (0).
+    /// Call this on worker startup (1), during heartbeats (1), and on shutdown (0).
+    pub fn set_worker_status(&self, name: &str, running: bool) {
+        self.worker_status
+            .with_label_values(&[name])
+            .set(if running { 1 } else { 0 });
+    }
+
+    /// Update the cache circuit breaker state gauge.
+    /// Call this whenever the circuit breaker transitions state.
+    /// state: 0=closed, 1=open, 2=half-open
+    pub fn set_cache_circuit_breaker_state(&self, state: i64) {
+        // Reset all states to 0 first
+        self.cache_circuit_breaker_state
+            .with_label_values(&["closed"])
+            .set(0);
+        self.cache_circuit_breaker_state
+            .with_label_values(&["open"])
+            .set(0);
+        self.cache_circuit_breaker_state
+            .with_label_values(&["half_open"])
+            .set(0);
+
+        // Set the current state to 1
+        match state {
+            0 => {
+                self.cache_circuit_breaker_state
+                    .with_label_values(&["closed"])
+                    .set(1);
+            }
+            1 => {
+                self.cache_circuit_breaker_state
+                    .with_label_values(&["open"])
+                    .set(1);
+            }
+            2 => {
+                self.cache_circuit_breaker_state
+                    .with_label_values(&["half_open"])
+                    .set(1);
+            }
+            _ => {}
+        }
+    }
+
+    /// Convenience alias that maps a numeric state to the labelled gauge vec.
+    /// Delegates to set_cache_circuit_breaker_state; kept for backward compatibility.
     pub fn set_circuit_breaker_state(&self, state: i64) {
-        self.cache_circuit_breaker_state.set(state);
+        self.set_cache_circuit_breaker_state(state);
     }
 
     pub fn render(&self) -> anyhow::Result<String> {
@@ -412,6 +494,7 @@ mod tests {
         m.set_dlq_size(7);
         m.set_email_queue_depth(12);
         m.set_circuit_breaker_state(0);
+        m.set_worker_status("test_worker", true);
         let rendered = m.render().expect("render must not fail");
         assert!(rendered.contains("cache_hits_total"));
         assert!(rendered.contains("http_request_duration_seconds"));

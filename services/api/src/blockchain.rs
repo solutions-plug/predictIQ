@@ -830,6 +830,20 @@ impl BlockchainClient {
             return Ok(cursor_ledger);
         }
 
+        // A gap of more than one ledger means the worker was behind or events
+        // were skipped. Emit a metric and a warning so alerts can fire.
+        let gap = confirmed_tip.saturating_sub(cursor_ledger + 1);
+        if gap > 0 {
+            tracing::warn!(
+                cursor_ledger,
+                confirmed_tip,
+                gap,
+                network = %self.network,
+                "ledger gap detected during blockchain sync"
+            );
+            self.metrics.observe_ledger_gap(&self.network, gap);
+        }
+
         let events = self.fetch_events_since(cursor_ledger + 1).await?;
         for event in events {
             let event_key = format!("{}:event:{}", keys::CHAIN_PREFIX, event.id);
@@ -860,6 +874,13 @@ impl BlockchainClient {
         shutdown: tokio_util::sync::CancellationToken,
         coordinator: ShutdownCoordinator,
     ) {
+        const WORKER_NAME: &str = "blockchain_sync";
+        
+        // Set worker status to running
+        if let Some(ref m) = &self.metrics {
+            m.set_worker_status(WORKER_NAME, true);
+        }
+        
         tracing::info!("Blockchain sync worker started");
 
         let cursor_key = keys::chain_sync_cursor(&self.network);
@@ -871,7 +892,20 @@ impl BlockchainClient {
             .flatten()
             .unwrap_or(0);
 
+        let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(30));
+        heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         loop {
+            // Update heartbeat
+            tokio::select! {
+                _ = heartbeat_interval.tick() => {
+                    if let Some(ref m) = &self.metrics {
+                        m.set_worker_status(WORKER_NAME, true);
+                    }
+                }
+                else => {}
+            }
+            
             // Check for shutdown *before* picking up new work.
             if shutdown.is_cancelled() {
                 tracing::info!("Blockchain sync worker: shutdown signal received, stopping");
@@ -900,6 +934,11 @@ impl BlockchainClient {
             }
         }
 
+        // Set worker status to stopped
+        if let Some(ref m) = &self.metrics {
+            m.set_worker_status(WORKER_NAME, false);
+        }
+        
         tracing::info!("Blockchain sync worker stopped");
         coordinator.worker_completed();
     }
@@ -911,9 +950,29 @@ impl BlockchainClient {
         shutdown: tokio_util::sync::CancellationToken,
         coordinator: ShutdownCoordinator,
     ) {
+        const WORKER_NAME: &str = "blockchain_tx_monitor";
+        
+        // Set worker status to running
+        if let Some(ref m) = &self.metrics {
+            m.set_worker_status(WORKER_NAME, true);
+        }
+        
         tracing::info!("Blockchain transaction monitor started");
 
+        let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(30));
+        heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         loop {
+            // Update heartbeat
+            tokio::select! {
+                _ = heartbeat_interval.tick() => {
+                    if let Some(ref m) = &self.metrics {
+                        m.set_worker_status(WORKER_NAME, true);
+                    }
+                }
+                else => {}
+            }
+            
             if shutdown.is_cancelled() {
                 tracing::info!("Transaction monitor: shutdown signal received, stopping");
                 break;
@@ -945,6 +1004,11 @@ impl BlockchainClient {
             }
         }
 
+        // Set worker status to stopped
+        if let Some(ref m) = &self.metrics {
+            m.set_worker_status(WORKER_NAME, false);
+        }
+        
         tracing::info!("Blockchain transaction monitor stopped");
         coordinator.worker_completed();
     }
@@ -1027,12 +1091,34 @@ impl BlockchainClient {
         Ok(progress)
     }
 
-    /// Spawn both background workers and return their handles.
-    /// Each worker holds a child cancellation token and reports completion
-    /// to the coordinator when it exits.
-    pub fn start_background_tasks(self: Arc<Self>, coordinator: &ShutdownCoordinator) -> Vec<WorkerHandle> {
-        let sync_token = coordinator.token();
-        let sync_coord = coordinator.clone();
+    /// Test-only constructor that accepts an externally built HTTP client so
+    /// tests can configure short timeouts and point at a local mock RPC server.
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        rpc_url: String,
+        cache: RedisCache,
+        metrics: Metrics,
+        http: Client,
+        retry_attempts: u32,
+    ) -> Self {
+        Self {
+            http,
+            rpc_url,
+            network: "testnet".to_string(),
+            contract_id: "test-contract".to_string(),
+            retry_attempts,
+            retry_base_delay_ms: 10,
+            event_poll_interval: Duration::from_millis(50),
+            tx_poll_interval: Duration::from_millis(50),
+            confirmation_ledger_lag: 1,
+            sync_market_ids: vec![],
+            cache,
+            metrics,
+            monitor: Arc::new(MonitoringState::default()),
+        }
+    }
+
+    pub fn start_background_tasks(self: Arc<Self>) {
         let sync_client = self.clone();
         let sync_handle = tokio::spawn(async move {
             sync_client.run_sync_worker(sync_token, sync_coord).await;
