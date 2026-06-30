@@ -111,6 +111,17 @@ groups:
           description: "Database p99 query time is {{ $value }}s, exceeding 100ms critical threshold"
           runbook_url: "https://docs.predictiq.com/runbooks/critical-database-queries"
 
+      - alert: DBPoolExhaustion
+        expr: rate(db_pool_exhaustion_total[5m]) > 0.0167
+        for: 1m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "Database connection pool exhaustion detected"
+          description: "Pool exhaustion rate is {{ $value }} per second, exceeding 1/minute threshold"
+          runbook_url: "https://docs.predictiq.com/runbooks/db-pool-exhaustion"
+
       - alert: HighDBConnectionPoolUtilization
         expr: db_connections_active / db_connections_max > 0.8
         for: 5m

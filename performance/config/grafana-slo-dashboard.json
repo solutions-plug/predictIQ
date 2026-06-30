@@ -243,6 +243,48 @@
         "content": "## Error Budget Policy\n\n- **100% remaining**: Normal operations\n- **50% remaining**: Review recent changes\n- **25% remaining**: Freeze non-critical deployments\n- **10% remaining**: Freeze all deployments\n- **0% remaining**: Emergency - rollback and incident response\n\n### Burn Rate Thresholds\n\n- **Fast Burn (14.4x)**: Exhausts budget in 2 days → Critical alert\n- **Slow Burn (6.0x)**: Exhausts budget in 5 days → Warning alert"
       }
     ],
+      },
+      {
+        "id": 11,
+        "title": "Database Query Latency P50/P95/P99",
+        "type": "graph",
+        "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.50, sum(rate(db_query_duration_seconds_bucket[5m])) by (le)) * 1000",
+            "legendFormat": "P50 Latency",
+            "refId": "A"
+          },
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(db_query_duration_seconds_bucket[5m])) by (le)) * 1000",
+            "legendFormat": "P95 Latency",
+            "refId": "B"
+          },
+          {
+            "expr": "histogram_quantile(0.99, sum(rate(db_query_duration_seconds_bucket[5m])) by (le)) * 1000",
+            "legendFormat": "P99 Latency",
+            "refId": "C"
+          },
+          {
+            "expr": "500",
+            "legendFormat": "P95 Alert Threshold",
+            "refId": "D"
+          }
+        ],
+        "yaxes": [
+          {
+            "label": "Latency (ms)",
+            "format": "ms"
+          }
+        ]
+      }
+    ],
+    "time": {
+      "from": "now-7d",
+      "to": "now"
+    }
+  }
+}
     "time": {
       "from": "now-7d",
       "to": "now"

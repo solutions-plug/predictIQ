@@ -32,7 +32,9 @@ pub struct Metrics {
     request_latency: HistogramVec,
     rpc_errors: IntCounterVec,
     rpc_fallbacks: IntCounterVec,
+    db_query_duration: HistogramVec,
     db_timeouts: IntCounterVec,
+    db_pool_exhaustion: IntCounterVec,
     ledger_gaps: IntCounterVec,
     email_dlq_size: IntGauge,
     email_queue_depth: IntGauge,
@@ -93,11 +95,32 @@ impl Metrics {
         )
         .context("rpc_fallbacks metric")?;
 
+        let db_query_duration = HistogramVec::new(
+            prometheus::HistogramOpts::new(
+                "db_query_duration_seconds",
+                "Database query duration in seconds by query name",
+            )
+            .buckets(vec![
+                0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
+            ]),
+            &["query_name"],
+        )
+        .context("db_query_duration metric")?;
+
         let db_timeouts = IntCounterVec::new(
             prometheus::Opts::new("db_timeouts_total", "DB queries that exceeded the timeout, by operation"),
             &["operation"],
         )
         .context("db_timeouts metric")?;
+
+        let db_pool_exhaustion = IntCounterVec::new(
+            prometheus::Opts::new(
+                "db_pool_exhaustion_total",
+                "Number of times the connection pool was exhausted, by pool name",
+            ),
+            &["pool"],
+        )
+        .context("db_pool_exhaustion metric")?;
 
         let ledger_gaps = IntCounterVec::new(
             prometheus::Opts::new(
@@ -183,7 +206,9 @@ impl Metrics {
         registry.register(Box::new(request_latency.clone()))?;
         registry.register(Box::new(rpc_errors.clone()))?;
         registry.register(Box::new(rpc_fallbacks.clone()))?;
+        registry.register(Box::new(db_query_duration.clone()))?;
         registry.register(Box::new(db_timeouts.clone()))?;
+        registry.register(Box::new(db_pool_exhaustion.clone()))?;
         registry.register(Box::new(ledger_gaps.clone()))?;
         registry.register(Box::new(email_dlq_size.clone()))?;
         registry.register(Box::new(email_queue_depth.clone()))?;
@@ -202,7 +227,9 @@ impl Metrics {
             request_latency,
             rpc_errors,
             rpc_fallbacks,
+            db_query_duration,
             db_timeouts,
+            db_pool_exhaustion,
             ledger_gaps,
             email_dlq_size,
             email_queue_depth,
@@ -253,9 +280,21 @@ impl Metrics {
         self.rpc_fallbacks.with_label_values(&[&labels[0]]).inc();
     }
 
+    pub fn observe_db_query_duration(&self, query_name: &str, duration: Duration) {
+        self.db_query_duration
+            .with_label_values(&[query_name])
+            .observe(duration.as_secs_f64());
+    }
+
     pub fn observe_db_timeout(&self, operation: &str) {
         let labels = normalize_label_values(&[operation]);
         self.db_timeouts.with_label_values(&[&labels[0]]).inc();
+    }
+
+    pub fn observe_db_pool_exhaustion(&self, pool: &str) {
+        self.db_pool_exhaustion
+            .with_label_values(&[pool])
+            .inc();
     }
 
     /// Record a ledger-gap event on `network`, incrementing the counter by `gap_size` ledgers.
@@ -386,6 +425,25 @@ impl Metrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn observe_db_query_duration_records_histogram() {
+        let metrics = Metrics::new().unwrap();
+        metrics.observe_db_query_duration("test_query", Duration::from_millis(100));
+        let output = metrics.render().unwrap();
+        assert!(output.contains("db_query_duration_seconds"));
+        assert!(output.contains("query_name=\"test_query\""));
+    }
+
+    #[test]
+    fn observe_db_pool_exhaustion_increments_counter() {
+        let metrics = Metrics::new().unwrap();
+        metrics.observe_db_pool_exhaustion("api");
+        let output = metrics.render().unwrap();
+        assert!(output.contains("db_pool_exhaustion_total"));
+        assert!(output.contains("pool=\"api\""));
+        assert!(output.contains("1"));
+    }
 
     // ── normalize_label ────────────────────────────────────────────────────────
 
