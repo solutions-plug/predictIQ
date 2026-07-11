@@ -1,5 +1,10 @@
 const nextJest = require('next/jest')
 
+// next/jest loads next.config.js (which validates required env vars) before any
+// setup file runs, so provide a default here for the test environment.
+process.env.NEXT_PUBLIC_API_URL =
+  process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
+
 const createJestConfig = nextJest({
   // Provide the path to your Next.js app to load next.config.js and .env files in your test environment
   dir: './',
@@ -17,6 +22,9 @@ const customJestConfig = {
     '!src/**/*.d.ts',
     '!src/**/*.stories.{js,jsx,ts,tsx}',
     '!src/**/__tests__/**',
+    // Framework entry/infra covered by the build + Playwright e2e, not unit tests:
+    '!src/app/**', // RootLayout / page entry (async server components)
+    '!src/proxy.ts', // edge middleware (runs in the edge runtime)
   ],
   coverageThreshold: {
     global: {
@@ -30,7 +38,8 @@ const customJestConfig = {
     '**/__tests__/**/*.[jt]s?(x)',
     '**/?(*.)+(spec|test).[jt]s?(x)',
   ],
-  testPathIgnorePatterns: ['/node_modules/', '/.next/'],
+  // e2e/*.spec.ts are Playwright tests, run via `npm run test:e2e` (not Jest).
+  testPathIgnorePatterns: ['/node_modules/', '/.next/', '<rootDir>/e2e/'],
   transformIgnorePatterns: [
     '/node_modules/',
     '^.+\\.module\\.(css|sass|scss)$',

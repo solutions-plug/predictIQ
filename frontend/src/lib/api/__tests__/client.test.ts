@@ -18,6 +18,40 @@ describe('API Client', () => {
     global.fetch = originalFetch;
   });
 
+  describe('Endpoint wrappers', () => {
+    const mockOk = (data: unknown = { ok: true }) =>
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        text: async () => JSON.stringify(data),
+      });
+
+    const base = 'http://localhost:3001';
+
+    it.each([
+      ['getFeaturedMarkets', () => api.getFeaturedMarkets(), 'GET', '/api/markets/featured'],
+      ['getBlockchainStats', () => api.getBlockchainStats(), 'GET', '/api/blockchain/stats'],
+      ['getUserBets', () => api.getUserBets('GABC'), 'GET', '/api/blockchain/users/GABC/bets'],
+      ['getOracleResult', () => api.getOracleResult(7), 'GET', '/api/blockchain/oracle/7'],
+      ['getTransactionStatus', () => api.getTransactionStatus('0xdead'), 'GET', '/api/blockchain/tx/0xdead'],
+      ['newsletterConfirm', () => api.newsletterConfirm('tok'), 'GET', '/api/v1/newsletter/confirm'],
+      ['newsletterUnsubscribe', () => api.newsletterUnsubscribe('a@b.com'), 'DELETE', '/api/v1/newsletter/unsubscribe'],
+      ['newsletterGdprExport', () => api.newsletterGdprExport('a@b.com'), 'GET', '/api/v1/newsletter/gdpr/export'],
+      ['newsletterGdprDelete', () => api.newsletterGdprDelete('a@b.com'), 'DELETE', '/api/v1/newsletter/gdpr/delete'],
+      ['resolveMarket', () => api.resolveMarket(3), 'POST', '/api/markets/3/resolve'],
+      ['emailPreview', () => api.emailPreview('welcome'), 'GET', '/api/v1/email/preview/welcome'],
+      ['emailSendTest', () => api.emailSendTest({ recipient: 'a@b.com', template_name: 'welcome' }), 'POST', '/api/v1/email/test'],
+      ['getEmailAnalytics', () => api.getEmailAnalytics({ days: 7 }), 'GET', '/api/v1/email/analytics'],
+      ['getEmailQueueStats', () => api.getEmailQueueStats(), 'GET', '/api/v1/email/queue/stats'],
+    ])('%s calls the correct method and path', async (_name, call, method, path) => {
+      mockOk();
+      await call();
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining(`${base}${path}`),
+        expect.objectContaining({ method }),
+      );
+    });
+  });
+
   describe('Successful responses', () => {
     it('should handle successful GET requests', async () => {
       const mockData = { status: 'ok' };
