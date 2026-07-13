@@ -1,6 +1,6 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
-import { Skeleton } from './Skeleton';
+import { Skeleton } from '../Skeleton';
 
 describe('Skeleton', () => {
   it('renders with default props', () => {

@@ -1,34 +1,34 @@
 /**
- * Accessibility-focused CSS
- * WCAG 2.1 AA Compliant Styles
+ * Accessibility utilities — WCAG 2.1 AA.
+ * Visual/brand styling lives in tokens.css + landing.css; this file keeps only
+ * accessibility-critical rules (skip links, SR-only, focus, motion, contrast).
  */
 
 /* ============================================
    SKIP LINKS
    ============================================ */
-
 .skip-link {
   position: absolute;
-  top: -40px;
-  left: 0;
-  background: #000;
-  color: #fff;
-  padding: 8px 16px;
+  top: -60px;
+  left: 1rem;
+  z-index: 1000;
+  background: var(--fg, #000);
+  color: var(--bg, #fff);
+  padding: 10px 18px;
+  border-radius: var(--radius-sm, 8px);
   text-decoration: none;
-  z-index: 100;
   font-weight: 600;
+  transition: top var(--dur-fast, 160ms) var(--ease-expo, ease);
 }
-
 .skip-link:focus {
-  top: 0;
-  outline: 3px solid #4A90E2;
+  top: 1rem;
+  outline: 3px solid var(--ring, #f59e0b);
   outline-offset: 2px;
 }
 
 /* ============================================
    VISUALLY HIDDEN (Screen Reader Only)
    ============================================ */
-
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -40,7 +40,6 @@
   white-space: nowrap;
   border-width: 0;
 }
-
 .visually-hidden:focus {
   position: static;
   width: auto;
@@ -55,255 +54,104 @@
 /* ============================================
    FOCUS INDICATORS
    ============================================ */
-
-/* High contrast focus indicator for all interactive elements */
-*:focus {
-  outline: 3px solid #4A90E2;
+*:focus-visible {
+  outline: 3px solid var(--ring, #f59e0b);
   outline-offset: 2px;
+  border-radius: 4px;
 }
-
-/* Remove default outline and add custom */
 *:focus:not(:focus-visible) {
   outline: none;
-}
-
-*:focus-visible {
-  outline: 3px solid #4A90E2;
-  outline-offset: 2px;
-}
-
-/* Button focus */
-button:focus,
-a:focus {
-  outline: 3px solid #4A90E2;
-  outline-offset: 2px;
-}
-
-/* Input focus */
-input:focus,
-textarea:focus,
-select:focus {
-  outline: 3px solid #4A90E2;
-  outline-offset: 2px;
-  border-color: #4A90E2;
 }
 
 /* ============================================
    ERROR BOUNDARY FALLBACK
    ============================================ */
-
 .error-boundary-fallback {
+  max-width: 640px;
+  margin: 3rem auto;
   padding: 2rem;
-  margin: 2rem;
-  border: 2px solid #c41e3a;
-  border-radius: 8px;
-  background-color: #fff5f5;
-  color: #1a1a1a;
+  border: 1px solid var(--destructive, #f87171);
+  border-radius: var(--radius, 14px);
+  background: var(--surface, #111a2e);
+  color: var(--fg, #f8fafc);
 }
-
 .error-boundary-fallback h2 {
-  color: #c41e3a;
+  color: var(--destructive, #f87171);
   margin-top: 0;
 }
-
 .error-boundary-fallback .error-details {
-  font-family: monospace;
+  font-family: ui-monospace, monospace;
   font-size: 0.875rem;
-  background-color: #f0f0f0;
+  background: var(--surface-2, #16223b);
+  color: var(--fg-muted, #9fb0cc);
   padding: 1rem;
-  border-radius: 4px;
+  border-radius: var(--radius-sm, 8px);
   overflow-x: auto;
-  color: #666;
-}
-
-.error-boundary-fallback button {
-  background-color: #c41e3a;
-  color: white;
-  border: 2px solid #c41e3a;
-  padding: 0.75rem 1.5rem;
-  border-radius: 4px;
-  cursor: pointer;
-  font-weight: 600;
-}
-
-.error-boundary-fallback button:hover {
-  background-color: #a01729;
-  border-color: #a01729;
-}
-
-.error-boundary-fallback button:focus {
-  outline: 3px solid #4A90E2;
-  outline-offset: 2px;
 }
 
 /* ============================================
-   COLOR CONTRAST
+   ERROR / REQUIRED STATES
    ============================================ */
-
-/* Ensure minimum 4.5:1 contrast for normal text */
-body {
-  color: #1a1a1a; /* 16.1:1 contrast on white */
-  background-color: #ffffff;
-}
-
-/* Large text (18pt+) needs minimum 3:1 contrast */
-h1, h2, h3, h4, h5, h6 {
-  color: #1a1a1a;
-}
-
-/* Link contrast */
-a {
-  color: #0056b3; /* 7.5:1 contrast on white */
-  text-decoration: underline;
-}
-
-a:hover {
-  color: #003d82; /* 10.7:1 contrast on white */
-  text-decoration: underline;
-}
-
-a:visited {
-  color: #551A8B; /* 7.1:1 contrast on white */
-}
-
-/* Button contrast */
-button {
-  background-color: #0056b3; /* 7.5:1 contrast */
-  color: #ffffff;
-  border: 2px solid #0056b3;
-}
-
-button:hover {
-  background-color: #003d82; /* 10.7:1 contrast */
-  border-color: #003d82;
-}
-
-button:disabled {
-  background-color: #6c757d; /* 4.6:1 contrast */
-  border-color: #6c757d;
-  cursor: not-allowed;
-  opacity: 0.65;
-}
-
-/* ============================================
-   ERROR STATES
-   ============================================ */
-
 .error-message {
-  color: #c41e3a; /* 5.9:1 contrast on white */
+  color: var(--destructive, #f87171);
   font-size: 0.875rem;
   margin-top: 0.25rem;
   display: flex;
   align-items: center;
   gap: 0.5rem;
 }
-
 .error-message::before {
-  content: "⚠";
-  font-size: 1rem;
+  content: '⚠';
   font-weight: bold;
 }
 
-input[aria-invalid="true"],
-textarea[aria-invalid="true"] {
-  border-color: #c41e3a;
-  border-width: 2px;
+input[aria-invalid='true'],
+textarea[aria-invalid='true'] {
+  border-color: var(--destructive, #f87171) !important;
 }
 
-/* ============================================
-   REQUIRED FIELD INDICATOR
-   ============================================ */
-
 .required {
-  color: #c41e3a;
+  color: var(--destructive, #f87171);
   font-weight: bold;
   margin-left: 0.25rem;
 }
 
 /* ============================================
-   FORM LABELS
+   TOUCH TARGETS (minimum 44x44)
    ============================================ */
-
-label {
-  display: block;
-  font-weight: 600;
-  margin-bottom: 0.5rem;
-  color: #1a1a1a;
-}
-
-/* ============================================
-   TOUCH TARGETS (Minimum 44x44px)
-   ============================================ */
-
 button,
-a,
-input[type="checkbox"],
-input[type="radio"],
+a[role='menuitem'],
+input[type='checkbox'],
+input[type='radio'],
 select {
   min-height: 44px;
-  min-width: 44px;
-  padding: 12px 24px;
 }
 
 /* ============================================
-   TEXT SIZING AND SPACING
+   TEXT SIZING (scales to 200% cleanly)
    ============================================ */
-
-/* Ensure text can scale to 200% without loss of content */
 html {
   font-size: 16px;
 }
-
-body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
-  line-height: 1.5; /* WCAG 1.4.12 */
-  letter-spacing: 0.02em;
-}
-
-p {
-  margin-bottom: 1rem;
-  max-width: 70ch; /* Optimal reading length */
-}
-
-/* Heading spacing */
-h1, h2, h3, h4, h5, h6 {
-  margin-top: 1.5em;
-  margin-bottom: 0.5em;
-  line-height: 1.3;
-}
-
-/* ============================================
-   RESPONSIVE TEXT
-   ============================================ */
-
 @media (max-width: 768px) {
   html {
-    font-size: 14px;
+    font-size: 15px;
   }
 }
-
-@media (min-width: 1200px) {
+@media (min-width: 1400px) {
   html {
-    font-size: 18px;
+    font-size: 17px;
   }
 }
 
 /* ============================================
-   HIGH CONTRAST MODE
+   HIGH CONTRAST
    ============================================ */
-
 @media (prefers-contrast: high) {
   * {
     border-color: currentColor !important;
   }
-  
-  button {
-    border-width: 2px;
-  }
-  
-  *:focus {
+  *:focus-visible {
     outline-width: 4px;
   }
 }
@@ -311,8 +159,10 @@ h1, h2, h3, h4, h5, h6 {
 /* ============================================
    REDUCED MOTION
    ============================================ */
-
 @media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
   *,
   *::before,
   *::after {
@@ -324,302 +174,30 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 /* ============================================
-   DARK MODE (Respects user preference)
+   STATE UTILITIES
    ============================================ */
-
-@media (prefers-color-scheme: dark) {
-  body {
-    background-color: #1a1a1a;
-    color: #f0f0f0; /* 13.6:1 contrast on dark */
-  }
-  
-  a {
-    color: #66b3ff; /* 7.5:1 contrast on dark */
-  }
-  
-  button {
-    background-color: #0066cc;
-    border-color: #0066cc;
-  }
-  
-  input,
-  textarea,
-  select {
-    background-color: #2a2a2a;
-    color: #f0f0f0;
-    border-color: #4a4a4a;
-  }
+[aria-busy='true'] {
+  cursor: wait;
 }
-
-/* Manual dark mode class (overrides system preference) */
-html.dark-mode,
-html.dark-mode body {
-  background-color: #1a1a1a;
-  color: #f0f0f0;
-}
-
-html.dark-mode a {
-  color: #66b3ff;
-}
-
-html.dark-mode a:hover {
-  color: #99ccff;
-}
-
-html.dark-mode a:visited {
-  color: #cc99ff;
-}
-
-html.dark-mode button {
-  background-color: #0066cc;
-  border-color: #0066cc;
-  color: #ffffff;
-}
-
-html.dark-mode button:hover {
-  background-color: #0052a3;
-  border-color: #0052a3;
-}
-
-html.dark-mode input,
-html.dark-mode textarea,
-html.dark-mode select {
-  background-color: #2a2a2a;
-  color: #f0f0f0;
-  border-color: #4a4a4a;
-}
-
-html.dark-mode input:focus,
-html.dark-mode textarea:focus,
-html.dark-mode select:focus {
-  border-color: #66b3ff;
-  background-color: #333333;
-}
-
-html.dark-mode .error-message {
-  color: #ff6b6b;
-}
-
-html.dark-mode input[aria-invalid="true"],
-html.dark-mode textarea[aria-invalid="true"] {
-  border-color: #ff6b6b;
-}
-
-html.dark-mode h1,
-html.dark-mode h2,
-html.dark-mode h3,
-html.dark-mode h4,
-html.dark-mode h5,
-html.dark-mode h6 {
-  color: #f0f0f0;
-}
-
-html.dark-mode label {
-  color: #f0f0f0;
-}
-
-html.dark-mode th {
-  background-color: #2a2a2a;
-  border-color: #4a4a4a;
-  color: #f0f0f0;
-}
-
-html.dark-mode td {
-  border-color: #4a4a4a;
-}
-
-/* Manual light mode class (overrides dark system preference) */
-html.light-mode,
-html.light-mode body {
-  background-color: #ffffff;
-  color: #222222;
-}
-
-html.light-mode a {
-  color: #0066cc;
-}
-
-html.light-mode a:hover {
-  color: #004499;
-}
-
-html.light-mode a:visited {
-  color: #551a8b;
-}
-
-html.light-mode button {
-  background-color: #0066cc;
-  border-color: #0066cc;
-  color: #ffffff;
-}
-
-html.light-mode button:hover {
-  background-color: #0052a3;
-  border-color: #0052a3;
-}
-
-html.light-mode input,
-html.light-mode textarea,
-html.light-mode select {
-  background-color: #ffffff;
-  color: #222222;
-  border-color: #666666;
-}
-
-html.light-mode input:focus,
-html.light-mode textarea:focus,
-html.light-mode select:focus {
-  border-color: #0066cc;
-  background-color: #ffffff;
-}
-
-html.light-mode .error-message {
-  color: #d32f2f;
-}
-
-html.light-mode input[aria-invalid="true"],
-html.light-mode textarea[aria-invalid="true"] {
-  border-color: #d32f2f;
-}
-
-html.light-mode h1,
-html.light-mode h2,
-html.light-mode h3,
-html.light-mode h4,
-html.light-mode h5,
-html.light-mode h6,
-html.light-mode label {
-  color: #222222;
-}
-
-html.light-mode th {
-  background-color: #f5f5f5;
-  border-color: #dddddd;
-  color: #222222;
-}
-
-html.light-mode td {
-  border-color: #dddddd;
-}
-
-/* Dark mode toggle button */
-.dark-mode-toggle {
-  background: none;
-  border: 2px solid currentColor;
-  padding: 8px 12px;
-  cursor: pointer;
-  font-size: 1.2rem;
-  border-radius: 4px;
-  transition: background-color 0.2s ease;
-}
-
-.dark-mode-toggle:hover {
-  background-color: rgba(255, 255, 255, 0.1);
-}
-
-html.dark-mode .dark-mode-toggle:hover {
-  background-color: rgba(255, 255, 255, 0.2);
-}
-
-/* Header controls layout */
-.header-controls {
-  display: flex;
-  gap: 1rem;
-  align-items: center;
+[aria-disabled='true'],
+[disabled] {
+  cursor: not-allowed;
 }
 
 /* ============================================
-   PRINT STYLES
+   PRINT
    ============================================ */
-
 @media print {
   .skip-link,
-  nav,
+  header[role='banner'],
   button {
     display: none;
   }
-  
-  a {
-    text-decoration: underline;
+  body {
+    background: #fff;
+    color: #000;
   }
-  
   a[href]::after {
-    content: " (" attr(href) ")";
+    content: ' (' attr(href) ')';
   }
-}
-
-/* ============================================
-   LOADING STATES
-   ============================================ */
-
-[aria-busy="true"] {
-  cursor: wait;
-  opacity: 0.6;
-}
-
-/* ============================================
-   DISABLED STATES
-   ============================================ */
-
-[aria-disabled="true"],
-[disabled] {
-  cursor: not-allowed;
-  opacity: 0.6;
-}
-
-/* ============================================
-   LIVE REGIONS
-   ============================================ */
-
-[role="status"],
-[role="alert"],
-[aria-live] {
-  position: relative;
-}
-
-/* ============================================
-   TABLES (if needed)
-   ============================================ */
-
-table {
-  border-collapse: collapse;
-  width: 100%;
-}
-
-th {
-  text-align: left;
-  font-weight: 600;
-  background-color: #f5f5f5;
-  padding: 12px;
-  border: 1px solid #ddd;
-}
-
-td {
-  padding: 12px;
-  border: 1px solid #ddd;
-}
-
-/* ============================================
-   UTILITY CLASSES
-   ============================================ */
-
-.sr-only-focusable:not(:focus):not(:focus-within) {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border-width: 0;
-}
-
-.no-outline {
-  outline: none;
-}
-
-.focus-ring:focus {
-  outline: 3px solid #4A90E2;
-  outline-offset: 2px;
 }

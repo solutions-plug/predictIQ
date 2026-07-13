@@ -15,7 +15,7 @@ const envResult = envSchema.safeParse({
 });
 
 if (!envResult.success) {
-  const issues = envResult.error.errors
+  const issues = envResult.error.issues
     .map((e) => `  - ${e.path.join('.')}: ${e.message}`)
     .join('\n');
   throw new Error(`\nMissing or invalid environment variables:\n${issues}\n`);
@@ -27,38 +27,8 @@ const withBundleAnalyzer = require('@next/bundle-analyzer')({
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // Enable code splitting and optimization
-  swcMinify: true,
-  
-  // Optimize bundle size
-  webpack: (config, { isServer }) => {
-    config.optimization = {
-      ...config.optimization,
-      splitChunks: {
-        chunks: 'all',
-        cacheGroups: {
-          default: false,
-          vendors: false,
-          // Vendor chunk
-          vendor: {
-            filename: 'chunks/vendor.js',
-            test: /node_modules/,
-            priority: 10,
-            reuseExistingChunk: true,
-            enforce: true,
-          },
-          // Common chunk
-          common: {
-            minChunks: 2,
-            priority: 5,
-            reuseExistingChunk: true,
-            filename: 'chunks/common.js',
-          },
-        },
-      },
-    };
-    return config;
-  },
+  // Next.js 16 uses Turbopack by default, which handles chunk splitting
+  // and minification automatically (no swcMinify / custom webpack needed).
 
   // Enable experimental features for better performance
   experimental: {

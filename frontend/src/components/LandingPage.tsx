@@ -73,18 +73,19 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
         <nav aria-label="Main navigation">
           <div className="nav-container">
             <div className="logo">
-              <img 
-                src="/logo.svg" 
-                alt="PredictIQ Logo" 
-                width="150" 
-                height="50"
+              <img
+                src="/mark.svg"
+                alt="PredictIQ Logo"
+                width="40"
+                height="40"
               />
+              <span className="logo-text" aria-hidden="true">PredictIQ</span>
             </div>
-            <ul className="nav-menu" role="menubar">
-              <li role="none"><a href="#features" role="menuitem">Features</a></li>
-              <li role="none"><a href="#how-it-works" role="menuitem">How It Works</a></li>
-              <li role="none"><a href="#about" role="menuitem">About</a></li>
-              <li role="none"><a href="#contact" role="menuitem">Contact</a></li>
+            <ul className="nav-menu">
+              <li><a href="#features">Features</a></li>
+              <li><a href="#how-it-works">How It Works</a></li>
+              <li><a href="#about">About</a></li>
+              <li><a href="#contact">Contact</a></li>
             </ul>
             
             {/* Controls */}
@@ -126,6 +127,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
       <main id="main-content" role="main">
         {/* Hero Section */}
         <section aria-labelledby="hero-heading" className="hero">
+          <div className="hero-glow" aria-hidden="true" />
+          <span className="eyebrow">Live on Stellar</span>
           <h1 id="hero-heading">
             {t('hero.title')}
           </h1>
@@ -153,6 +156,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
               <input
                 id="email-input"
                 type="email"
+                required
                 value={email}
                 onChange={(e) => {
                   setEmail(e.target.value);

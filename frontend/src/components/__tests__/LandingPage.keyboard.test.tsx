@@ -2,8 +2,26 @@ import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import LandingPage from '../LandingPage';
+import { api } from '../../lib/api/client';
+
+const originalFetch = global.fetch;
 
 describe('LandingPage handleKeyDown', () => {
+  beforeEach(() => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      text: async () => JSON.stringify({ success: true, message: 'Subscribed' }),
+    });
+    jest
+      .spyOn(api, 'getStatistics')
+      .mockResolvedValue({ totalMarkets: 1, totalVolume: 1, activeUsers: 1 });
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    jest.restoreAllMocks();
+  });
+
   it('submits the form when Enter is pressed on the form with a valid email', async () => {
     render(<LandingPage />);
     const emailInput = screen.getByLabelText(/email address/i);
@@ -13,7 +31,7 @@ describe('LandingPage handleKeyDown', () => {
     fireEvent.keyDown(form, { key: 'Enter', code: 'Enter' });
 
     expect(
-      screen.getByRole('button', { name: /already subscribed/i }),
+      await screen.findByRole('button', { name: /subscribed/i }),
     ).toBeInTheDocument();
   });
 
@@ -35,7 +53,7 @@ describe('LandingPage handleKeyDown', () => {
     fireEvent.keyDown(form, { key: 'a', code: 'KeyA' });
 
     expect(
-      screen.queryByRole('button', { name: /already subscribed/i }),
+      screen.queryByRole('button', { name: /subscribed/i }),
     ).not.toBeInTheDocument();
   });
 });
