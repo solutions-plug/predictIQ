@@ -26,7 +26,7 @@
     "@opentelemetry/instrumentation-http": "^0.219.0",
     "@opentelemetry/resources": "^2.8.0",
     "@opentelemetry/sdk-node": "^0.220.0",
-    "@opentelemetry/semantic-conventions": "^1.41.1",
+    "@opentelemetry/semantic-conventions": "^1.43.0",
     "express": "^5.2.1",
     "express-rate-limit": "^8.5.2",
     "opossum": "^8.3.0"
