@@ -1,4 +1,5 @@
 import React from 'react';
+import Link from 'next/link';
 import { useI18n } from '../lib/hooks/useI18n';
 import { useDarkMode } from '../lib/hooks/useDarkMode';
 import { type Locale } from '../lib/i18n';
@@ -90,6 +91,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
             
             {/* Controls */}
             <div className="header-controls">
+              <Link href="/markets" className="nav-cta">
+                Launch App
+              </Link>
               {/* Dark Mode Toggle */}
               <button
                 onClick={toggleDarkMode}
@@ -211,6 +215,10 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
               className="visually-hidden"
             />
           </form>
+
+          <Link href="/markets" className="hero-secondary-cta">
+            Explore live markets →
+          </Link>
         </section>
 
         {/* Statistics Section */}

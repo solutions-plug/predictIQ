@@ -176,6 +176,40 @@ header[role='banner'] {
   align-items: center;
 }
 
+.nav-cta {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 0 1.1rem;
+  font-family: var(--font-display);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--on-primary);
+  background: var(--grad-brand);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-glow-gold);
+  transition: transform var(--dur-fast) var(--ease-expo);
+}
+.nav-cta:hover {
+  color: var(--on-primary);
+  transform: translateY(-1px);
+}
+
+.hero-secondary-cta {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 1.5rem;
+  font-family: var(--font-display);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--fg-muted);
+  transition: color var(--dur-fast), transform var(--dur-fast) var(--ease-expo);
+}
+.hero-secondary-cta:hover {
+  color: var(--gold-soft);
+  transform: translateX(3px);
+}
+
 .dark-mode-toggle {
   display: inline-flex;
   align-items: center;

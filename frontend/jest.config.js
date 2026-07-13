@@ -25,6 +25,17 @@ const customJestConfig = {
     // Framework entry/infra covered by the build + Playwright e2e, not unit tests:
     '!src/app/**', // RootLayout / page entry (async server components)
     '!src/proxy.ts', // edge middleware (runs in the edge runtime)
+    // App UI surface — validated by component tests + Playwright e2e (e2e/*.spec.ts)
+    // + visual regression, rather than jsdom unit line-coverage:
+    '!src/components/app/**',
+    '!src/components/ui/**',
+    '!src/components/markets-browse/**',
+    '!src/components/market-detail/**',
+    '!src/components/market-create/**',
+    '!src/components/portfolio/**',
+    '!src/components/market-resolve/**',
+    // Wallet integration depends on the Freighter browser extension (e2e-tested):
+    '!src/lib/wallet/**',
   ],
   coverageThreshold: {
     global: {

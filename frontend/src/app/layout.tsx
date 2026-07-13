@@ -2,10 +2,12 @@ import type { ReactNode } from 'react';
 import { headers } from 'next/headers';
 import { Orbitron, Exo_2 } from 'next/font/google';
 import { ErrorBoundary } from '../components/ErrorBoundary';
+import { WalletProvider } from '../lib/wallet/WalletProvider';
 import { darkModeInitScript } from '../lib/darkMode';
 import '../styles/tokens.css';
 import '../styles/accessibility.css';
 import '../styles/landing.css';
+import '../styles/ui.css';
 
 // Self-hosted at build time so the strict CSP (font-src 'self') is satisfied
 // without whitelisting the Google Fonts CDN.
@@ -42,7 +44,9 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
         <script nonce={nonce} dangerouslySetInnerHTML={{ __html: darkModeInitScript }} />
       </head>
       <body>
-        <ErrorBoundary section="main">{children}</ErrorBoundary>
+        <WalletProvider>
+          <ErrorBoundary section="main">{children}</ErrorBoundary>
+        </WalletProvider>
       </body>
     </html>
   );
