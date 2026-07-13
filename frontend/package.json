@@ -34,6 +34,8 @@
     "bundlewatch": "bundlewatch"
   },
   "dependencies": {
+    "@stellar/freighter-api": "^6.0.1",
+    "@stellar/stellar-sdk": "^15.1.0",
     "next": "16.2.9",
     "react": "19.2.7",
     "react-dom": "19.2.7",

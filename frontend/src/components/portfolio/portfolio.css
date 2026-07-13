@@ -1,0 +1,104 @@
+/* Scoped layout for the portfolio positions dashboard. */
+
+.portfolio-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.portfolio-summary .card {
+  padding: 1.25rem 1.5rem;
+}
+
+.portfolio-summary .stat-value--gold {
+  color: var(--gold);
+}
+
+/* ---- Positions table ---- */
+.portfolio-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.portfolio-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 720px;
+}
+
+.portfolio-table thead th {
+  text-align: left;
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--fg-subtle);
+  font-weight: 600;
+  padding: 0.9rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.portfolio-table tbody td {
+  padding: 1.1rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.portfolio-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.portfolio-table tbody tr {
+  transition: background var(--dur-fast) var(--ease-expo);
+}
+
+.portfolio-table tbody tr:hover {
+  background: var(--surface-2);
+}
+
+.bet-market-link {
+  color: var(--fg);
+  font-weight: 600;
+  font-family: var(--font-display);
+  text-decoration: none;
+}
+
+.bet-market-link:hover {
+  color: var(--gold);
+}
+
+.bet-outcome {
+  display: inline-block;
+  margin-top: 0.25rem;
+  font-size: var(--text-sm);
+  color: var(--fg-subtle);
+}
+
+.bet-amount {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.bet-action {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.bet-payout {
+  color: var(--success, var(--gold));
+  font-weight: 600;
+}
+
+.bet-outcome-lost {
+  color: var(--fg-subtle);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .portfolio-table tbody tr {
+    transition: none;
+  }
+}

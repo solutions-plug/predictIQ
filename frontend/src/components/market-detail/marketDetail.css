@@ -1,0 +1,242 @@
+/* Scoped layout for the market detail surface. Layout-only; visuals use tokens/ui. */
+
+.market-detail {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+  gap: clamp(1.5rem, 1rem + 2vw, 3rem);
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .market-detail {
+    grid-template-columns: 1fr;
+  }
+}
+
+.market-detail__main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1.75rem;
+}
+
+.market-detail__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.9rem;
+}
+
+.market-detail__title {
+  font-family: var(--font-display);
+  font-size: var(--text-xl);
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  margin: 0 0 0.75rem;
+}
+
+.market-detail__desc {
+  color: var(--fg-muted);
+  font-size: var(--text-lg);
+  line-height: 1.6;
+  max-width: 60ch;
+  margin: 0;
+}
+
+.market-detail__stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+@media (max-width: 520px) {
+  .market-detail__stats {
+    grid-template-columns: 1fr;
+  }
+}
+
+.market-detail__outcomes {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.market-detail__section-label {
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  margin: 0 0 0.25rem;
+}
+
+/* --- Outcome odds row --- */
+.outcome-odds {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding: 1rem 1.15rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  transition:
+    transform var(--dur-fast) var(--ease-expo),
+    border-color var(--dur-fast) var(--ease-expo),
+    box-shadow var(--dur-fast) var(--ease-expo);
+}
+
+.outcome-odds--selected {
+  border-color: var(--gold);
+  box-shadow: var(--shadow-glow-gold);
+  transform: translateY(-2px);
+}
+
+.outcome-odds--won {
+  border-color: var(--success);
+}
+
+.outcome-odds__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.outcome-odds__label {
+  font-weight: 600;
+  font-size: var(--text-lg);
+}
+
+.outcome-odds__percent {
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  color: var(--gold);
+}
+
+.outcome-odds__pool {
+  font-size: var(--text-sm);
+  color: var(--fg-subtle);
+}
+
+/* --- Bet panel --- */
+.bet-panel {
+  position: sticky;
+  top: 5.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+}
+
+.bet-panel__title {
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  margin: 0;
+}
+
+.bet-panel__outcomes {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.bet-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.8rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+  transition:
+    transform var(--dur-fast) var(--ease-expo),
+    border-color var(--dur-fast) var(--ease-expo);
+}
+
+.bet-option:hover {
+  transform: translateY(-1px);
+  border-color: var(--border-strong);
+}
+
+.bet-option:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.bet-option--active {
+  border-color: var(--gold);
+  box-shadow: var(--shadow-glow-gold);
+}
+
+.bet-option__label {
+  font-weight: 600;
+}
+
+.bet-option__odds {
+  font-size: var(--text-sm);
+  color: var(--fg-muted);
+}
+
+.bet-panel__hint {
+  font-size: var(--text-sm);
+  color: var(--fg-muted);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.bet-panel__hint strong {
+  color: var(--gold);
+}
+
+.bet-panel__error {
+  font-size: var(--text-sm);
+  color: var(--destructive);
+  margin: 0;
+}
+
+.bet-success {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.bet-success__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: var(--text-sm);
+}
+
+.bet-success__row span:first-child {
+  color: var(--fg-subtle);
+}
+
+.bet-success__tx {
+  font-family: var(--font-body);
+  word-break: break-all;
+  color: var(--fg-muted);
+}
+
+.market-detail__resolved {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 1.25rem 1.35rem;
+  border: 1px solid var(--success);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.market-detail__resolved-label {
+  font-size: var(--text-sm);
+  color: var(--fg-subtle);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.market-detail__resolved-outcome {
+  font-family: var(--font-display);
+  font-size: var(--text-xl);
+  color: var(--success);
+}

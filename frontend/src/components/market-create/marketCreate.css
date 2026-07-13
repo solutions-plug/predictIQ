@@ -1,0 +1,120 @@
+/* Scoped layout for the create-market form. Layout only — colours/typography
+   come from tokens.css + ui.css. Motion stays on transform/opacity. */
+
+.mc-shell {
+  max-width: 640px;
+  margin: 0 auto;
+}
+
+.mc-card {
+  padding: clamp(1.5rem, 1rem + 2.5vw, 2.5rem);
+}
+
+.mc-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+/* Outcomes list ---------------------------------------------------------- */
+.mc-outcomes {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.mc-outcomes-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.mc-outcomes-label {
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+.mc-outcome-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  animation: mc-row-in 240ms var(--ease-out-expo, cubic-bezier(0.16, 1, 0.3, 1)) both;
+}
+
+.mc-outcome-row .input {
+  flex: 1;
+}
+
+.mc-outcome-remove {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 150ms ease, border-color 150ms ease, transform 150ms ease;
+}
+
+.mc-outcome-remove:hover:not(:disabled) {
+  color: var(--destructive);
+  border-color: var(--destructive);
+  transform: translateY(-1px);
+}
+
+.mc-outcome-remove:focus-visible {
+  outline: 2px solid var(--ring, var(--primary));
+  outline-offset: 2px;
+}
+
+.mc-outcome-remove:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.mc-outcomes-add {
+  align-self: flex-start;
+}
+
+/* Form-level error + actions -------------------------------------------- */
+.mc-form-error {
+  margin: 0;
+  padding: 0.75rem 1rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--destructive);
+  background: color-mix(in oklab, var(--destructive) 12%, transparent);
+  color: var(--destructive);
+  font-size: 0.9rem;
+  animation: mc-row-in 200ms ease both;
+}
+
+.mc-actions {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 0.25rem;
+}
+
+@keyframes mc-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mc-outcome-row,
+  .mc-form-error {
+    animation: none;
+  }
+}
