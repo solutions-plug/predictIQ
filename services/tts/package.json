@@ -29,7 +29,7 @@
     "@opentelemetry/semantic-conventions": "^1.43.0",
     "express": "^5.2.1",
     "express-rate-limit": "^8.5.2",
-    "opossum": "^8.3.0"
+    "opossum": "^10.0.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
