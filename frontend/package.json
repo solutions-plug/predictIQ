@@ -41,7 +41,7 @@
   },
   "devDependencies": {
     "@axe-core/react": "^4.12.1",
-    "@next/bundle-analyzer": "16.2.9",
+    "@next/bundle-analyzer": "16.2.11",
     "@playwright/test": "^1.61.1",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.1.5",
