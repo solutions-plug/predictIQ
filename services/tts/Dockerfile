@@ -1,8 +1,10 @@
 # Multi-stage build for PredictIQ TTS Service
 # Pinned to Node.js 20 LTS (matching the "engines" field in package.json)
+# node:20-alpine (20.19.0) digest verified on 2025-07-25
+# Index digest covers linux/amd64 and linux/arm64 manifests
 
 # ── Stage 1: Builder ─────────────────────────────────────────────────────────
-FROM node:20-alpine AS builder
+FROM node:20-alpine@sha256:658d0f63e501824d6c23e06d4bb95c71e7d704537c9d9272f488ac03a370d448 AS builder
 
 WORKDIR /build
 
@@ -18,7 +20,7 @@ COPY src ./src
 RUN npm run build
 
 # ── Stage 2: Runtime ─────────────────────────────────────────────────────────
-FROM node:20-alpine AS runtime
+FROM node:20-alpine@sha256:658d0f63e501824d6c23e06d4bb95c71e7d704537c9d9272f488ac03a370d448 AS runtime
 
 # Create a non-root user to prevent container-escape privilege escalation
 RUN addgroup -S ttsgroup && adduser -S ttsuser -G ttsgroup
