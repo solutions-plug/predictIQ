@@ -332,15 +332,16 @@ header[role='banner'] {
 .hero button[type='submit'] {
   flex: 0 0 auto;
 }
-.hero button[type='submit']:hover:not(:disabled),
+.hero button[type='submit']:hover:not(:disabled):not([aria-disabled='true']),
 .retry-button:hover {
   transform: translateY(-2px) scale(1.01);
   box-shadow: var(--shadow-glow-gold), 0 14px 30px -12px rgba(139, 92, 246, 0.5);
 }
-.hero button[type='submit']:active:not(:disabled) {
+.hero button[type='submit']:active:not(:disabled):not([aria-disabled='true']) {
   transform: translateY(0) scale(0.98);
 }
-.hero button[type='submit']:disabled {
+.hero button[type='submit']:disabled,
+.hero button[type='submit'][aria-disabled='true'] {
   cursor: not-allowed;
   opacity: 0.6;
   box-shadow: none;

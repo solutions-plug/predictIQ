@@ -56,4 +56,24 @@ describe('LandingPage handleKeyDown', () => {
       screen.queryByRole('button', { name: /subscribed/i }),
     ).not.toBeInTheDocument();
   });
+
+  it('keeps keyboard focus on the submit button through loading and success, instead of silently dropping it', async () => {
+    render(<LandingPage />);
+    const emailInput = screen.getByLabelText(/email address/i);
+    const submitButton = screen.getByRole('button', { name: /get early access/i });
+
+    await userEvent.type(emailInput, 'test@example.com');
+    await userEvent.tab();
+    expect(submitButton).toHaveFocus();
+
+    await userEvent.keyboard('{Enter}');
+
+    // While the request is in-flight the button is aria-disabled (not natively
+    // disabled), so it stays in the document and keeps focus.
+    expect(submitButton).toHaveAttribute('aria-disabled', 'true');
+    expect(submitButton).toHaveFocus();
+
+    await screen.findByRole('button', { name: /subscribed/i });
+    expect(submitButton).toHaveFocus();
+  });
 });

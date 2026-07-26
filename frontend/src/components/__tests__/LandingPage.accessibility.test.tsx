@@ -303,7 +303,7 @@ describe('LandingPage Accessibility Tests', () => {
       
       await waitFor(() => {
         expect(emailInput).toBeDisabled();
-        expect(submitButton).toBeDisabled();
+        expect(submitButton).toHaveAttribute('aria-disabled', 'true');
       });
     });
 
@@ -326,13 +326,46 @@ describe('LandingPage Accessibility Tests', () => {
       
       await userEvent.type(emailInput, 'test@example.com');
       await userEvent.click(submitButton);
-      
-      expect(submitButton).toBeDisabled();
+
+      expect(submitButton).toHaveAttribute('aria-disabled', 'true');
       expect(emailInput).toBeDisabled();
-      
+
       resolvePromise!({ success: true, message: 'Subscribed' });
       await waitFor(() => {
-        expect(submitButton).toBeDisabled();
+        expect(submitButton).toHaveAttribute('aria-disabled', 'true');
+      });
+    });
+
+    it('does not trigger a second API call when the submit button is activated again while in-flight', async () => {
+      let resolvePromise: (value: { success: boolean; message: string }) => void;
+      const promise = new Promise<{ success: boolean; message: string }>((resolve) => {
+        resolvePromise = resolve;
+      });
+      (global.fetch as jest.Mock).mockReturnValueOnce(
+        promise.then(() => ({
+          ok: true,
+          text: async () => JSON.stringify({ success: true, message: 'Subscribed' }),
+        }))
+      );
+
+      render(<LandingPage />);
+
+      const emailInput = screen.getByLabelText(/email address/i);
+      const submitButton = screen.getByRole('button', { name: /get early access/i });
+
+      await userEvent.type(emailInput, 'test@example.com');
+      await userEvent.click(submitButton);
+
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+
+      // Button remains focusable (aria-disabled, not disabled) — re-activating it
+      // while the request is in-flight must not fire a second request.
+      await userEvent.click(submitButton, { skipPointerEventsCheck: true });
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+
+      resolvePromise!({ success: true, message: 'Subscribed' });
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /subscribed/i })).toBeInTheDocument();
       });
     });
 

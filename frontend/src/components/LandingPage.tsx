@@ -24,6 +24,10 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
+    if (isLoading || isSubmitted) {
+      return;
+    }
+
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!email) {
       setEmailError(t('hero.emailRequired'));
@@ -181,9 +185,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
               )}
             </div>
 
-            <button 
-              type="submit" 
-              disabled={isSubmitted || isLoading}
+            <button
+              type="submit"
+              aria-disabled={isSubmitted || isLoading}
               aria-label={
                 isLoading 
                   ? 'Submitting...' 
