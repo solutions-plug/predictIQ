@@ -20,7 +20,6 @@ provider "aws" {
       Environment = var.environment
       Project     = "predictiq"
       ManagedBy   = "terraform"
-      CreatedAt   = timestamp()
     }
   }
 }
