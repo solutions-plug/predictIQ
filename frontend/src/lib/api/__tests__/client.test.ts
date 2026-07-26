@@ -1,7 +1,15 @@
 import { api, ApiError } from '../client';
 import { apiCache } from '../cache';
 
-describe('API Client', () => {
+describe('API Client (landing page)', () => {
+  it('should only expose the endpoints the landing page calls', () => {
+    // Guards against admin/blockchain/email request builders (and the ~50-entry
+    // CONTRACT_ERROR_MESSAGES map) creeping back into the landing page's bundle.
+    // See admin-client.ts for that wider surface.
+    expect(Object.keys(api).sort()).toEqual(['getStatistics', 'newsletterSubscribe']);
+  });
+
+
   const originalFetch = global.fetch;
   const originalEnv = process.env.NEXT_PUBLIC_API_URL;
 
@@ -18,52 +26,18 @@ describe('API Client', () => {
     global.fetch = originalFetch;
   });
 
-  describe('Endpoint wrappers', () => {
-    const mockOk = (data: unknown = { ok: true }) =>
-      (global.fetch as jest.Mock).mockResolvedValue({
-        ok: true,
-        text: async () => JSON.stringify(data),
-      });
-
-    const base = 'http://localhost:3001';
-
-    it.each([
-      ['getFeaturedMarkets', () => api.getFeaturedMarkets(), 'GET', '/api/markets/featured'],
-      ['getBlockchainStats', () => api.getBlockchainStats(), 'GET', '/api/blockchain/stats'],
-      ['getUserBets', () => api.getUserBets('GABC'), 'GET', '/api/blockchain/users/GABC/bets'],
-      ['getOracleResult', () => api.getOracleResult(7), 'GET', '/api/blockchain/oracle/7'],
-      ['getTransactionStatus', () => api.getTransactionStatus('0xdead'), 'GET', '/api/blockchain/tx/0xdead'],
-      ['newsletterConfirm', () => api.newsletterConfirm('tok'), 'GET', '/api/v1/newsletter/confirm'],
-      ['newsletterUnsubscribe', () => api.newsletterUnsubscribe('a@b.com'), 'DELETE', '/api/v1/newsletter/unsubscribe'],
-      ['newsletterGdprExport', () => api.newsletterGdprExport('a@b.com'), 'GET', '/api/v1/newsletter/gdpr/export'],
-      ['newsletterGdprDelete', () => api.newsletterGdprDelete('a@b.com'), 'DELETE', '/api/v1/newsletter/gdpr/delete'],
-      ['resolveMarket', () => api.resolveMarket(3), 'POST', '/api/markets/3/resolve'],
-      ['emailPreview', () => api.emailPreview('welcome'), 'GET', '/api/v1/email/preview/welcome'],
-      ['emailSendTest', () => api.emailSendTest({ recipient: 'a@b.com', template_name: 'welcome' }), 'POST', '/api/v1/email/test'],
-      ['getEmailAnalytics', () => api.getEmailAnalytics({ days: 7 }), 'GET', '/api/v1/email/analytics'],
-      ['getEmailQueueStats', () => api.getEmailQueueStats(), 'GET', '/api/v1/email/queue/stats'],
-    ])('%s calls the correct method and path', async (_name, call, method, path) => {
-      mockOk();
-      await call();
-      expect(global.fetch).toHaveBeenCalledWith(
-        expect.stringContaining(`${base}${path}`),
-        expect.objectContaining({ method }),
-      );
-    });
-  });
-
   describe('Successful responses', () => {
     it('should handle successful GET requests', async () => {
-      const mockData = { status: 'ok' };
+      const mockData = { total_markets: 10 };
       (global.fetch as jest.Mock).mockResolvedValueOnce({
         ok: true,
         text: async () => JSON.stringify(mockData),
       });
 
-      const result = await api.health();
+      const result = await api.getStatistics();
       expect(result).toEqual(mockData);
       expect(global.fetch).toHaveBeenCalledWith(
-        'http://localhost:3001/health',
+        'http://localhost:3001/api/statistics',
         expect.objectContaining({ method: 'GET' })
       );
     });
@@ -92,40 +66,8 @@ describe('API Client', () => {
         text: async () => '',
       });
 
-      const result = await api.health();
+      const result = await api.getStatistics();
       expect(result).toBeUndefined();
-    });
-
-    it('should handle query parameters', async () => {
-      const mockData = { markets: [] };
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
-        ok: true,
-        text: async () => JSON.stringify(mockData),
-      });
-
-      await api.getContent({ page: 1, page_size: 10 });
-      expect(global.fetch).toHaveBeenCalledWith(
-        expect.stringContaining('page=1&page_size=10'),
-        expect.any(Object)
-      );
-    });
-
-    it('should filter out undefined query parameters', async () => {
-      const mockData = { markets: [] };
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
-        ok: true,
-        text: async () => JSON.stringify(mockData),
-      });
-
-      await api.getContent({ page: 1 });
-      expect(global.fetch).toHaveBeenCalledWith(
-        expect.stringContaining('page=1'),
-        expect.any(Object)
-      );
-      expect(global.fetch).toHaveBeenCalledWith(
-        expect.not.stringContaining('page_size'),
-        expect.any(Object)
-      );
     });
   });
 
@@ -134,7 +76,7 @@ describe('API Client', () => {
       const networkError = new Error('Network request failed');
       (global.fetch as jest.Mock).mockRejectedValueOnce(networkError);
 
-      await expect(api.health()).rejects.toThrow('Unable to reach the server');
+      await expect(api.getStatistics()).rejects.toThrow('Unable to reach the server');
     });
 
     it('should handle timeout errors', async () => {
@@ -157,28 +99,6 @@ describe('API Client', () => {
       await expect(
         api.newsletterSubscribe({ email: 'invalid' })
       ).rejects.toThrow('Invalid email format');
-    });
-
-    it('should handle 401 Unauthorized', async () => {
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
-        ok: false,
-        status: 401,
-        statusText: 'Unauthorized',
-        json: async () => ({ message: 'Authentication required' }),
-      });
-
-      await expect(api.getBlockchainHealth()).rejects.toThrow('Authentication required');
-    });
-
-    it('should handle 404 Not Found', async () => {
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
-        ok: false,
-        status: 404,
-        statusText: 'Not Found',
-        json: async () => ({ message: 'Market not found' }),
-      });
-
-      await expect(api.getBlockchainMarket(999)).rejects.toThrow('Market not found');
     });
 
     it('should handle 500 Server Error after exhausting retries', async () => {
@@ -204,7 +124,7 @@ describe('API Client', () => {
       };
       (global.fetch as jest.Mock).mockResolvedValue(serverError);
 
-      await expect(api.health()).rejects.toThrow('Service Unavailable');
+      await expect(api.getStatistics()).rejects.toThrow('Service Unavailable');
     }, 30_000);
 
     it('should fallback to HTTP status when response is not JSON', async () => {
@@ -216,13 +136,13 @@ describe('API Client', () => {
       };
       (global.fetch as jest.Mock).mockResolvedValue(serverError);
 
-      await expect(api.health()).rejects.toThrow('Bad Gateway');
+      await expect(api.getStatistics()).rejects.toThrow('Bad Gateway');
     }, 30_000);
   });
 
   describe('Retry behavior', () => {
     it('should retry on 429 Too Many Requests', async () => {
-      const mockData = { status: 'ok' };
+      const mockData = { total_markets: 10 };
       (global.fetch as jest.Mock)
         .mockResolvedValueOnce({
           ok: false,
@@ -236,16 +156,16 @@ describe('API Client', () => {
           text: async () => JSON.stringify(mockData),
         });
 
-      const result = await api.health();
+      const result = await api.getStatistics();
 
       expect(result).toEqual(mockData);
       expect(global.fetch).toHaveBeenCalledTimes(2);
     }, 10000);
 
     it('should respect Retry-After header on 429', async () => {
-      const mockData = { status: 'ok' };
+      const mockData = { total_markets: 10 };
       const mockHeaders = new Map([['Retry-After', '0']]);
-      
+
       (global.fetch as jest.Mock)
         .mockResolvedValueOnce({
           ok: false,
@@ -259,7 +179,7 @@ describe('API Client', () => {
           text: async () => JSON.stringify(mockData),
         });
 
-      const result = await api.health();
+      const result = await api.getStatistics();
 
       expect(result).toEqual(mockData);
       expect(global.fetch).toHaveBeenCalledTimes(2);
@@ -274,12 +194,12 @@ describe('API Client', () => {
         json: async () => ({ message: 'Rate limited' }),
       });
 
-      await expect(api.health()).rejects.toThrow('Rate limited');
+      await expect(api.getStatistics()).rejects.toThrow('Rate limited');
       expect(global.fetch).toHaveBeenCalledTimes(4); // 1 initial + 3 retries
     }, 10000);
 
     it('should retry on network failure for GET requests', async () => {
-      const mockData = { status: 'ok' };
+      const mockData = { total_markets: 10 };
       (global.fetch as jest.Mock)
         .mockRejectedValueOnce(new Error('Network error'))
         .mockResolvedValueOnce({
@@ -287,7 +207,7 @@ describe('API Client', () => {
           text: async () => JSON.stringify(mockData),
         });
 
-      const result = await api.health();
+      const result = await api.getStatistics();
 
       expect(result).toEqual(mockData);
       expect(global.fetch).toHaveBeenCalledTimes(2);
@@ -301,7 +221,7 @@ describe('API Client', () => {
         json: async () => ({ message: 'Invalid request' }),
       });
 
-      await expect(api.health()).rejects.toThrow('Invalid request');
+      await expect(api.getStatistics()).rejects.toThrow('Invalid request');
       expect(global.fetch).toHaveBeenCalledTimes(1);
     });
 
@@ -315,8 +235,8 @@ describe('API Client', () => {
     });
 
     it('should handle multiple sequential requests', async () => {
-      const mockData1 = { data: 'first' };
-      const mockData2 = { data: 'second' };
+      const mockData1 = { total_markets: 10 };
+      const mockData2 = { success: true, message: 'Subscribed' };
 
       (global.fetch as jest.Mock)
         .mockResolvedValueOnce({
@@ -328,8 +248,8 @@ describe('API Client', () => {
           text: async () => JSON.stringify(mockData2),
         });
 
-      const result1 = await api.health();
-      const result2 = await api.getStatistics();
+      const result1 = await api.getStatistics();
+      const result2 = await api.newsletterSubscribe({ email: 'test@example.com' });
 
       expect(result1).toEqual(mockData1);
       expect(result2).toEqual(mockData2);
@@ -337,7 +257,7 @@ describe('API Client', () => {
     });
 
     it('should use exponential backoff for retries', async () => {
-      const mockData = { status: 'ok' };
+      const mockData = { total_markets: 10 };
       (global.fetch as jest.Mock)
         .mockRejectedValueOnce(new Error('Network error'))
         .mockRejectedValueOnce(new Error('Network error'))
@@ -346,7 +266,7 @@ describe('API Client', () => {
           text: async () => JSON.stringify(mockData),
         });
 
-      const result = await api.health();
+      const result = await api.getStatistics();
 
       expect(result).toEqual(mockData);
       expect(global.fetch).toHaveBeenCalledTimes(3);
@@ -360,7 +280,7 @@ describe('API Client', () => {
         text: async () => '{}',
       });
 
-      await api.health();
+      await api.getStatistics();
 
       expect(global.fetch).toHaveBeenCalledWith(
         expect.any(String),
@@ -378,10 +298,10 @@ describe('API Client', () => {
         text: async () => '{}',
       });
 
-      await api.health();
+      await api.getStatistics();
 
       expect(global.fetch).toHaveBeenCalledWith(
-        'http://localhost:3001/health',
+        'http://localhost:3001/api/statistics',
         expect.any(Object)
       );
     });
@@ -405,7 +325,7 @@ describe('API Client', () => {
 
       // Pre-attach .catch so the rejection is never "unhandled" while timers advance.
       let caughtError: unknown;
-      const settledPromise = api.health().catch(err => { caughtError = err; });
+      const settledPromise = api.newsletterSubscribe({ email: 'test@example.com' }).catch(err => { caughtError = err; });
 
       await jest.advanceTimersByTimeAsync(10_000);
       await settledPromise;
@@ -442,7 +362,7 @@ describe('API Client', () => {
 
   describe('5xx retry logic (#946)', () => {
     it('retries GET requests on 5xx: two 502s then 200 succeeds', async () => {
-      const mockData = { status: 'ok' };
+      const mockData = { total_markets: 10 };
       const gatewayError = {
         ok: false,
         status: 502,
@@ -458,7 +378,7 @@ describe('API Client', () => {
           text: async () => JSON.stringify(mockData),
         });
 
-      const result = await api.health();
+      const result = await api.getStatistics();
       expect(result).toEqual(mockData);
       expect(global.fetch).toHaveBeenCalledTimes(3); // 1 initial + 2 retries
     }, 10_000);
@@ -476,128 +396,14 @@ describe('API Client', () => {
       ).rejects.toThrow('Service Unavailable');
       expect(global.fetch).toHaveBeenCalledTimes(1);
     });
-
-    it('does not retry 5xx for DELETE requests', async () => {
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
-        ok: false,
-        status: 502,
-        statusText: 'Bad Gateway',
-        json: async () => ({ message: 'Bad Gateway' }),
-      });
-
-      await expect(
-        api.newsletterUnsubscribe('test@example.com')
-      ).rejects.toThrow('Bad Gateway');
-      expect(global.fetch).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  describe('Cache invalidation strategy (#947)', () => {
-    it('invalidates only tagged resources on mutation — not the entire cache', async () => {
-      // Prime a statistics cache entry tagged 'statistics'.
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
-        ok: true,
-        text: async () => JSON.stringify({ total_markets: 10 }),
-      });
-      await api.getStatistics();
-
-      // Prime a markets cache entry tagged 'markets'.
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
-        ok: true,
-        text: async () => JSON.stringify([{ id: 1 }]),
-      });
-      await api.getFeaturedMarkets();
-
-      // Mutate: resolveMarket invalidates 'markets', 'blockchain', 'statistics'.
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
-        ok: true,
-        text: async () => JSON.stringify({ invalidated_keys: 2 }),
-      });
-      await api.resolveMarket(1);
-
-      // Both statistics and markets caches must be cleared.
-      // A fresh fetch call should now happen for getStatistics.
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
-        ok: true,
-        text: async () => JSON.stringify({ total_markets: 11 }),
-      });
-      const freshStats = await api.getStatistics();
-      expect(freshStats).toEqual({ total_markets: 11 });
-    });
-
-    it('GET returns fresh data after a mutation invalidates its cache tag', async () => {
-      // Cache getFeaturedMarkets.
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
-        ok: true,
-        text: async () => JSON.stringify([{ id: 1, title: 'Old Market' }]),
-      });
-      const first = await api.getFeaturedMarkets();
-      expect(first).toEqual([{ id: 1, title: 'Old Market' }]);
-
-      // resolveMarket invalidates the 'markets' tag.
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
-        ok: true,
-        text: async () => JSON.stringify({ invalidated_keys: 1 }),
-      });
-      await api.resolveMarket(1);
-
-      // Next getFeaturedMarkets must hit the network, not the cache.
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
-        ok: true,
-        text: async () => JSON.stringify([{ id: 1, title: 'Resolved Market' }]),
-      });
-      const second = await api.getFeaturedMarkets();
-      expect(second).toEqual([{ id: 1, title: 'Resolved Market' }]);
-    });
-  });
-
-  describe('DELETE requests', () => {
-    it('should handle DELETE requests with body', async () => {
-      const mockResponse = { success: true };
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
-        ok: true,
-        text: async () => JSON.stringify(mockResponse),
-      });
-
-      const result = await api.newsletterUnsubscribe('test@example.com');
-      expect(result).toEqual(mockResponse);
-      expect(global.fetch).toHaveBeenCalledWith(
-        'http://localhost:3001/api/v1/newsletter/unsubscribe',
-        expect.objectContaining({
-          method: 'DELETE',
-          body: JSON.stringify({ email: 'test@example.com' }),
-        })
-      );
-    });
   });
 
   describe('ApiError', () => {
-    it('should throw ApiError with status code on non-2xx response', async () => {
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
-        ok: false,
-        status: 404,
-        statusText: 'Not Found',
-        json: async () => ({ message: 'Market not found' }),
-      });
-
-      try {
-        await api.getBlockchainMarket(999);
-        fail('should have thrown');
-      } catch (e) {
-        expect(e).toBeInstanceOf(ApiError);
-        expect((e as ApiError).status).toBe(404);
-        expect((e as ApiError).message).toBe('Market not found');
-        expect((e as ApiError).isClientError).toBe(true);
-        expect((e as ApiError).isServerError).toBe(false);
-        expect((e as ApiError).isNetworkError).toBe(false);
-      }
-    });
-
     it('should throw ApiError with status 0 on network failure', async () => {
       (global.fetch as jest.Mock).mockRejectedValueOnce(new Error('Failed to fetch'));
 
       try {
-        await api.health();
+        await api.getStatistics();
         fail('should have thrown');
       } catch (e) {
         expect(e).toBeInstanceOf(ApiError);
@@ -631,7 +437,7 @@ describe('API Client', () => {
       (global.fetch as jest.Mock).mockRejectedValueOnce(new Error('offline'));
 
       try {
-        await api.health();
+        await api.getStatistics();
       } catch (e) {
         expect((e as ApiError).name).toBe('ApiError');
       }
