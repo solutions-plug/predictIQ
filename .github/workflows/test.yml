@@ -492,11 +492,7 @@ jobs:
 
       - name: Install Rust (for Rust analysis)
         if: matrix.language == 'rust'
-        uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
