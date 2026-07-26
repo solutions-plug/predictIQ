@@ -348,16 +348,52 @@ pub fn withdraw_refund(
         .get(&bet_key)
         .ok_or(ErrorCode::MarketNotFound)?;
 
-    let refund_amount = bet.amount;
+    // Issue #51: Creator reclaims their locked creation deposit (once only).
+    if bettor == market.creator && market.creation_deposit > 0 {
+        let deposit = market.creation_deposit;
+        market.creation_deposit = 0;
+        sac::safe_transfer(
+            e,
+            &token_address,
+            &e.current_contract_address(),
+            &bettor,
+            &deposit,
+        )?;
+        e.events().publish(
+            (
+                soroban_sdk::Symbol::new(e, "deposit_refunded"),
+                market_id,
+                bettor.clone(),
+            ),
+            deposit,
+        );
+    }
+
+    let net_amount = bet.amount;
+    let fee_paid = bet.fee_paid;
     let bet_outcome = bet.outcome;
+    // Gross refund = net stake + protocol fee deducted at bet time.
+    let refund_amount = net_amount
+        .checked_add(fee_paid)
+        .ok_or(ErrorCode::ArithmeticOverflow)?;
 
     // Update market accounting to maintain accuracy
-    market.total_staked = market.total_staked.saturating_sub(refund_amount);
+    market.total_staked = market.total_staked.saturating_sub(net_amount);
     let outcome_stake = market.outcome_stakes.get(bet_outcome).unwrap_or(0);
     market
         .outcome_stakes
-        .set(bet_outcome, outcome_stake.saturating_sub(refund_amount));
+        .set(bet_outcome, outcome_stake.saturating_sub(net_amount));
     markets::update_market(e, market);
+
+    // Reverse the protocol fee revenue so accounting stays consistent.
+    crate::modules::fees::reverse_fee(e, token_address.clone(), fee_paid);
+
+    // Reverse any referral reward credited when this bet was placed — a
+    // referrer only earns rewards from markets that complete, not cancelled ones.
+    if let Some(referrer) = get_bet_referrer(e, market_id, bettor.clone(), bet_outcome) {
+        crate::modules::fees::reverse_referral_reward(e, &referrer, &token_address, fee_paid);
+        remove_bet_referrer(e, market_id, &bettor, bet_outcome);
+    }
 
     internal_claim_amount(
         e,

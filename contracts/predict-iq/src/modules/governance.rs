@@ -1,8 +1,8 @@
 use crate::errors::ErrorCode;
 use crate::types::{
-    ConfigKey, Guardian, PendingUpgrade, MAJORITY_THRESHOLD_PERCENT, TIMELOCK_DURATION,
-    TIMELOCK_MAX_SECONDS, TIMELOCK_MIN_SECONDS, TTL_HIGH_THRESHOLD, TTL_LOW_THRESHOLD,
-    UPGRADE_COOLDOWN_DURATION,
+    ConfigKey, Guardian, PendingUpgrade, GUARDIAN_REMOVAL_VOTE_WINDOW, MAJORITY_THRESHOLD_PERCENT,
+    TIMELOCK_DURATION, TIMELOCK_MAX_SECONDS, TIMELOCK_MIN_SECONDS, TTL_HIGH_THRESHOLD,
+    TTL_LOW_THRESHOLD, UPGRADE_COOLDOWN_DURATION,
 };
 use soroban_sdk::{Address, BytesN, Env, Vec};
 
@@ -101,6 +101,7 @@ pub fn remove_guardian(e: &Env, address: Address) -> Result<(), ErrorCode> {
         target_guardian: address.clone(),
         initiated_at: e.ledger().timestamp(),
         votes_for: Vec::new(e),
+        votes_against: Vec::new(e),
     };
 
     e.storage()
@@ -138,8 +139,26 @@ pub fn vote_on_guardian_removal(e: &Env, voter: Address, approve: bool) -> Resul
         .get::<_, crate::types::PendingGuardianRemoval>(&ConfigKey::PendingGuardianRemoval)
         .ok_or(ErrorCode::GuardianNotSet)?;
 
-    // Check if voter already voted
+    // Issue #1194: a stale proposal that nobody resolved must be re-initiated
+    // rather than staying open forever, slowly accumulating "yes" votes.
+    let now = e.ledger().timestamp();
+    if now.saturating_sub(pending_removal.initiated_at) > GUARDIAN_REMOVAL_VOTE_WINDOW {
+        e.storage()
+            .persistent()
+            .remove(&ConfigKey::PendingGuardianRemoval);
+        e.storage()
+            .persistent()
+            .remove(&ConfigKey::PendingGuardianRemovalPassedAt);
+        return Err(ErrorCode::GuardianNotSet);
+    }
+
+    // Check if voter already voted, either way
     for v in pending_removal.votes_for.iter() {
+        if v == voter {
+            return Err(ErrorCode::AlreadyVotedOnUpgrade);
+        }
+    }
+    for v in pending_removal.votes_against.iter() {
         if v == voter {
             return Err(ErrorCode::AlreadyVotedOnUpgrade);
         }
@@ -147,6 +166,8 @@ pub fn vote_on_guardian_removal(e: &Env, voter: Address, approve: bool) -> Resul
 
     if approve {
         pending_removal.votes_for.push_back(voter);
+    } else {
+        pending_removal.votes_against.push_back(voter);
     }
 
     // Calculate if majority reached (excluding target guardian)
@@ -157,6 +178,18 @@ pub fn vote_on_guardian_removal(e: &Env, voter: Address, approve: bool) -> Resul
         && get_guardian_removal_passed_at(e).is_none()
     {
         set_guardian_removal_passed_at(e);
+    }
+
+    // Issue #1194: a majority voting "against" formally kills the proposal
+    // rather than leaving it to linger until it either passes or expires.
+    if pending_removal.votes_against.len() as u32 >= votes_needed {
+        e.storage()
+            .persistent()
+            .remove(&ConfigKey::PendingGuardianRemoval);
+        e.storage()
+            .persistent()
+            .remove(&ConfigKey::PendingGuardianRemovalPassedAt);
+        return Ok(());
     }
 
     e.storage()
@@ -488,7 +521,9 @@ pub fn get_upgrade_votes(e: &Env) -> Result<crate::types::UpgradeVoteStats, Erro
     })
 }
 
-/// Emergency pause triggered by 2/3 Guardian majority (community panic override)
+/// Emergency pause triggered by 2/3 Guardian majority (community panic override).
+/// Issue #1190: votes are accumulated across calls, like `vote_for_upgrade`,
+/// instead of checking a single caller's own voting power against the total.
 pub fn emergency_pause(e: &Env, voter: Address) -> Result<(), ErrorCode> {
     voter.require_auth();
 
@@ -497,32 +532,56 @@ pub fn emergency_pause(e: &Env, voter: Address) -> Result<(), ErrorCode> {
         return Err(ErrorCode::NotAuthorized);
     }
 
-    // Verify voter is a guardian
-    let mut voter_power: u32 = 0;
-    let mut total_power: u32 = 0;
+    let mut voter_is_guardian = false;
     for g in guardians.iter() {
-        total_power += g.voting_power;
         if g.address == voter {
-            voter_power = g.voting_power;
+            voter_is_guardian = true;
+            break;
         }
     }
-
-    if voter_power == 0 {
+    if !voter_is_guardian {
         return Err(ErrorCode::NotAuthorized);
     }
 
-    // Check if this guardian's vote alone meets 2/3 threshold
-    let threshold = (total_power * 2) / 3;
-    if voter_power < threshold {
-        return Err(ErrorCode::InsufficientVotes);
+    let mut votes: Vec<Address> = e
+        .storage()
+        .persistent()
+        .get(&ConfigKey::PendingEmergencyPause)
+        .unwrap_or_else(|| Vec::new(e));
+
+    for v in votes.iter() {
+        if v == voter {
+            return Err(ErrorCode::AlreadyVotedOnUpgrade);
+        }
+    }
+    votes.push_back(voter);
+
+    let mut total_power: u32 = 0;
+    let mut power_for: u32 = 0;
+    for g in guardians.iter() {
+        total_power += g.voting_power;
+        for v in votes.iter() {
+            if v == g.address {
+                power_for += g.voting_power;
+                break;
+            }
+        }
     }
 
-    // Trigger emergency pause
-    e.storage().instance().set(
-        &ConfigKey::CircuitBreakerState,
-        &crate::types::CircuitBreakerState::Paused,
-    );
-    bump_gov_ttl(e, &ConfigKey::CircuitBreakerState);
+    // 2/3 majority, computed as an aggregate across all votes cast so far.
+    let threshold_met = total_power > 0 && (power_for as u64 * 3) >= (total_power as u64 * 2);
+
+    if threshold_met {
+        e.storage()
+            .persistent()
+            .remove(&ConfigKey::PendingEmergencyPause);
+        crate::modules::circuit_breaker::force_pause(e)?;
+    } else {
+        e.storage()
+            .persistent()
+            .set(&ConfigKey::PendingEmergencyPause, &votes);
+        bump_gov_ttl(e, &ConfigKey::PendingEmergencyPause);
+    }
 
     Ok(())
 }
