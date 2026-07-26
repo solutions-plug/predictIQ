@@ -101,7 +101,7 @@ module "redis" {
   vpc_id             = module.vpc.vpc_id
   subnet_ids         = module.vpc.private_subnet_ids
   node_type          = var.redis_node_type
-  num_cache_nodes    = var.redis_num_nodes
+  num_cache_clusters = var.redis_num_nodes
   engine_version     = var.redis_engine_version
   ecs_tasks_sg_id    = aws_security_group.ecs_tasks.id
 }
@@ -118,7 +118,11 @@ module "ecs" {
   api_desired_count     = var.api_desired_count
   api_cpu               = var.api_cpu
   api_memory            = var.api_memory
-  database_url          = module.rds.database_url
+  db_host               = module.rds.endpoint
+  db_port               = 5432
+  db_name               = var.db_name
+  db_user               = var.db_username
+  db_password           = var.db_password
   redis_url             = module.redis.redis_url
   acm_certificate_arn   = var.acm_certificate_arn
   hmac_key              = var.hmac_key

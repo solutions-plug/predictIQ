@@ -631,7 +631,11 @@ output "alb_dns_name" {
 output "secret_arns" {
   description = "Map of secret name → ARN for all Secrets Manager secrets managed by this module"
   value = {
-    database_url     = aws_secretsmanager_secret.database_url.arn
+    db_host          = aws_secretsmanager_secret.db_host.arn
+    db_port          = aws_secretsmanager_secret.db_port.arn
+    db_name          = aws_secretsmanager_secret.db_name.arn
+    db_user          = aws_secretsmanager_secret.db_user.arn
+    db_password      = aws_secretsmanager_secret.db_password.arn
     redis_url        = aws_secretsmanager_secret.redis_url.arn
     hmac_key         = aws_secretsmanager_secret.hmac_key.arn
     sendgrid_api_key = aws_secretsmanager_secret.sendgrid_api_key.arn
