@@ -214,21 +214,21 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
         </section>
 
         {/* Statistics Section */}
-        <ErrorBoundary section="statistics" fallback={
+        <ErrorBoundary section="statistics" fallback={(reset) => (
           <section className="statistics" aria-labelledby="statistics-heading">
             <h2 id="statistics-heading">Platform Statistics</h2>
             <div className="error-message" role="alert">
               <p>Unable to load statistics at this time. Please try again later.</p>
               <button
                 className="retry-button"
-                onClick={() => window.location.reload()}
+                onClick={reset}
                 aria-label="Retry loading statistics"
               >
                 Retry
               </button>
             </div>
           </section>
-        }>
+        )}>
           <Statistics />
         </ErrorBoundary>
 

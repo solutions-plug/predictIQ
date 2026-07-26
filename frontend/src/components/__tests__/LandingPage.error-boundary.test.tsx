@@ -1,12 +1,18 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { LandingPage } from '../LandingPage';
 
-// Mock the Statistics component to throw an error
+// Mock the Statistics component. Controlled by `mockShouldThrow` so tests can
+// simulate recovery after a retry (jest hoists jest.mock factories, so the
+// controlling variable must be prefixed with "mock" to be referenced here).
+let mockShouldThrow = true;
 jest.mock('../Statistics', () => {
   return {
     Statistics: () => {
-      throw new Error('Failed to load statistics');
+      if (mockShouldThrow) {
+        throw new Error('Failed to load statistics');
+      }
+      return <div>Statistics loaded</div>;
     },
   };
 });
@@ -32,6 +38,7 @@ jest.mock('../../lib/hooks/useDarkMode', () => ({
 describe('LandingPage with ErrorBoundary', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockShouldThrow = true;
   });
 
   it('should render error fallback when Statistics throws', () => {
@@ -62,5 +69,18 @@ describe('LandingPage with ErrorBoundary', () => {
     const heading = screen.getByText('Platform Statistics');
     expect(heading).toBeInTheDocument();
     expect(heading.tagName).toBe('H2');
+  });
+
+  it('retries via a soft reset instead of reloading the page', () => {
+    render(<LandingPage />);
+
+    // Once Statistics recovers, the next render succeeds. A real
+    // window.location.reload() would be a no-op in jsdom and could never
+    // produce this text, so seeing it proves the boundary was reset in
+    // place rather than the page being reloaded.
+    mockShouldThrow = false;
+    fireEvent.click(screen.getByRole('button', { name: /retry loading statistics/i }));
+
+    expect(screen.getByText('Statistics loaded')).toBeInTheDocument();
   });
 });
