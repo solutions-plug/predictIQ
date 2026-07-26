@@ -178,7 +178,13 @@ jobs:
 
       - name: Output infrastructure details
         working-directory: infrastructure/terraform
-        run: terraform output -json > /tmp/outputs-${{ matrix.environment }}.json
+        run: |
+          # Human-readable output still relies on Terraform's own `sensitive`
+          # redaction, so it's safe to print to the (already access-controlled) logs.
+          terraform output
+          # -json bypasses that redaction entirely, so strip the sensitive keys
+          # ourselves before anything touches disk / an uploaded artifact.
+          terraform output -json | jq 'del(.rds_endpoint, .redis_endpoint)' > /tmp/outputs-${{ matrix.environment }}.json
 
       - name: Upload outputs
         uses: actions/upload-artifact@v7
