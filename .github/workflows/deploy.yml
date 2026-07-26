@@ -142,6 +142,11 @@ jobs:
       matrix:
         environment: [dev, staging, prod]
       max-parallel: 1
+    # Ties each matrix leg to a GitHub Environment of the same name. Configure
+    # a "prod" environment with required reviewers in repo settings so that
+    # leg pauses for manual approval; dev/staging can stay unprotected and will
+    # keep auto-applying on merge to main, matching environments/README.md.
+    environment: ${{ matrix.environment }}
     env:
       TF_VAR_db_username: ${{ secrets[format('DB_USERNAME_{0}', matrix.environment)] }}
       TF_VAR_db_password: ${{ secrets[format('DB_PASSWORD_{0}', matrix.environment)] }}
