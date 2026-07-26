@@ -149,6 +149,30 @@ describe('LandingPage Accessibility Tests', () => {
       expect(errorMessage).toHaveAttribute('id', 'email-error');
     });
 
+    it('should have aria-describedby linking to the API error message', async () => {
+      (global.fetch as jest.Mock).mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        json: async () => ({ message: 'Invalid email format' }),
+      });
+
+      render(<LandingPage />);
+
+      const emailInput = screen.getByLabelText(/email address/i);
+      const submitButton = screen.getByRole('button', { name: /get early access/i });
+
+      await userEvent.type(emailInput, 'test@example.com');
+      await userEvent.click(submitButton);
+
+      await waitFor(() => {
+        expect(emailInput).toHaveAttribute('aria-describedby', 'api-error');
+      });
+
+      const errorMessage = screen.getByRole('alert');
+      expect(errorMessage).toHaveAttribute('id', 'api-error');
+    });
+
     it('should have aria-live region for status updates', () => {
       const { container } = render(<LandingPage />);
       

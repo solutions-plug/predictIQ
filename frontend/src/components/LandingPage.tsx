@@ -165,7 +165,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
                 }}
                 aria-required="true"
                 aria-invalid={!!emailError}
-                aria-describedby={emailError ? 'email-error' : undefined}
+                aria-describedby={emailError ? 'email-error' : apiError ? 'api-error' : undefined}
                 placeholder={t('hero.emailPlaceholder')}
                 disabled={isSubmitted || isLoading}
               />
