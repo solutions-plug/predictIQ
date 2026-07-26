@@ -103,6 +103,7 @@ module "redis" {
   node_type          = var.redis_node_type
   num_cache_clusters = var.redis_num_nodes
   engine_version     = var.redis_engine_version
+  redis_auth_token   = var.redis_auth_token
   ecs_tasks_sg_id    = aws_security_group.ecs_tasks.id
 }
 

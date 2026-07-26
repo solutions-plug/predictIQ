@@ -23,6 +23,12 @@ variable "engine_version" {
   type = string
 }
 
+variable "redis_auth_token" {
+  type        = string
+  sensitive   = true
+  description = "AUTH token required to authenticate to the Redis replication group"
+}
+
 variable "redis_multi_az_enabled" {
   type        = bool
   default     = true
@@ -94,6 +100,7 @@ resource "aws_elasticache_replication_group" "main" {
 
   at_rest_encryption_enabled = true
   transit_encryption_enabled = true
+  auth_token                 = var.redis_auth_token
 
   maintenance_window = "mon:03:00-mon:04:00"
 
@@ -115,6 +122,6 @@ output "endpoint" {
 }
 
 output "redis_url" {
-  value     = "redis://${aws_elasticache_replication_group.main.primary_endpoint_address}:6379"
+  value     = "redis://:${var.redis_auth_token}@${aws_elasticache_replication_group.main.primary_endpoint_address}:6379"
   sensitive = true
 }
