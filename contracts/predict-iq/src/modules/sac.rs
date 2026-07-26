@@ -69,16 +69,71 @@ pub fn check_token_not_frozen(
     }
 }
 
-/// Check if contract can receive tokens (not frozen)
-/// Returns true if the contract's balance can be modified
+/// Check if the contract itself can receive/send tokens (not frozen).
+/// Classic Stellar assets wrapped by a SAC expose freeze as deauthorization:
+/// a deauthorized (frozen) account fails `authorized()` and cannot transfer.
+/// Returns Ok(()) if the contract is authorized or the token doesn't support
+/// authorization (freeze is not applicable).
+/// Returns Err(ErrorCode::TokenFrozen) if the contract has been deauthorized.
 pub fn verify_contract_not_frozen(e: &Env, token_address: &Address) -> Result<(), ErrorCode> {
     let client = token::Client::new(e, token_address);
     let contract_addr = e.current_contract_address();
 
-    // Try to get balance - if frozen, this will succeed but transfers will fail
-    let _balance = client.balance(&contract_addr);
+    match client.try_authorized(&contract_addr) {
+        Ok(Ok(is_authorized)) => {
+            if is_authorized {
+                Ok(())
+            } else {
+                e.events().publish(
+                    (symbol_short!("ctr_frz"), token_address.clone()),
+                    (),
+                );
+                Err(ErrorCode::TokenFrozen)
+            }
+        }
+        // Token doesn't support authorization or the view call failed -
+        // treat as not frozen, matching check_token_not_frozen's behavior.
+        _ => Ok(()),
+    }
+}
 
-    Ok(())
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+
+    #[test]
+    fn verify_contract_not_frozen_ok_when_authorized() {
+        let e = Env::default();
+        e.mock_all_auths();
+
+        let token_admin = Address::generate(&e);
+        let sac = e.register_stellar_asset_contract_v2(token_admin);
+        let token_address = sac.address();
+        let contract_addr = Address::generate(&e);
+
+        let result = e.as_contract(&contract_addr, || verify_contract_not_frozen(&e, &token_address));
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn verify_contract_not_frozen_detects_frozen_contract() {
+        let e = Env::default();
+        e.mock_all_auths();
+
+        let token_admin = Address::generate(&e);
+        let sac = e.register_stellar_asset_contract_v2(token_admin);
+        let token_address = sac.address();
+        let asset_client = token::StellarAssetClient::new(&e, &token_address);
+        let contract_addr = Address::generate(&e);
+
+        // Deauthorize the contract's trustline - this is how Classic Stellar
+        // assets implement freeze.
+        asset_client.set_authorized(&contract_addr, &false);
+
+        let result = e.as_contract(&contract_addr, || verify_contract_not_frozen(&e, &token_address));
+        assert_eq!(result, Err(ErrorCode::TokenFrozen));
+    }
 }
 
 /// Issue #27: ErrorCode::AssetClawedBack now exists in errors.rs.
