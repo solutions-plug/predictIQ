@@ -24,35 +24,35 @@ jobs:
       - name: Audit contracts/predict-iq dependencies
         run: cargo audit --deny warnings
         working-directory: contracts/predict-iq
-        continue-on-error: true
 
-      - name: Audit contracts/predict-iq (fail on critical)
+      - name: Audit contracts/predict-iq (fail on critical or high)
         run: |
           output=$(cargo audit --json)
           critical=$(echo "$output" | jq '[.vulnerabilities[] | select(.advisory.severity == "critical")] | length')
-          if [ "$critical" -gt 0 ]; then
-            echo "❌ Found $critical critical vulnerabilities in contracts/predict-iq"
-            echo "$output" | jq '.vulnerabilities[] | select(.advisory.severity == "critical")'
+          high=$(echo "$output" | jq '[.vulnerabilities[] | select(.advisory.severity == "high")] | length')
+          if [ "$critical" -gt 0 ] || [ "$high" -gt 0 ]; then
+            echo "❌ Found $critical critical and $high high vulnerabilities in contracts/predict-iq"
+            echo "$output" | jq '.vulnerabilities[] | select(.advisory.severity == "critical" or .advisory.severity == "high")'
             exit 1
           fi
-          echo "✅ No critical vulnerabilities found in contracts/predict-iq"
+          echo "✅ No critical or high vulnerabilities found in contracts/predict-iq"
         working-directory: contracts/predict-iq
 
       - name: Audit services/api dependencies
         run: cargo audit --deny warnings
         working-directory: services/api
-        continue-on-error: true
 
-      - name: Audit services/api (fail on critical)
+      - name: Audit services/api (fail on critical or high)
         run: |
           output=$(cargo audit --json)
           critical=$(echo "$output" | jq '[.vulnerabilities[] | select(.advisory.severity == "critical")] | length')
-          if [ "$critical" -gt 0 ]; then
-            echo "❌ Found $critical critical vulnerabilities in services/api"
-            echo "$output" | jq '.vulnerabilities[] | select(.advisory.severity == "critical")'
+          high=$(echo "$output" | jq '[.vulnerabilities[] | select(.advisory.severity == "high")] | length')
+          if [ "$critical" -gt 0 ] || [ "$high" -gt 0 ]; then
+            echo "❌ Found $critical critical and $high high vulnerabilities in services/api"
+            echo "$output" | jq '.vulnerabilities[] | select(.advisory.severity == "critical" or .advisory.severity == "high")'
             exit 1
           fi
-          echo "✅ No critical vulnerabilities found in services/api"
+          echo "✅ No critical or high vulnerabilities found in services/api"
         working-directory: services/api
 
   scan-npm:
