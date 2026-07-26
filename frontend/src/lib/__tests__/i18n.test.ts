@@ -68,5 +68,17 @@ describe('i18n', () => {
       expect(locales.length).toBeGreaterThan(0);
       expect(locales).toContain('en');
     });
+
+    it('should only offer locales that have translations implemented', () => {
+      // Guards against the Locale type promising locales (e.g. 'es', 'fr', 'de')
+      // that have no corresponding translations entry, which would render a
+      // language selector option that silently falls back to English.
+      const locales = i18n.getAvailableLocales();
+      locales.forEach((locale) => {
+        i18n.setLocale(locale);
+        expect(i18n.getLocale()).toBe(locale);
+        expect(i18n.t('hero.title')).not.toBe('hero.title');
+      });
+    });
   });
 });

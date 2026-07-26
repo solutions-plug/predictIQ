@@ -3,17 +3,13 @@
  * Supports multiple locales with fallback to English.
  */
 
-export type Locale = 'en' | 'es' | 'fr' | 'de';
-
 interface Translations {
   [key: string]: string | Translations;
 }
 
-interface LocaleData {
-  [locale: string]: Translations;
-}
-
-const translations: LocaleData = {
+// `Locale` is derived from the keys actually defined below, so the type can
+// never advertise a locale (e.g. via a language selector) that isn't implemented.
+const translations = {
   en: {
     nav: {
       features: 'Features',
@@ -85,7 +81,9 @@ const translations: LocaleData = {
       copyright: '© 2024 PredictIQ. All rights reserved.',
     },
   },
-};
+} satisfies Record<string, Translations>;
+
+export type Locale = keyof typeof translations;
 
 class I18n {
   private currentLocale: Locale = 'en';

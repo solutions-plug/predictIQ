@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { axe, toHaveNoViolations } from 'jest-axe';
 import LandingPage from '../LandingPage';
 import { api } from '../../lib/api/client';
+import { i18n } from '../../lib/i18n';
 
 expect.extend(toHaveNoViolations);
 
@@ -182,9 +183,21 @@ describe('LandingPage Accessibility Tests', () => {
 
     it('should have aria-hidden on decorative images', () => {
       const { container } = render(<LandingPage />);
-      
+
       const decorativeImages = container.querySelectorAll('[aria-hidden="true"]');
       expect(decorativeImages.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('Language Selector', () => {
+    it('should only render options for locales with implemented translations', () => {
+      const { container } = render(<LandingPage />);
+
+      const options = Array.from(container.querySelectorAll('#locale-select option')).map(
+        (option) => (option as HTMLOptionElement).value
+      );
+
+      expect(options).toEqual(i18n.getAvailableLocales());
     });
   });
 
