@@ -117,29 +117,12 @@ pub fn create_market_with_dispute_window(
 
     // Validate parent market if this is a conditional market
     if parent_id > 0 {
-        let parent_market = get_market(e, parent_id).ok_or(ErrorCode::MarketNotFound)?;
-
-        // Parent must be resolved
-        if parent_market.status != MarketStatus::Resolved {
-            return Err(ErrorCode::ParentMarketNotResolved);
-        }
-
-        // Parent must have resolved to the required outcome
-        let parent_winning_outcome = parent_market
-            .winning_outcome
-            .ok_or(ErrorCode::ParentMarketNotResolved)?;
-        if parent_winning_outcome != parent_outcome_idx {
-            return Err(ErrorCode::ParentMarketInvalidOutcome);
-        }
-
-        // Validate parent_outcome_idx is within parent's options range
-        if parent_outcome_idx >= parent_market.options.len() {
-            return Err(ErrorCode::InvalidOutcome);
-        }
+        validate_parent_market(e, parent_id, parent_outcome_idx)?;
 
         // Issue #069: Conditional market inherits parent constraints.
         // The conditional market's deadline must not exceed the parent's resolution_deadline
         // to ensure the conditional market cannot outlive its parent context.
+        let parent_market = get_market(e, parent_id).ok_or(ErrorCode::MarketNotFound)?;
         if deadline > parent_market.resolution_deadline {
             return Err(ErrorCode::DeadlinePassed);
         }
@@ -241,6 +224,9 @@ pub fn create_market_with_dispute_window(
         outcome_stakes: soroban_sdk::Map::new(e),
         pending_resolution_timestamp: None,
         dispute_snapshot_ledger: None,
+        dispute_timestamp: None,
+        winner_counts: soroban_sdk::Map::new(e),
+        total_claimed: 0,
     };
 
     e.storage()
@@ -281,6 +267,57 @@ pub fn create_market_with_dispute_window(
     );
 
     Ok(count)
+}
+
+/// Validates that a conditional market's parent has resolved to the outcome
+/// the conditional market depends on. Used both at market-creation time and
+/// again at bet-placement time (bets::place_bet), since a parent's resolution
+/// can only be checked, never assumed, once set at creation.
+pub fn validate_parent_market(
+    e: &Env,
+    parent_id: u64,
+    parent_outcome_idx: u32,
+) -> Result<(), ErrorCode> {
+    let parent_market = get_market(e, parent_id).ok_or(ErrorCode::MarketNotFound)?;
+
+    // Parent must be resolved
+    if parent_market.status != MarketStatus::Resolved {
+        return Err(ErrorCode::ParentMarketNotResolved);
+    }
+
+    // Parent must have resolved to the required outcome
+    let parent_winning_outcome = parent_market
+        .winning_outcome
+        .ok_or(ErrorCode::ParentMarketNotResolved)?;
+    if parent_winning_outcome != parent_outcome_idx {
+        return Err(ErrorCode::ParentMarketInvalidOutcome);
+    }
+
+    // Validate parent_outcome_idx is within parent's options range
+    if parent_outcome_idx >= parent_market.options.len() {
+        return Err(ErrorCode::InvalidOutcome);
+    }
+
+    Ok(())
+}
+
+/// Returns the amount currently staked on `outcome`.
+pub fn get_outcome_stake(market: &Market, outcome: u32) -> i128 {
+    market.outcome_stakes.get(outcome).unwrap_or(0)
+}
+
+/// Sets the amount staked on `outcome` to `amount`.
+pub fn set_outcome_stake(market: &mut Market, outcome: u32, amount: i128) {
+    market.outcome_stakes.set(outcome, amount);
+}
+
+/// Increments the unique-bettor count for `outcome` by one. Callers are
+/// responsible for only invoking this on a bettor's first bet on that
+/// outcome (see bets::place_bet), since winner_counts tracks unique
+/// bettors per outcome, not total bet transactions.
+pub fn increment_outcome_bet_count(market: &mut Market, outcome: u32) {
+    let current_count = market.winner_counts.get(outcome).unwrap_or(0);
+    market.winner_counts.set(outcome, current_count + 1);
 }
 
 pub fn get_market_dispute_window(e: &Env, market_id: u64) -> u64 {
