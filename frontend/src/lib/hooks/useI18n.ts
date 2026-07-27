@@ -13,8 +13,10 @@ export function useI18n() {
   }, []);
 
   const setLocale = (newLocale: Locale) => {
-    i18n.setLocale(newLocale);
-    setLocaleState(newLocale);
+    const applied = i18n.setLocale(newLocale);
+    if (applied) {
+      setLocaleState(newLocale);
+    }
   };
 
   const t = (key: string, defaultValue?: string) => {

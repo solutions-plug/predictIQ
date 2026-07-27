@@ -90,13 +90,15 @@ const translations: LocaleData = {
 class I18n {
   private currentLocale: Locale = 'en';
 
-  setLocale(locale: Locale): void {
+  setLocale(locale: Locale): boolean {
     if (locale in translations) {
       this.currentLocale = locale;
       if (typeof window !== 'undefined') {
         localStorage.setItem('locale', locale);
       }
+      return true;
     }
+    return false;
   }
 
   getLocale(): Locale {
