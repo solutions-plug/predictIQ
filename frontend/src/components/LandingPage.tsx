@@ -19,7 +19,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
   const [isSubmitted, setIsSubmitted] = React.useState(false);
   const [apiError, setApiError] = React.useState('');
   const [isLoading, setIsLoading] = React.useState(false);
-  const formStatusRef = React.useRef<HTMLDivElement>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -42,9 +41,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
       const result = await api.newsletterSubscribe({ email });
       if (result.success) {
         setIsSubmitted(true);
-        if (formStatusRef.current) {
-          formStatusRef.current.textContent = t('hero.successMessage');
-        }
       } else {
         setApiError(result.message || 'Subscription failed');
       }
@@ -203,13 +199,14 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
 
             {/* Screen reader announcement */}
             <div 
-              ref={formStatusRef}
               id="form-status" 
               role="status" 
               aria-live="polite" 
               aria-atomic="true"
               className="visually-hidden"
-            />
+            >
+              {isSubmitted && t('hero.successMessage')}
+            </div>
           </form>
         </section>
 
