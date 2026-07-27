@@ -1,18 +1,14 @@
 'use client';
 import dynamic from 'next/dynamic';
-import { Suspense } from 'react';
 import { LoadingSpinner } from '../components/LoadingSpinner';
 
-// Dynamic import with code splitting
+// Dynamic import with code splitting. With ssr: true, next/dynamic manages
+// its own loading boundary, so no outer <Suspense> is needed here.
 const LandingPage = dynamic(() => import('../components/LandingPage').then(mod => ({ default: mod.LandingPage })), {
-  loading: () => <LoadingSpinner aria-label="Loading" />,
+  loading: () => <LoadingSpinner aria-label="Loading page" />,
   ssr: true,
 });
 
 export default function Home() {
-  return (
-    <Suspense fallback={<LoadingSpinner aria-label="Loading page" />}>
-      <LandingPage />
-    </Suspense>
-  );
+  return <LandingPage />;
 }

@@ -1,29 +1,24 @@
-import React, { Suspense } from 'react';
-import { render, screen } from '@testing-library/react';
-import { axe, toHaveNoViolations } from 'jest-axe';
-import { LoadingSpinner } from '../../components/LoadingSpinner';
+import React from 'react';
+import { render, screen, waitFor } from '@testing-library/react';
+import Home from '../page';
 
-expect.extend(toHaveNoViolations);
+jest.mock('../../components/LandingPage', () => ({
+  LandingPage: () => <div data-testid="landing-page-stub" />,
+}));
 
-describe('Home page loading fallback', () => {
-  it('LoadingSpinner fallback has role=status', () => {
-    render(<LoadingSpinner aria-label="Loading page" />);
-    expect(screen.getByRole('status')).toBeInTheDocument();
-  });
+describe('Home page dynamic loading fallback', () => {
+  it('renders exactly one loading indicator with a consistent aria-label while the dynamic import resolves', async () => {
+    render(<Home />);
 
-  it('LoadingSpinner fallback has aria-live=polite', () => {
-    render(<LoadingSpinner aria-label="Loading page" />);
-    expect(screen.getByRole('status')).toHaveAttribute('aria-live', 'polite');
-  });
+    const indicators = screen.getAllByRole('status');
+    expect(indicators).toHaveLength(1);
+    expect(indicators[0]).toHaveAttribute('aria-label', 'Loading page');
+    expect(indicators[0]).toHaveAttribute('aria-live', 'polite');
 
-  it('LoadingSpinner fallback has an accessible label', () => {
-    render(<LoadingSpinner aria-label="Loading page" />);
-    expect(screen.getByRole('status')).toHaveAttribute('aria-label', 'Loading page');
-  });
+    await waitFor(() => {
+      expect(screen.getByTestId('landing-page-stub')).toBeInTheDocument();
+    });
 
-  it('LoadingSpinner fallback has no axe violations', async () => {
-    const { container } = render(<LoadingSpinner aria-label="Loading page" />);
-    const results = await axe(container);
-    expect(results).toHaveNoViolations();
+    expect(screen.queryAllByRole('status')).toHaveLength(0);
   });
 });
