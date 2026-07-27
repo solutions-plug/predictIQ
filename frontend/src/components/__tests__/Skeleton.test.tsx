@@ -11,10 +11,10 @@ describe('Skeleton', () => {
     expect(skeleton).toHaveAttribute('aria-label', 'Loading content');
   });
 
-  it('renders with custom dimensions', () => {
-    render(<Skeleton width="200px" height="50px" />);
+  it('renders with default dimensions via CSS', () => {
+    render(<Skeleton />);
     const skeleton = screen.getByRole('status');
-    expect(skeleton).toHaveStyle({ width: '200px', height: '50px' });
+    expect(skeleton).toHaveClass('skeleton');
   });
 
   it('renders with different variants', () => {
@@ -36,5 +36,11 @@ describe('Skeleton', () => {
   it('applies custom className', () => {
     render(<Skeleton className="custom-skeleton" />);
     expect(screen.getByRole('status')).toHaveClass('custom-skeleton');
+  });
+
+  it('applies size utility classes', () => {
+    render(<Skeleton className="stat-skeleton stat-skeleton--markets" />);
+    const skeleton = screen.getByRole('status');
+    expect(skeleton).toHaveClass('stat-skeleton--markets');
   });
 });

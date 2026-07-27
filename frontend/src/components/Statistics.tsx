@@ -62,7 +62,7 @@ export const Statistics: React.FC = () => {
         <div className="stat-item">
           <h3>Total Markets</h3>
           {loading ? (
-            <Skeleton width="4rem" height="2rem" aria-label="Loading total markets" />
+            <Skeleton className="stat-skeleton stat-skeleton--markets" aria-label="Loading total markets" />
           ) : (
             <p className="stat-value" aria-live="polite">
               {displayValues.totalMarkets}
@@ -72,7 +72,7 @@ export const Statistics: React.FC = () => {
         <div className="stat-item">
           <h3>Total Volume</h3>
           {loading ? (
-            <Skeleton width="6rem" height="2rem" aria-label="Loading total volume" />
+            <Skeleton className="stat-skeleton stat-skeleton--volume" aria-label="Loading total volume" />
           ) : (
             <p className="stat-value" aria-live="polite">
               {displayValues.totalVolume}
@@ -82,7 +82,7 @@ export const Statistics: React.FC = () => {
         <div className="stat-item">
           <h3>Active Users</h3>
           {loading ? (
-            <Skeleton width="5rem" height="2rem" aria-label="Loading active users" />
+            <Skeleton className="stat-skeleton stat-skeleton--users" aria-label="Loading active users" />
           ) : (
             <p className="stat-value" aria-live="polite">
               {displayValues.activeUsers}

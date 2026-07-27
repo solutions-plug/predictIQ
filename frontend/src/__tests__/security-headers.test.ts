@@ -36,14 +36,22 @@ describe('Security Headers', () => {
     expect(header.value).toContain('camera=()');
   });
 
-  it('should have Content-Security-Policy header configured', () => {
-    const header = headers.find((h: any) => h.key === 'Content-Security-Policy');
-    expect(header).toBeDefined();
-    expect(header.value).toContain("default-src 'self'");
-    expect(header.value).toContain("script-src 'self'");
-    expect(header.value).toContain("style-src 'self'");
-    expect(header.value).toContain("frame-ancestors 'none'");
-  });
+it('should have Content-Security-Policy header configured', () => {
+     const header = headers.find((h: any) => h.key === 'Content-Security-Policy');
+     expect(header).toBeDefined();
+     expect(header.value).toContain("default-src 'self'");
+     expect(header.value).toContain("script-src 'self'");
+     expect(header.value).toContain("style-src 'self'");
+     expect(header.value).toContain("frame-ancestors 'none'");
+   });
+
+   it('should not have unsafe-inline in style-src', () => {
+     const header = headers.find((h: any) => h.key === 'Content-Security-Policy');
+     expect(header).toBeDefined();
+     const styleSrcMatch = header.value.match(/style-src\s+([^;]+)/);
+     expect(styleSrcMatch).toBeDefined();
+     expect(styleSrcMatch[1]).not.toContain('unsafe-inline');
+   });
 
   it('should have all required security headers', () => {
     const requiredHeaders = [

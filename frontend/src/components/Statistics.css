@@ -105,3 +105,22 @@
   margin: 0;
   color: var(--fg-muted);
 }
+
+.stat-skeleton {
+  display: inline-block;
+}
+
+.stat-skeleton--markets {
+  width: 4rem;
+  height: 2rem;
+}
+
+.stat-skeleton--volume {
+  width: 6rem;
+  height: 2rem;
+}
+
+.stat-skeleton--users {
+  width: 5rem;
+  height: 2rem;
+}

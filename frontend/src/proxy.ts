@@ -18,7 +18,7 @@ export function proxy(request: NextRequest) {
   const cspHeader = [
     "default-src 'self'",
     `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`,
-    "style-src 'self' 'unsafe-inline'",
+    "style-src 'self'",
     "img-src 'self' data: https:",
     "font-src 'self' data:",
     `connect-src ${connectSrc}`,
