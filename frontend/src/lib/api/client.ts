@@ -307,11 +307,21 @@ async function request<T>(
 
       // On mutations, invalidate only the affected resource tags instead of
       // the entire cache. Fall back to a full clear for untagged mutations.
+      //
+      // Guard: some endpoints return { success: false, message: '...' } with a
+      // 200 status to signal business-logic failure (e.g. newsletterSubscribe).
+      // Only bust the cache when the mutation actually succeeded — i.e. when the
+      // response has no `success` field (non-envelope endpoints) or when
+      // `success` is explicitly `true`.
       if (method === "POST" || method === "DELETE") {
-        if (options.cacheTags?.length) {
-          apiCache.invalidateByTags(options.cacheTags);
-        } else {
-          apiCache.invalidateByPattern('.*');
+        const bodyObj = (typeof data === 'object' && data !== null) ? data as Record<string, unknown> : null;
+        const succeeded = bodyObj === null || !('success' in bodyObj) || bodyObj['success'] === true;
+        if (succeeded) {
+          if (options.cacheTags?.length) {
+            apiCache.invalidateByTags(options.cacheTags);
+          } else {
+            apiCache.invalidateByPattern('.*');
+          }
         }
       }
 
