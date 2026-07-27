@@ -114,7 +114,7 @@ class I18n {
 
   t(key: string, defaultValue?: string): string {
     const keys = key.split('.');
-    let value: any = translations[this.currentLocale];
+    let value: Translations | string = translations[this.currentLocale];
 
     for (const k of keys) {
       if (value && typeof value === 'object' && k in value) {

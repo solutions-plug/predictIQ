@@ -44,6 +44,16 @@ describe('i18n', () => {
       const result = i18n.t('features.decentralized.title');
       expect(result).toBe('Fully Decentralized');
     });
+
+    it('should return default value when a key resolves to a nested object rather than a string', () => {
+      const result = i18n.t('features', 'default');
+      expect(result).toBe('default');
+    });
+
+    it('should return the key when a key resolves to a nested object and no default is provided', () => {
+      const result = i18n.t('features');
+      expect(result).toBe('features');
+    });
   });
 
   describe('loadLocaleFromStorage', () => {
