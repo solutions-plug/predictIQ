@@ -2760,6 +2760,42 @@ mod dispute_resolution_tests {
         assert_eq!(result, Err(Ok(crate::errors::ErrorCode::MarketNotFound)));
     }
 
+    /// Issue #1186: Once resolved, the admin override must not be able to
+    /// re-resolve the market with a different outcome — Resolved is terminal.
+    #[test]
+    fn test_resolve_market_rejects_already_resolved_market() {
+        let (env, client, _admin, contract_id) = setup();
+        let market_id = create_market(&env, &client, &contract_id);
+
+        client.resolve_market(&market_id, &1);
+        let result = client.try_resolve_market(&market_id, &0);
+        assert_eq!(
+            result,
+            Err(Ok(crate::errors::ErrorCode::CannotChangeOutcome))
+        );
+
+        // Original outcome must remain unchanged.
+        let market = client.get_market(&market_id).unwrap();
+        assert_eq!(market.status, MarketStatus::Resolved);
+        assert_eq!(market.winning_outcome, Some(1));
+    }
+
+    /// Issue #1186: A Cancelled market must also be terminal for the admin
+    /// resolve override — it must not be resolvable after cancellation.
+    #[test]
+    fn test_resolve_market_rejects_cancelled_market() {
+        let (env, client, _admin, contract_id) = setup();
+        let market_id = create_market(&env, &client, &contract_id);
+
+        seed_market_status(&env, &contract_id, market_id, MarketStatus::Cancelled, None, None);
+
+        let result = client.try_resolve_market(&market_id, &0);
+        assert_eq!(
+            result,
+            Err(Ok(crate::errors::ErrorCode::CannotChangeOutcome))
+        );
+    }
+
     // ── cast_vote weight calculation and tally ────────────────────────────────
 
     fn setup_gov_token(env: &Env, _client: &PredictIQClient, contract_id: &Address) -> Address {

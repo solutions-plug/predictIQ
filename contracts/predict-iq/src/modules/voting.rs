@@ -185,15 +185,19 @@ fn get_token_decimals(e: &Env, token: &Address) -> u32 {
     }
 }
 
-/// Issue #20: Require market to be Resolved before unlocking tokens.
+/// Issue #20: Require market to be Resolved (or Cancelled) before unlocking tokens.
 pub fn unlock_tokens(e: &Env, voter: Address, market_id: u64) -> Result<(), ErrorCode> {
     voter.require_auth();
 
     let market = markets::get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
 
     // Issue #20: Tokens remain locked throughout the entire dispute lifecycle.
-    // Only allow unlock once the market is fully Resolved.
-    if market.status != MarketStatus::Resolved {
+    // Only allow unlock once the market reaches a terminal state.
+    // Issue #1192: A Disputed market can transition to Cancelled via community
+    // vote (cancellation::cancel_market_vote); requiring Resolved only would
+    // permanently strand governance tokens locked via the fallback path with
+    // no code path to retrieve them.
+    if market.status != MarketStatus::Resolved && market.status != MarketStatus::Cancelled {
         return Err(ErrorCode::MarketNotResolved);
     }
 
@@ -434,5 +438,144 @@ mod decimal_normalization_tests {
         let one_7dec = normalize(10_000_000, 7); // 1 token at 7 decimals
         let one_18dec = normalize(1_000_000_000_000_000_000, 18); // 1 token at 18 decimals
         assert_eq!(one_7dec, one_18dec);
+    }
+}
+
+/// Issue #1192: Voters who locked governance tokens via cast_vote's fallback
+/// path must be able to recover them once the market reaches ANY terminal
+/// state, not just Resolved — including Cancelled (e.g. via community-voted
+/// cancel_market_vote from Disputed).
+#[cfg(test)]
+mod unlock_tokens_terminal_state_tests {
+    use super::{cast_vote, unlock_tokens, DataKey};
+    use crate::errors::ErrorCode;
+    use crate::modules::markets;
+    use crate::types::{ConfigKey, MarketStatus, MarketTier, OracleConfig};
+    use crate::{PredictIQ, PredictIQClient};
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger as _},
+        token, Address, Env, String, Vec,
+    };
+
+    fn setup() -> (Env, PredictIQClient<'static>, Address, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let contract_id = env.register(PredictIQ, ());
+        let client = PredictIQClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        client.initialize(&admin, &0);
+
+        (env, client, admin, contract_id)
+    }
+
+    /// StellarAssetContract supports balance()/transfer() but not balance_at(),
+    /// so casting a vote against it always exercises cast_vote's fallback path.
+    fn setup_gov_token(env: &Env, contract_id: &Address) -> Address {
+        let token_admin = Address::generate(env);
+        let token_id = env.register_stellar_asset_contract_v2(token_admin);
+        let token_address = token_id.address();
+        env.as_contract(contract_id, || {
+            env.storage()
+                .instance()
+                .set(&ConfigKey::GovernanceToken, &token_address);
+        });
+        token_address
+    }
+
+    fn create_market(env: &Env, client: &PredictIQClient, admin: &Address) -> u64 {
+        let options = Vec::from_array(
+            env,
+            [String::from_str(env, "Yes"), String::from_str(env, "No")],
+        );
+        let native_token = Address::generate(env);
+        client.create_market(
+            admin,
+            &String::from_str(env, "Fallback Lock Test"),
+            &options,
+            &1000,
+            &2000,
+            &OracleConfig {
+                oracle_address: Address::generate(env),
+                feed_id: String::from_str(env, "feed"),
+                min_responses: Some(1),
+                max_staleness_seconds: 3600,
+                max_confidence_bps: 200,
+                strike_price: None,
+            },
+            &MarketTier::Basic,
+            &native_token,
+            &0,
+            &0,
+        )
+    }
+
+    #[test]
+    fn unlock_tokens_succeeds_after_cancellation_for_fallback_locked_voter() {
+        let (env, client, admin, contract_id) = setup();
+        let gov_token = setup_gov_token(&env, &contract_id);
+        let market_id = create_market(&env, &client, &admin);
+
+        // Move market to Disputed so cast_vote's fallback lock path is reachable.
+        env.as_contract(&contract_id, || {
+            let mut market = markets::get_market(&env, market_id).unwrap();
+            market.status = MarketStatus::Disputed;
+            market.pending_resolution_timestamp = Some(1001);
+            market.dispute_timestamp = Some(1001);
+            market.dispute_snapshot_ledger = Some(env.ledger().sequence());
+            markets::update_market(&env, market);
+        });
+
+        let voter = Address::generate(&env);
+        token::StellarAssetClient::new(&env, &gov_token).mint(&voter, &500);
+        let token_client = token::Client::new(&env, &gov_token);
+        assert_eq!(token_client.balance(&voter), 500);
+
+        // Fallback path: balance_at is unsupported on the SAC, so cast_vote
+        // locks the caller-supplied weight in the contract.
+        env.as_contract(&contract_id, || {
+            cast_vote(&env, voter.clone(), market_id, 0, 500).unwrap();
+        });
+        assert_eq!(token_client.balance(&voter), 0);
+        assert_eq!(token_client.balance(&contract_id), 500);
+
+        // Community vote cancels the Disputed market — no path back to Resolved.
+        env.as_contract(&contract_id, || {
+            let mut market = markets::get_market(&env, market_id).unwrap();
+            market.status = MarketStatus::Cancelled;
+            markets::update_market(&env, market);
+        });
+
+        // Advance past the lock's unlock_time (market.resolution_deadline == 2000).
+        env.ledger().with_mut(|li| li.timestamp = 2001);
+
+        env.as_contract(&contract_id, || {
+            unlock_tokens(&env, voter.clone(), market_id).unwrap();
+        });
+
+        // Tokens are fully returned and the lock ledger entries are cleared.
+        assert_eq!(token_client.balance(&voter), 500);
+        assert_eq!(token_client.balance(&contract_id), 0);
+        env.as_contract(&contract_id, || {
+            assert!(!env
+                .storage()
+                .persistent()
+                .has(&DataKey::LockedTokens(market_id, voter.clone())));
+            assert!(!env
+                .storage()
+                .persistent()
+                .has(&DataKey::LockedBalance(market_id, voter.clone())));
+        });
+    }
+
+    #[test]
+    fn unlock_tokens_still_rejected_while_market_active() {
+        let (env, client, admin, contract_id) = setup();
+        let market_id = create_market(&env, &client, &admin);
+        let voter = Address::generate(&env);
+
+        let result = env.as_contract(&contract_id, || unlock_tokens(&env, voter, market_id));
+        assert_eq!(result, Err(ErrorCode::MarketNotResolved));
     }
 }
