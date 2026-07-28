@@ -24,13 +24,13 @@ tags = ["key", "api"]
 [[rules]]
 id = "database-url"
 description = "Database connection string"
-regex = '''postgres(ql)?://[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+@[a-zA-Z0-9.-]+:[0-9]+/[a-zA-Z0-9_-]+'''
+regex = '''postgres(ql)?://[a-zA-Z0-9_-]+:[^@\s]+@[a-zA-Z0-9.-]+:[0-9]+/[a-zA-Z0-9_-]+'''
 tags = ["database", "connection"]
 
 [[rules]]
 id = "redis-url"
 description = "Redis connection string"
-regex = '''redis://[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+@[a-zA-Z0-9.-]+:[0-9]+'''
+regex = '''redis://[a-zA-Z0-9_-]+:[^@\s]+@[a-zA-Z0-9.-]+:[0-9]+'''
 tags = ["redis", "connection"]
 
 [allowlist]
