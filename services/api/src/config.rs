@@ -332,6 +332,9 @@ pub struct Config {
     /// enough to noticeably delay concurrent subscriber inserts.
     /// Set via `NEWSLETTER_CLEANUP_BATCH_SIZE`.
     pub newsletter_cleanup_batch_size: u64,
+    /// Per-recipient hourly email send limit. Default: 10.
+    /// Set via `EMAIL_PER_RECIPIENT_HOURLY_LIMIT`.
+    pub email_per_recipient_hourly_limit: u64,
     /// HMAC secret for signing unsubscribe tokens.
     pub unsubscribe_signing_secret: Option<String>,
     /// CORS policy.  See [`CorsConfig`] for per-field documentation.
@@ -607,6 +610,10 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(500),
+            email_per_recipient_hourly_limit: env::var("EMAIL_PER_RECIPIENT_HOURLY_LIMIT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(10),
             unsubscribe_signing_secret: env::var("UNSUBSCRIBE_SIGNING_SECRET").ok(),
             cors: CorsConfig::from_env(),
             contract_key_schema: ContractKeySchema::from_env(),
@@ -1118,6 +1125,7 @@ mod tests {
             newsletter_rate_limit_window_secs: 3600,
             email_stale_job_threshold_secs: 3600,
             newsletter_cleanup_batch_size: 500,
+            email_per_recipient_hourly_limit: 10,
             unsubscribe_signing_secret: None,
             cors: CorsConfig {
                 dev_mode: false,
@@ -1206,6 +1214,7 @@ mod tests {
             newsletter_rate_limit_window_secs: 3600,
             email_stale_job_threshold_secs: 3600,
             newsletter_cleanup_batch_size: 500,
+            email_per_recipient_hourly_limit: 10,
             unsubscribe_signing_secret: None,
             cors: CorsConfig {
                 dev_mode: false,
@@ -1295,6 +1304,7 @@ mod tests {
             newsletter_rate_limit_window_secs: 3600,
             email_stale_job_threshold_secs: 3600,
             newsletter_cleanup_batch_size: 500,
+            email_per_recipient_hourly_limit: 10,
             unsubscribe_signing_secret: None,
             cors: CorsConfig {
                 dev_mode: false,
@@ -1383,6 +1393,7 @@ mod tests {
             newsletter_rate_limit_window_secs: 3600,
             email_stale_job_threshold_secs: 3600,
             newsletter_cleanup_batch_size: 500,
+            email_per_recipient_hourly_limit: 10,
             unsubscribe_signing_secret: None,
             cors: CorsConfig {
                 dev_mode: false,

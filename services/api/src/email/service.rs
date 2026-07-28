@@ -11,6 +11,21 @@ use crate::config::Config;
 use crate::email::templates::EmailTemplateEngine;
 use crate::metrics::Metrics;
 
+/// Returned when the per-recipient hourly send limit is exceeded.
+#[derive(Debug, Clone)]
+pub struct RateLimitExceeded {
+    pub recipient: String,
+    pub limit: u64,
+}
+
+impl std::fmt::Display for RateLimitExceeded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "email rate limit exceeded for {}: max {} per hour", self.recipient, self.limit)
+    }
+}
+
+impl std::error::Error for RateLimitExceeded {}
+
 /// Configuration for email idempotency deduplication.
 #[derive(Clone, Debug)]
 pub struct IdempotencyConfig {
@@ -117,7 +132,7 @@ impl EmailService {
         config: Config,
         cache: Option<RedisCache>,
         idempotency: IdempotencyConfig,
-        idempotency_secret: String,
+        _idempotency_secret: String,
     ) -> Result<Self> {
         Self::with_cache_and_metrics(config, cache, idempotency, None)
     }
@@ -200,6 +215,22 @@ impl EmailService {
         template_data: &Value,
         idem_key: Option<&str>,
     ) -> Result<String> {
+        // --- per-recipient hourly rate limit ---
+        if let Some(cache) = &self.cache {
+            let limit = self.config.email_per_recipient_hourly_limit;
+            let rate_key = format!("email:rate:{}:{}", recipient, SystemTime::now()
+                .duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() / 3600);
+            let count = cache.incr_with_ttl(&rate_key, Duration::from_secs(3600)).await
+                .context("per-recipient rate limit Redis check failed")?;
+            if count > limit {
+                tracing::warn!(recipient, limit, count, "per-recipient hourly email limit exceeded");
+                return Err(anyhow::Error::new(RateLimitExceeded {
+                    recipient: recipient.to_string(),
+                    limit,
+                }));
+            }
+        }
+
         // --- idempotency check ---
         if let (Some(cache), Some(key)) = (&self.cache, idem_key) {
             let redis_key = format!("email:idem:{key}");
@@ -613,5 +644,61 @@ mod tests {
     fn newline_injection_attempt_is_rejected() {
         // A newline in the address would be invalid per RFC 5322.
         assert!(sanitize_email("user\n@example.com").is_err());
+    }
+
+    #[tokio::test]
+    async fn per_recipient_rate_limit_rejects_nth_plus_one_send() {
+        use testcontainers::runners::AsyncRunner;
+        use testcontainers_modules::redis::Redis;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let container = Redis::default().start().await.expect("redis container");
+        let port = container.get_host_port_ipv4(6379).await.expect("redis port");
+        let redis_url = format!("redis://127.0.0.1:{port}");
+        let cache = crate::cache::RedisCache::new(&redis_url).await.expect("redis cache");
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v3/mail/send"))
+            .respond_with(ResponseTemplate::new(202).insert_header("x-message-id", "msg-id"))
+            .mount(&mock_server)
+            .await;
+
+        let mut config = Config::from_env();
+        config.sendgrid_api_key = Some("test-key".to_string());
+        config.from_email = Some("from@example.com".to_string());
+        config.email_per_recipient_hourly_limit = 2;
+
+        let service = EmailService::with_cache_and_metrics(
+            config,
+            Some(cache),
+            IdempotencyConfig::default(),
+            None,
+        )
+        .unwrap()
+        .with_base_url(mock_server.uri());
+
+        let data = serde_json::json!({"confirm_url": "https://example.com/confirm?token=abc"});
+        let recipient = "limited@example.com";
+
+        // First two sends (within limit) must succeed.
+        for _ in 0..2 {
+            let result = service
+                .send_email_idempotent(recipient, "newsletter_confirmation", &data, None)
+                .await;
+            assert!(result.is_ok(), "send within limit must succeed");
+        }
+
+        // Third send (N+1) must be rejected with RateLimitExceeded.
+        let result = service
+            .send_email_idempotent(recipient, "newsletter_confirmation", &data, None)
+            .await;
+        assert!(result.is_err(), "N+1 send must be rejected");
+        let err = result.unwrap_err();
+        assert!(
+            err.downcast_ref::<RateLimitExceeded>().is_some(),
+            "error must be RateLimitExceeded, got: {err}"
+        );
     }
 }
