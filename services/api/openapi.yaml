@@ -895,10 +895,12 @@ components:
 
     InvalidationResult:
       type: object
-      required: [invalidated_keys]
+      required: [invalidated_keys, cache_invalidated]
       properties:
         invalidated_keys:
           type: integer
+        cache_invalidated:
+          type: boolean
 
     NewsletterSubscribeRequest:
       type: object

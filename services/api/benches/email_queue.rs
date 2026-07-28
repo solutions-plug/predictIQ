@@ -135,7 +135,7 @@ fn bench_email_dequeue_to_send_cycle(c: &mut Criterion) {
 
             // 2. Dequeue it.
             let dequeued = queue
-                .dequeue()
+                .dequeue("bench-worker")
                 .await
                 .expect("dequeue should succeed")
                 .expect("a job should be available");

@@ -865,7 +865,8 @@ pub async fn featured_markets(
     let start_idx = cursor
         .as_ref()
         .and_then(|c| c.parse::<usize>().ok())
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .min(payload.len());
     let end_idx = (start_idx + limit as usize).min(payload.len());
     let has_more = end_idx < payload.len();
     let next_cursor = if has_more {
@@ -924,7 +925,8 @@ pub async fn content(
     let start_idx = cursor
         .as_ref()
         .and_then(|c| c.parse::<usize>().ok())
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .min(payload.len());
     let end_idx = (start_idx + limit as usize).min(payload.len());
     let has_more = end_idx < payload.len();
     let next_cursor = if has_more {
@@ -953,6 +955,7 @@ pub async fn content(
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct InvalidationResult {
     pub invalidated_keys: usize,
+    pub cache_invalidated: bool,
 }
 
 /// Resolve a market by its ID.
@@ -1000,23 +1003,31 @@ pub async fn resolve_market(
         .map_err(into_api_error)?;
 
     // 2. Invalidate only the keys affected by this market's resolution via tag.
+    // This is best-effort: a cache invalidation failure should not roll back the DB write.
     let tag = InvalidationTag::MarketResolved {
         market_id,
         network: state.config.network_name().to_owned(),
         featured_limit: state.config.featured_limit,
     };
-    let invalidated = state.cache.invalidate_tag(&tag).await.map_err(into_api_error)?;
-
-    state
-        .metrics
-        .observe_invalidation("market_resolve", invalidated);
-
-    tracing::info!(market_id, invalidated, "market resolved and cache invalidated");
+    
+    let (invalidated, cache_invalidated) = match state.cache.invalidate_tag(&tag).await {
+        Ok(count) => {
+            state.metrics.observe_invalidation("market_resolve", count);
+            tracing::info!(market_id, count, "market resolved and cache invalidated");
+            (count, true)
+        }
+        Err(e) => {
+            tracing::warn!(market_id, error = %e, "cache invalidation failed after successful DB write");
+            state.metrics.observe_invalidation("market_resolve", 0);
+            (0, false)
+        }
+    };
 
     Ok((
         StatusCode::OK,
         Json(InvalidationResult {
             invalidated_keys: invalidated,
+            cache_invalidated,
         }),
     ))
 }

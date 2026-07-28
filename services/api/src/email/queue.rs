@@ -74,7 +74,7 @@ impl EmailQueue {
     /// 
     /// Moves a job from the queue to the processing set with a timestamp.
     /// This timestamp is used to detect orphaned jobs (crashed workers) on startup.
-    pub async fn dequeue(&self) -> Result<Option<Uuid>> {
+    pub async fn dequeue(&self, worker_id: &str) -> Result<Option<Uuid>> {
         let mut conn = self.cache.get_connection().await?;
 
         // Use ZPOPMIN to atomically get and remove the lowest score item
@@ -87,9 +87,10 @@ impl EmailQueue {
             let job_id = Uuid::parse_str(&job_id_str)?;
 
             // Add to processing set (sorted set) with current timestamp as score.
-            // This allows us to identify stale jobs on startup by checking age.
+            // Store worker_id:job_id as member to track ownership.
             let processing_started = chrono::Utc::now().timestamp() as f64;
-            let _: () = conn.zadd(EMAIL_PROCESSING_KEY, &job_id_str, processing_started)
+            let member = format!("{}:{}", worker_id, job_id_str);
+            let _: () = conn.zadd(EMAIL_PROCESSING_KEY, member, processing_started)
                 .await
                 .context("Failed to mark job as processing")?;
 
@@ -116,10 +117,21 @@ impl EmailQueue {
             .await?;
 
         // Remove from processing set (now a sorted set with timestamps)
+        // Need to find and remove by job ID pattern since member is worker_id:job_id
         let mut conn = self.cache.get_connection().await?;
-        let _: () = conn.zrem(EMAIL_PROCESSING_KEY, job_id.to_string())
+        let pattern = format!("*:{}", job_id);
+        let members: Vec<String> = conn.zrange(EMAIL_PROCESSING_KEY, 0, -1)
             .await
-            .context("Failed to remove from processing set")?;
+            .context("Failed to list processing jobs")?;
+        
+        for member in members {
+            if member.ends_with(&format!(":{}", job_id)) {
+                let _: () = conn.zrem(EMAIL_PROCESSING_KEY, member)
+                    .await
+                    .context("Failed to remove from processing set")?;
+                break;
+            }
+        }
 
         // Track sent event with real recipient email (for analytics)
         if let Some(msg_id) = message_id {
@@ -234,10 +246,21 @@ impl EmailQueue {
             }
 
             // Remove from processing set (now a sorted set with timestamps)
+            // Need to find and remove by job ID pattern since member is worker_id:job_id
             let mut conn = self.cache.get_connection().await?;
-            let _: () = conn.zrem(EMAIL_PROCESSING_KEY, job_id.to_string())
+            let pattern = format!("*:{}", job_id);
+            let members: Vec<String> = conn.zrange(EMAIL_PROCESSING_KEY, 0, -1)
                 .await
-                .context("Failed to remove from processing set")?;
+                .context("Failed to list processing jobs")?;
+            
+            for member in members {
+                if member.ends_with(&format!(":{}", job_id)) {
+                    let _: () = conn.zrem(EMAIL_PROCESSING_KEY, member)
+                        .await
+                        .context("Failed to remove from processing set")?;
+                    break;
+                }
+            }
         }
 
         Ok(())
@@ -255,23 +278,48 @@ impl EmailQueue {
             .context("Failed to get retry jobs")?;
 
         let count = jobs.len();
-
-        for job_id_str in jobs {
-            // Move back to main queue
-            let job_id = Uuid::parse_str(&job_id_str)?;
-            let _: () = conn.zadd(EMAIL_QUEUE_KEY, &job_id_str, now)
-                .await
-                .context("Failed to re-queue job")?;
-
-            // Remove from retry queue
-            let _: () = conn.zrem(EMAIL_RETRY_KEY, &job_id_str)
-                .await
-                .context("Failed to remove from retry queue")?;
-
-            tracing::info!("Re-queued email job for retry: {}", job_id);
+        
+        if count == 0 {
+            return Ok(0);
         }
 
-        Ok(count)
+        // Use Lua script to atomically move all jobs in batch
+        let script = redis::Script::new(
+            r#"
+            local queue_key = KEYS[1]
+            local retry_key = KEYS[2]
+            local now = tonumber(ARGV[1])
+            local job_ids = ARGV
+            
+            local moved = 0
+            for i = 2, #ARGV do
+                local job_id = ARGV[i]
+                redis.call('ZADD', queue_key, now, job_id)
+                redis.call('ZREM', retry_key, job_id)
+                moved = moved + 1
+            end
+            
+            return moved
+            "#,
+        );
+
+        // Build arguments: first arg is timestamp, rest are job IDs
+        let mut args = vec![now.to_string()];
+        args.extend(jobs.iter().cloned());
+
+        let moved: i64 = script
+            .key(EMAIL_QUEUE_KEY)
+            .key(EMAIL_RETRY_KEY)
+            .arg(args)
+            .invoke_async(&mut conn)
+            .await
+            .context("Failed to batch move retry jobs")?;
+
+        if moved > 0 {
+            tracing::info!("Batch re-queued {} email jobs for retry", moved);
+        }
+
+        Ok(moved as usize)
     }
 
     /// List all job IDs currently in the dead-letter set (oldest-failed first).
@@ -400,34 +448,125 @@ impl EmailQueue {
 
         // Get all jobs in processing that are older than the stale threshold.
         // Processing set is a sorted set with timestamps as scores.
-        let stale_jobs: Vec<String> = conn
+        // Members are in format "worker_id:job_id"
+        let stale_entries: Vec<String> = conn
             .zrangebyscore(EMAIL_PROCESSING_KEY, "-inf", stale_cutoff)
             .await
             .context("Failed to scan processing set for stale jobs")?;
 
-        let count = stale_jobs.len();
-        if count > 0 {
-            tracing::warn!(
-                "Recovering {} orphaned email jobs (stale for > {}s)",
-                count,
-                stale_threshold_secs
-            );
+        let count = stale_entries.len();
+        
+        if count == 0 {
+            return Ok(0);
+        }
+        
+        // Group by worker ID and check worker heartbeats
+        let mut worker_jobs = std::collections::HashMap::new();
+        for entry in &stale_entries {
+            if let Some((worker_id, job_id)) = entry.split_once(':') {
+                worker_jobs.entry(worker_id.to_string())
+                    .or_insert_with(Vec::new)
+                    .push(job_id.to_string());
+            } else {
+                // Fallback for old format (just job_id)
+                worker_jobs.entry("unknown".to_string())
+                    .or_insert_with(Vec::new)
+                    .push(entry.clone());
+            }
         }
 
-        for job_id_str in stale_jobs {
-            let requeue_score = now;
-            let _: () = conn
-                .zadd(EMAIL_QUEUE_KEY, &job_id_str, requeue_score)
-                .await
-                .context("Failed to re-queue orphaned job")?;
-            let _: () = conn
-                .zrem(EMAIL_PROCESSING_KEY, &job_id_str)
-                .await
-                .context("Failed to remove orphaned job from processing set")?;
-            tracing::warn!("Recovered orphaned email job: {}", job_id_str);
+        // Check which workers are alive (have recent heartbeat)
+        let mut jobs_to_recover = Vec::new();
+        for (worker_id, job_ids) in worker_jobs {
+            let heartbeat_key = format!("email:worker:heartbeat:{}", worker_id);
+            let last_heartbeat: Option<f64> = conn.get(&heartbeat_key).await
+                .context("Failed to get worker heartbeat")?;
+            
+            // Worker is considered dead if:
+            // 1. No heartbeat exists
+            // 2. Heartbeat is older than stale threshold
+            let worker_is_dead = match last_heartbeat {
+                Some(hb) => hb < stale_cutoff,
+                None => true,
+            };
+            
+            if worker_is_dead {
+                jobs_to_recover.extend(job_ids);
+                tracing::warn!("Worker {} appears dead, recovering {} jobs", worker_id, job_ids.len());
+            } else {
+                tracing::debug!("Worker {} is alive, skipping {} jobs", worker_id, job_ids.len());
+            }
+        }
+        
+        if jobs_to_recover.is_empty() {
+            return Ok(0);
+        }
+        
+        tracing::warn!(
+            "Recovering {} orphaned email jobs from dead workers (stale for > {}s)",
+            jobs_to_recover.len(),
+            stale_threshold_secs
+        );
+
+        // Use Lua script to atomically move all orphaned jobs in batch
+        let script = redis::Script::new(
+            r#"
+            local queue_key = KEYS[1]
+            local processing_key = KEYS[2]
+            local now = tonumber(ARGV[1])
+            local job_ids = ARGV
+            
+            local moved = 0
+            for i = 2, #ARGV do
+                local job_id = ARGV[i]
+                -- Find and remove any worker_id:job_id entry
+                local members = redis.call('ZRANGE', processing_key, 0, -1)
+                for _, member in ipairs(members) do
+                    if member:find(':' .. job_id .. '$') or member == job_id then
+                        redis.call('ZREM', processing_key, member)
+                        break
+                    end
+                end
+                redis.call('ZADD', queue_key, now, job_id)
+                moved = moved + 1
+            end
+            
+            return moved
+            "#,
+        );
+
+        // Build arguments: first arg is timestamp, rest are job IDs
+        let mut args = vec![now.to_string()];
+        args.extend(jobs_to_recover);
+
+        let moved: i64 = script
+            .key(EMAIL_QUEUE_KEY)
+            .key(EMAIL_PROCESSING_KEY)
+            .arg(args)
+            .invoke_async(&mut conn)
+            .await
+            .context("Failed to batch recover orphaned jobs")?;
+
+        if moved > 0 {
+            tracing::warn!("Batch recovered {} orphaned email jobs from dead workers", moved);
         }
 
-        Ok(count)
+        Ok(moved as usize)
+    }
+
+    /// Update worker heartbeat timestamp
+    async fn update_worker_heartbeat(&self, worker_id: &str) -> Result<()> {
+        let mut conn = self.cache.get_connection().await?;
+        let now = chrono::Utc::now().timestamp() as f64;
+        let heartbeat_key = format!("email:worker:heartbeat:{}", worker_id);
+        
+        // Set heartbeat with TTL slightly longer than heartbeat interval
+        let _: () = redis::Cmd::set_ex(&heartbeat_key, now.to_string(), 60)
+            .query_async(&mut conn)
+            .await
+            .context("Failed to update worker heartbeat")?;
+        
+        Ok(())
     }
 
     /// Get the number of jobs currently being processed.
@@ -460,13 +599,15 @@ impl EmailQueue {
     ) {
         const WORKER_NAME: &str = "email_queue";
         
+        // Generate unique worker ID
+        let worker_id = Uuid::new_v4().to_string();
+        tracing::info!("Email queue worker started with ID: {}", worker_id);
+        
         // Set worker status to running
         if let Some(ref m) = metrics {
             m.set_worker_status(WORKER_NAME, true);
         }
         
-        tracing::info!("Email queue worker started");
-
         if let Err(e) = self.recover_orphaned_jobs(stale_job_threshold_secs).await {
             tracing::warn!("Failed to recover orphaned jobs: {}", e);
         }
@@ -480,6 +621,10 @@ impl EmailQueue {
                 _ = heartbeat_interval.tick() => {
                     if let Some(ref m) = metrics {
                         m.set_worker_status(WORKER_NAME, true);
+                    }
+                    // Update Redis heartbeat
+                    if let Err(e) = self.update_worker_heartbeat(&worker_id).await {
+                        tracing::warn!("Failed to update worker heartbeat: {}", e);
                     }
                 }
                 else => {}
@@ -496,7 +641,7 @@ impl EmailQueue {
                 tracing::error!("Error processing retries: {}", e);
             }
 
-            match self.dequeue().await {
+            match self.dequeue(&worker_id).await {
                 Ok(Some(job_id)) => {
                     // In-flight job always runs to completion.
                     if let Err(e) = self.process_job(job_id, &service).await {
