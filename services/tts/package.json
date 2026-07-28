@@ -13,7 +13,8 @@
   },
   "jest": {
     "preset": "ts-jest",
-    "testEnvironment": "node"
+    "testEnvironment": "node",
+    "testPathIgnorePatterns": ["/node_modules/", "/dist/"]
   },
   "dependencies": {
     "@google-cloud/text-to-speech": "^6.4.1",
