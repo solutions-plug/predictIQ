@@ -283,6 +283,26 @@ function isRetryable(err: unknown): boolean {
   return true;
 }
 
+/**
+ * Derives the synchronous `generate()` wait timeout from the configured
+ * retry budget (issue #1136): worst case a job burns through
+ * `retry.maxRetries + 1` attempts per provider, each up to `retry.maxDelayMs`
+ * of backoff plus `providerTimeoutMs` for the call itself, and — on failure —
+ * falls over to a second provider that gets its own full budget. Without
+ * this, a hardcoded synchronous timeout smaller than the retry budget can
+ * reject the HTTP caller while `_process(job)` keeps running in the
+ * background and eventually completes with no way for the caller to know.
+ */
+export function deriveSyncWaitTimeoutMs(
+  retry: RetryConfig,
+  providerCount: number,
+  providerTimeoutMs: number
+): number {
+  const attemptsPerProvider = retry.maxRetries + 1;
+  const perProviderBudgetMs = attemptsPerProvider * (retry.maxDelayMs + providerTimeoutMs);
+  return perProviderBudgetMs * Math.max(providerCount, 1);
+}
+
 /** Full-jitter exponential backoff: delay ∈ [0, min(maxDelayMs, 1000 * 2^attempt)]. */
 export async function backoffDelay(attempt: number, maxDelayMs: number): Promise<void> {
   const cap = Math.min(maxDelayMs, 1000 * Math.pow(2, attempt));
@@ -389,6 +409,16 @@ export interface TTSConfig {
   circuitBreaker?: CircuitBreakerConfig;
   /** Retry config for transient provider errors — omit to use defaults */
   retry?: RetryConfig;
+  /**
+   * Timeout in milliseconds for the synchronous `generate()` / POST
+   * /tts/generate wait loop (issue #1136). Omit to derive it from `retry`
+   * and `circuitBreaker.timeoutMs` via `deriveSyncWaitTimeoutMs` so it can
+   * never be smaller than the budget background processing is actually
+   * allowed to use — a hardcoded value here that's shorter than that budget
+   * causes the HTTP caller to time out while `_process(job)` keeps running
+   * and eventually completes with no way for the caller to know.
+   */
+  syncWaitTimeoutMs?: number;
   /**
    * Shared, cross-replica backing (e.g. Redis) for job status, rate
    * limiting, and cache (issue #1133). Omit to keep process-local in-memory
@@ -827,6 +857,17 @@ export class TTSService {
   }
 
   /**
+   * Resolves the synchronous wait timeout: an explicit `config.syncWaitTimeoutMs`
+   * wins, otherwise it's derived from the retry budget (see
+   * `deriveSyncWaitTimeoutMs` and the `syncWaitTimeoutMs` doc comment).
+   */
+  private _syncWaitTimeoutMs(): number {
+    if (this.config.syncWaitTimeoutMs !== undefined) return this.config.syncWaitTimeoutMs;
+    const providerCount = (this.config.elevenlabs ? 1 : 0) + (this.config.google ? 1 : 0);
+    return deriveSyncWaitTimeoutMs(this._retryConfig(), providerCount, this.cbConfig.timeoutMs);
+  }
+
+  /**
    * Returns a snapshot of each provider's circuit breaker state.
    * Exposed in /health/ready so operators can see the breaker state
    * without needing to inspect service logs.
@@ -1006,7 +1047,7 @@ export class TTSService {
     bypassCache?: boolean
   ): Promise<string> {
     const id = await this.enqueueAsync(text, voice, provider, credential, rateLimitKey, bypassCache);
-    return this._waitForJob(id);
+    return this._waitForJob(id, 200, this._syncWaitTimeoutMs());
   }
 
   async generateAndMerge(
@@ -1218,7 +1259,7 @@ export class TTSService {
     }
   }
 
-  private _waitForJob(id: string, intervalMs = 200, timeoutMs = 60_000): Promise<string> {
+  private _waitForJob(id: string, intervalMs: number, timeoutMs: number): Promise<string> {
     return new Promise((resolve, reject) => {
       const start = Date.now();
       const tick = setInterval(() => {
