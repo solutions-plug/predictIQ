@@ -70,6 +70,26 @@ fn safe_char_prefix(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
 
+/// Compute the `actor` identity persisted on the standard (non-auth-failure)
+/// audit entry.
+///
+/// An `Authorization` header is a bearer credential, not a distinguishing
+/// prefix like an API key — it must never be persisted verbatim. This
+/// mirrors the masking already applied on the auth-failure path below.
+fn actor_identity(headers: &HeaderMap) -> String {
+    headers
+        .get("x-api-key")
+        .and_then(|v| v.to_str().ok())
+        .map(|k| format!("api_key:{}", safe_char_prefix(k, 8)))
+        .or_else(|| {
+            headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .map(|_| "token_attempt:****".to_string())
+        })
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 // ── middleware ────────────────────────────────────────────────────────────────
 
 /// Middleware that automatically logs admin operations **and** authentication
@@ -90,17 +110,7 @@ pub async fn audit_logging_middleware(
     next: Next,
 ) -> Response {
     // ── capture request metadata ─────────────────────────────────────────────
-    let actor = headers
-        .get("x-api-key")
-        .and_then(|v| v.to_str().ok())
-        .map(|k| format!("api_key:{}", safe_char_prefix(k, 8)))
-        .or_else(|| {
-            headers
-                .get("authorization")
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string())
-        })
-        .unwrap_or_else(|| "unknown".to_string());
+    let actor = actor_identity(&headers);
 
     let actor_ip = Some(addr.ip());
     let user_agent = headers
@@ -353,6 +363,31 @@ mod tests {
         let crafted = format!("{}{}", "a".repeat(7), "é");
         let result = safe_char_prefix(&crafted, 8);
         assert_eq!(result, crafted);
+    }
+
+    // ── actor_identity ───────────────────────────────────────────────────────
+
+    #[test]
+    fn actor_identity_masks_authorization_header_on_success_path() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "authorization",
+            "Bearer super-secret-admin-token".parse().unwrap(),
+        );
+        assert_eq!(actor_identity(&headers), "token_attempt:****");
+    }
+
+    #[test]
+    fn actor_identity_uses_masked_api_key_prefix() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-api-key", "sk-live-abc123".parse().unwrap());
+        assert_eq!(actor_identity(&headers), "api_key:sk-live-");
+    }
+
+    #[test]
+    fn actor_identity_unknown_when_no_credentials() {
+        let headers = HeaderMap::new();
+        assert_eq!(actor_identity(&headers), "unknown");
     }
 
     // ── AuthFailureReason::as_str ────────────────────────────────────────────
