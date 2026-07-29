@@ -242,13 +242,13 @@ CREATE TABLE IF NOT EXISTS public.audit_log (
     CONSTRAINT audit_log_pkey PRIMARY KEY (id)
 );
 
--- migration 011
+-- migration 011, 021
 CREATE TABLE IF NOT EXISTS public.markets (
     id            bigint           NOT NULL GENERATED ALWAYS AS IDENTITY,
     title         text             NOT NULL,
     status        text             NOT NULL DEFAULT 'active',
     outcome_index integer,
-    total_volume  double precision NOT NULL DEFAULT 0,
+    total_volume  numeric          NOT NULL DEFAULT 0,
     ends_at       timestamptz      NOT NULL,
     created_at    timestamptz      NOT NULL DEFAULT now(),
     resolved_at   timestamptz,

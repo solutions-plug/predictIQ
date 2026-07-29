@@ -78,14 +78,18 @@ pub struct Statistics {
     pub total_markets: i64,
     pub active_markets: i64,
     pub resolved_markets: i64,
-    pub total_volume: f64,
+    /// Exact decimal string (NUMERIC in the DB), matching the on-chain volume
+    /// string convention — avoids float rounding error when summing volumes.
+    pub total_volume: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeaturedMarket {
     pub id: i64,
     pub title: String,
-    pub volume: f64,
+    /// Exact decimal string (NUMERIC in the DB), matching the on-chain volume
+    /// string convention — avoids float rounding error when summing volumes.
+    pub volume: String,
     pub ends_at: DateTime<Utc>,
 }
 
@@ -227,7 +231,7 @@ impl Database {
                         COUNT(*)::BIGINT AS total_markets, \
                         COUNT(*) FILTER (WHERE status = 'active')::BIGINT AS active_markets, \
                         COUNT(*) FILTER (WHERE status = 'resolved')::BIGINT AS resolved_markets, \
-                        COALESCE(SUM(total_volume), 0)::DOUBLE PRECISION AS total_volume \
+                        COALESCE(SUM(total_volume), 0)::NUMERIC::TEXT AS total_volume \
                     FROM markets \
                     WHERE deleted_at IS NULL",
                 )
@@ -237,7 +241,7 @@ impl Database {
                     total_markets: row.try_get::<i64, _>("total_markets")?,
                     active_markets: row.try_get::<i64, _>("active_markets")?,
                     resolved_markets: row.try_get::<i64, _>("resolved_markets")?,
-                    total_volume: row.try_get::<f64, _>("total_volume")?,
+                    total_volume: row.try_get::<String, _>("total_volume")?,
                 })
             })
             .await?;
@@ -259,10 +263,10 @@ impl Database {
             .cache
             .get_or_set_json(&key, ttl, || async move {
                 let rows = self.with_timeout("featured_markets", sqlx::query(
-                    "SELECT id, title, total_volume, ends_at \
+                    "SELECT id, title, total_volume::TEXT AS total_volume, ends_at \
                     FROM markets \
                     WHERE status = 'active' AND deleted_at IS NULL \
-                    ORDER BY total_volume DESC, ends_at ASC \
+                    ORDER BY markets.total_volume DESC, ends_at ASC \
                     LIMIT $1",
                 )
                 .bind(limit)
@@ -273,7 +277,7 @@ impl Database {
                     markets.push(FeaturedMarket {
                         id: row.try_get::<i64, _>("id")?,
                         title: row.try_get::<String, _>("title")?,
-                        volume: row.try_get::<f64, _>("total_volume")?,
+                        volume: row.try_get::<String, _>("total_volume")?,
                         ends_at: row.try_get::<DateTime<Utc>, _>("ends_at")?,
                     });
                 }
@@ -1090,5 +1094,87 @@ mod tests {
     fn from_sqlx_other_maps_to_other() {
         let e = DbError::from(sqlx::Error::RowNotFound);
         assert!(matches!(e, DbError::Other(_)));
+    }
+
+    /// `Statistics.total_volume` and `FeaturedMarket.volume` must serialize as
+    /// exact decimal strings, matching the on-chain volume convention, rather
+    /// than as JSON numbers — which would reintroduce float rounding on the
+    /// client side even if the DB-side aggregation is exact.
+    #[test]
+    fn statistics_and_featured_market_volume_serialise_as_strings() {
+        let stats = Statistics {
+            total_markets: 2,
+            active_markets: 1,
+            resolved_markets: 1,
+            total_volume: "0.3".to_string(),
+        };
+        let stats_json = serde_json::to_value(&stats).unwrap();
+        assert_eq!(stats_json["total_volume"], serde_json::json!("0.3"));
+        assert!(stats_json["total_volume"].is_string());
+
+        let market = FeaturedMarket {
+            id: 1,
+            title: "Test Market".to_string(),
+            volume: "1234.56789".to_string(),
+            ends_at: chrono::Utc::now(),
+        };
+        let market_json = serde_json::to_value(&market).unwrap();
+        assert_eq!(market_json["volume"], serde_json::json!("1234.56789"));
+        assert!(market_json["volume"].is_string());
+    }
+
+    /// Verifies that off-chain volume aggregation preserves exact decimal
+    /// precision when summing fractional market volumes, instead of
+    /// accumulating IEEE-754 rounding error (e.g. 0.1 + 0.2 = 0.30000000000000004
+    /// in f64 arithmetic, but exactly "0.3" via NUMERIC).
+    ///
+    /// Requires PostgreSQL + Redis — exercises the real
+    /// `SUM(total_volume)::NUMERIC::TEXT` aggregation query, which can't be
+    /// verified without a live NUMERIC column.
+    #[tokio::test]
+    #[ignore] // Requires PostgreSQL + Redis
+    async fn test_statistics_total_volume_has_no_rounding_drift() {
+        let db = build_test_db().await;
+
+        // 0.1 + 0.2 is the canonical case where f64 arithmetic produces
+        // 0.30000000000000004 instead of the exact decimal sum, 0.3.
+        sqlx::query(
+            "INSERT INTO markets (title, status, total_volume, ends_at) VALUES \
+             ('rounding-drift-test-a', 'active', 0.1, NOW() + INTERVAL '1 day'), \
+             ('rounding-drift-test-b', 'active', 0.2, NOW() + INTERVAL '1 day')",
+        )
+        .execute(&db.pool())
+        .await
+        .unwrap();
+
+        let sum: String = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(total_volume), 0)::NUMERIC::TEXT FROM markets \
+             WHERE title IN ('rounding-drift-test-a', 'rounding-drift-test-b')",
+        )
+        .fetch_one(&db.pool())
+        .await
+        .unwrap();
+
+        assert_eq!(sum, "0.3", "aggregated volume must be exact, not float-rounded");
+
+        sqlx::query(
+            "DELETE FROM markets WHERE title IN ('rounding-drift-test-a', 'rounding-drift-test-b')",
+        )
+        .execute(&db.pool())
+        .await
+        .unwrap();
+    }
+
+    #[cfg(test)]
+    async fn build_test_db() -> Database {
+        use secrecy::ExposeSecret;
+
+        let config = crate::config::Config::from_env();
+        let metrics = Metrics::new().expect("metrics");
+        let cache = RedisCache::new(&config.redis_url).await.expect("redis");
+        let database_url = config.db_credentials.to_connection_string();
+        Database::new(database_url.expose_secret(), cache, metrics, &config.db_pool)
+            .await
+            .expect("db")
     }
 }

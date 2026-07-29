@@ -22,6 +22,11 @@ const EMAIL_DEAD_LETTER_KEY: &str = "email:dead_letter";
 /// in processing for longer than this are considered orphaned and safe to re-queue.
 const DEFAULT_STALE_JOB_THRESHOLD_SECS: u64 = 3600;  // 1 hour
 
+/// Maximum exponent used when computing exponential backoff for email retries.
+/// Caps the retry delay at 2^20 * 60s (~2 years) and keeps `2_u64.pow(..)` well
+/// within range regardless of how `max_attempts` is configured.
+const MAX_BACKOFF_EXPONENT: i32 = 20;
+
 #[derive(Clone)]
 pub struct EmailQueue {
     cache: RedisCache,
@@ -166,8 +171,8 @@ impl EmailQueue {
             let new_attempts = job.attempts + 1;
 
             if new_attempts < job.max_attempts {
-                // Schedule retry with exponential backoff
-                let backoff_seconds = 2_u64.pow(new_attempts as u32) * 60; // 2min, 4min, 8min...
+                // Schedule retry with exponential backoff.
+                let backoff_seconds = Self::compute_backoff_seconds(new_attempts);
                 let retry_at = chrono::Utc::now() + chrono::Duration::seconds(backoff_seconds as i64);
 
                 self.db
@@ -241,6 +246,18 @@ impl EmailQueue {
         }
 
         Ok(())
+    }
+
+    /// Compute the exponential backoff delay (in seconds) for a retry attempt.
+    ///
+    /// The exponent is capped at [`MAX_BACKOFF_EXPONENT`] so that a large or
+    /// misconfigured `max_attempts` can never push `2_u64.pow(..)` past its
+    /// representable range — uncapped, an exponent beyond ~63 would overflow,
+    /// panicking in debug builds or wrapping to a bogus (possibly past) retry
+    /// time in release builds.
+    fn compute_backoff_seconds(new_attempts: i32) -> u64 {
+        let backoff_exponent = new_attempts.clamp(0, MAX_BACKOFF_EXPONENT);
+        2_u64.pow(backoff_exponent as u32) * 60 // 2min, 4min, 8min... capped
     }
 
     /// Process retry queue - move jobs back to main queue if retry time has passed
@@ -616,6 +633,39 @@ mod tests {
     fn dead_letter_requeue_delay_is_positive() {
         assert!(EmailQueue::DEAD_LETTER_REQUEUE_DELAY_SECS > 0,
             "cooling-off delay must be positive to prevent immediate re-failure loops");
+    }
+
+    /// Backoff computation must never overflow or wrap, regardless of how many
+    /// attempts a (potentially misconfigured) `max_attempts` allows.
+    #[test]
+    fn compute_backoff_seconds_does_not_overflow_for_large_attempts() {
+        // Values well past the ~58 attempts that would overflow 2_u64.pow(..)
+        // uncapped, including i32::MAX to simulate a badly misconfigured max_attempts.
+        for attempts in [58, 59, 60, 100, 1000, i32::MAX] {
+            let backoff = EmailQueue::compute_backoff_seconds(attempts);
+            assert_eq!(
+                backoff,
+                2_u64.pow(MAX_BACKOFF_EXPONENT as u32) * 60,
+                "backoff for {} attempts should be clamped to the max exponent",
+                attempts
+            );
+        }
+    }
+
+    /// Retry scheduling should keep growing monotonically for attempts within
+    /// the cap, then plateau once the cap is reached (never decrease or overflow).
+    #[test]
+    fn compute_backoff_seconds_is_monotonically_increasing_up_to_cap() {
+        let mut previous = EmailQueue::compute_backoff_seconds(0);
+        for attempts in 1..=(MAX_BACKOFF_EXPONENT + 10) {
+            let current = EmailQueue::compute_backoff_seconds(attempts);
+            assert!(
+                current >= previous,
+                "backoff must not decrease as attempts increase (attempts={})",
+                attempts
+            );
+            previous = current;
+        }
     }
 
     /// Test that recover_orphaned_jobs correctly identifies stale jobs.

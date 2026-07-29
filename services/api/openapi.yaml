@@ -881,8 +881,7 @@ components:
         title:
           type: string
         volume:
-          type: number
-          format: double
+          type: string
         ends_at:
           type: string
           format: date-time

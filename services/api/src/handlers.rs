@@ -112,7 +112,8 @@ fn into_api_error(err: anyhow::Error) -> ApiError {
 pub struct FeaturedMarketView {
     pub id: i64,
     pub title: String,
-    pub volume: f64,
+    /// Exact decimal string, matching the on-chain `onchain_volume` convention.
+    pub volume: String,
     pub ends_at: chrono::DateTime<chrono::Utc>,
     pub onchain_volume: String,
     pub resolved_outcome: Option<u32>,
