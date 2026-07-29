@@ -8,6 +8,10 @@
 
 import request from "supertest";
 import app from "../server";
+import { TTSProviderError } from "../TTSService";
+import { providerErrorMessage } from "../server";
+
+const GENERIC_PROVIDER_ERROR = "TTS provider request failed";
 
 describe("security headers", () => {
   it("are present on a successful response (GET /tts/voices)", async () => {
@@ -73,5 +77,21 @@ describe("existing TTS functionality is unaffected by the new middleware", () =>
     const res = await request(app).post("/tts/enqueue").send({ text: "hello" });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/Missing text or voiceId/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue: provider error messages are sanitized (no upstream details leaked)
+// ---------------------------------------------------------------------------
+
+describe("provider error sanitization", () => {
+  it("providerErrorMessage returns a generic message for TTSProviderError", () => {
+    const err = new TTSProviderError("elevenlabs", "Upstream body leaked internal request-id");
+    expect(providerErrorMessage(err)).toBe(GENERIC_PROVIDER_ERROR);
+  });
+
+  it("providerErrorMessage returns the original message for non-provider errors", () => {
+    const err = new Error("Some other error");
+    expect(providerErrorMessage(err)).toBe("Some other error");
   });
 });
