@@ -95,3 +95,54 @@ describe("provider error sanitization", () => {
     expect(providerErrorMessage(err)).toBe("Some other error");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue: provider value is validated in route handlers
+// ---------------------------------------------------------------------------
+
+describe("provider validation", () => {
+  it("POST /tts/enqueue returns 400 for an unrecognized provider", async () => {
+    const res = await request(app)
+      .post("/tts/enqueue")
+      .send({ text: "hello", voiceId: "el-rachel-en", provider: "azure" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Unknown provider/);
+  });
+
+  it("POST /tts/enqueue returns 400 for a misspelled provider", async () => {
+    const res = await request(app)
+      .post("/tts/enqueue")
+      .send({ text: "hello", voiceId: "el-rachel-en", provider: "elevenlabs-pro" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Unknown provider/);
+  });
+
+  it("POST /tts/enqueue continues to work with provider omitted", async () => {
+    const res = await request(app)
+      .post("/tts/enqueue")
+      .send({ text: "hello", voiceId: "el-rachel-en" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("pending");
+  });
+
+  it("POST /tts/generate returns 400 for an unrecognized provider", async () => {
+    const res = await request(app)
+      .post("/tts/generate")
+      .send({ text: "hello", voiceId: "el-rachel-en", provider: "unknown" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Unknown provider/);
+  });
+
+  it("POST /tts/generate continues to work with provider omitted", async () => {
+    const res = await request(app)
+      .post("/tts/generate")
+      .send({ text: "hello", voiceId: "el-rachel-en" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty("outputPath");
+  });
+});
