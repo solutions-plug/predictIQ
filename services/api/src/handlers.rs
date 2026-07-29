@@ -185,16 +185,10 @@ pub async fn health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> i
         health_status["workers"]["email_queue_processing"] = processing_count.into();
     }
 
-    let sendgrid_status = match state.email_service.probe_sendgrid().await {
-        Ok(()) => "ok",
-        Err(e) => {
-            tracing::warn!(error = %e, "SendGrid connectivity probe failed");
-            degraded = true;
-            health_status["status"] = "degraded".into();
-            "degraded"
-        }
-    };
-    health_status["sendgrid"] = serde_json::json!({ "status": sendgrid_status });
+    // Avoid live external probes on the legacy `/health` endpoint to prevent
+    // unauthenticated amplification against third-party APIs (e.g. SendGrid).
+    // The detailed dependency endpoints still perform live checks.
+    health_status["sendgrid"] = serde_json::json!({ "status": "unknown" });
 
     let status_code = if degraded {
         StatusCode::SERVICE_UNAVAILABLE
