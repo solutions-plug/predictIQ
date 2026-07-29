@@ -553,7 +553,7 @@ impl Config {
             trust_proxy: env::var("TRUST_PROXY")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(true),
+                .unwrap_or(false),
             request_signing_secret: env::var("REQUEST_SIGNING_SECRET").ok(),
             sendgrid_webhook_secret: env::var("SENDGRID_WEBHOOK_SECRET").ok(),
             webhook_replay_window_secs: env::var("WEBHOOK_REPLAY_WINDOW_SECS")
