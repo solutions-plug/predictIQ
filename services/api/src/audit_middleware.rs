@@ -62,6 +62,14 @@ fn key_prefix(key: &str) -> String {
     format!("{}****", chars)
 }
 
+/// Char-safe prefix of `s`, taking the first `n` characters.
+///
+/// Unlike a raw byte slice (`&s[..n]`), this never panics when a multi-byte
+/// UTF-8 character straddles the cut point.
+fn safe_char_prefix(s: &str, n: usize) -> String {
+    s.chars().take(n).collect()
+}
+
 // ── middleware ────────────────────────────────────────────────────────────────
 
 /// Middleware that automatically logs admin operations **and** authentication
@@ -85,7 +93,7 @@ pub async fn audit_logging_middleware(
     let actor = headers
         .get("x-api-key")
         .and_then(|v| v.to_str().ok())
-        .map(|k| format!("api_key:{}", &k[..8.min(k.len())]))
+        .map(|k| format!("api_key:{}", safe_char_prefix(k, 8)))
         .or_else(|| {
             headers
                 .get("authorization")
@@ -333,6 +341,18 @@ mod tests {
     #[test]
     fn key_prefix_empty_key() {
         assert_eq!(key_prefix(""), "****");
+    }
+
+    // ── safe_char_prefix ─────────────────────────────────────────────────────
+
+    #[test]
+    fn safe_char_prefix_does_not_panic_on_multibyte_utf8_boundary() {
+        // 7 ASCII bytes followed by a 2-byte UTF-8 character straddle byte
+        // offset 8, which is not a char boundary — a raw `&s[..8]` slice
+        // panics with "byte index 8 is not a char boundary".
+        let crafted = format!("{}{}", "a".repeat(7), "é");
+        let result = safe_char_prefix(&crafted, 8);
+        assert_eq!(result, crafted);
     }
 
     // ── AuthFailureReason::as_str ────────────────────────────────────────────

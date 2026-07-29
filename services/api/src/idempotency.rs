@@ -53,7 +53,7 @@ fn extract_user_identity(req: &Request) -> String {
             req.headers()
                 .get("authorization")
                 .and_then(|v| v.to_str().ok())
-                .map(|s| format!("auth:{}", &s[..32.min(s.len())]))
+                .map(|s| format!("auth:{}", s.chars().take(32).collect::<String>()))
         })
         .unwrap_or_else(|| "anonymous".to_string())
 }
@@ -263,5 +263,20 @@ mod tests {
     fn unknown_key_returns_none() {
         let store = IdempotencyStore::new(Duration::from_secs(60));
         assert!(store.get("user_a", "nonexistent").unwrap().is_none());
+    }
+
+    #[test]
+    fn extract_user_identity_does_not_panic_on_multibyte_utf8_boundary() {
+        // 31 ASCII bytes followed by a 2-byte UTF-8 character straddle byte
+        // offset 32, which is not a char boundary — `&s[..32]` used to panic.
+        let crafted = format!("{}{}", "a".repeat(31), "é");
+        let req = Request::builder()
+            .uri("/")
+            .header("authorization", crafted.as_str())
+            .body(Body::empty())
+            .unwrap();
+
+        let identity = extract_user_identity(&req);
+        assert!(identity.starts_with("auth:"));
     }
 }
