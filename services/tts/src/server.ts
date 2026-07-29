@@ -18,7 +18,7 @@
 
 import express, { Express, Request, Response, NextFunction } from "express";
 import rateLimit from "express-rate-limit";
-import { TTSService, TTSConfig, VOICES, AuthError } from "./TTSService";
+import { TTSService, TTSConfig, VOICES, AuthError, TTSProviderError } from "./TTSService";
 import {
   HealthChecker,
   createHealthCheckHandler,
@@ -224,6 +224,18 @@ app.get("/health/ready", createReadinessHandler(healthChecker));
 app.get("/health/live", createLivenessHandler(healthChecker));
 
 // ---------------------------------------------------------------------------
+// Helper functions
+// ---------------------------------------------------------------------------
+
+/** Return a generic message for provider errors to avoid leaking upstream details. */
+export function providerErrorMessage(error: any): string {
+  if (error instanceof TTSProviderError) {
+    return "TTS provider request failed";
+  }
+  return error.message;
+}
+
+// ---------------------------------------------------------------------------
 // TTS endpoints
 // ---------------------------------------------------------------------------
 
@@ -269,13 +281,13 @@ app.post("/tts/enqueue", async (req: Request, res: Response) => {
     const jobId = await service.enqueueAsync(text, voice, provider, credential, rateLimitKey, bypassCache);
     res.json({ jobId, status: "pending" });
   } catch (error: any) {
-    const statusCode = error.statusCode || 500;
-    res.status(statusCode).json({ error: error.message });
-  }
-});
+     const statusCode = error.statusCode || 500;
+     res.status(statusCode).json({ error: providerErrorMessage(error) });
+   }
+ });
 
 /**
- * GET /tts/job/:id
+  * GET /tts/job/:id
  * Get the status and details of a TTS job.
  *
  * Response:
@@ -378,13 +390,13 @@ app.post("/tts/generate", async (req: Request, res: Response) => {
     );
     res.json({ outputPath });
   } catch (error: any) {
-    const statusCode = error.statusCode || 500;
-    res.status(statusCode).json({ error: error.message });
-  }
-});
+     const statusCode = error.statusCode || 500;
+     res.status(statusCode).json({ error: providerErrorMessage(error) });
+   }
+ });
 
 /**
- * GET /tts/voices
+  * GET /tts/voices
  * List available voices.
  *
  * Response:
