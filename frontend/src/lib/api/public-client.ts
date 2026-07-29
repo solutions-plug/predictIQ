@@ -292,7 +292,7 @@ export const api = {
   health: (signal?: AbortSignal) => request<string>("GET", "/health", { signal }),
 
   getStatistics: (signal?: AbortSignal) =>
-    request<Record<string, unknown>>("GET", "/api/statistics", {
+    request<Record<string, unknown>>("GET", "/api/v1/statistics", {
       cacheTtl: CACHE_TTL.MEDIUM,
       cacheTags: [CacheTag.STATISTICS],
       signal,
@@ -308,39 +308,39 @@ export const api = {
         onchain_volume: string;
         resolved_outcome?: number | null;
       }>
-    >("GET", "/api/markets/featured", {
+    >("GET", "/api/v1/markets/featured", {
       cacheTtl: CACHE_TTL.SHORT,
       cacheTags: [CacheTag.MARKETS],
       signal,
     }),
 
   getContent: (params?: { page?: number; page_size?: number }, signal?: AbortSignal) =>
-    request<Record<string, unknown>>("GET", "/api/content", { params, cacheTtl: CACHE_TTL.MEDIUM, signal }),
+    request<Record<string, unknown>>("GET", "/api/v1/content", { params, cacheTtl: CACHE_TTL.MEDIUM, signal }),
 
   // Blockchain (read-only)
   getBlockchainHealth: (signal?: AbortSignal) =>
-    request<Record<string, unknown>>("GET", "/api/blockchain/health", {
+    request<Record<string, unknown>>("GET", "/api/v1/blockchain/health", {
       cacheTtl: CACHE_TTL.SHORT,
       cacheTags: [CacheTag.BLOCKCHAIN],
       signal,
     }),
 
   getBlockchainMarket: (marketId: number | string, signal?: AbortSignal) =>
-    request<Record<string, unknown>>("GET", `/api/blockchain/markets/${encodeURIComponent(marketId)}`, {
+    request<Record<string, unknown>>("GET", `/api/v1/blockchain/markets/${encodeURIComponent(marketId)}`, {
       cacheTtl: CACHE_TTL.MEDIUM,
       cacheTags: [CacheTag.BLOCKCHAIN, CacheTag.MARKETS],
       signal,
     }),
 
   getBlockchainStats: (signal?: AbortSignal) =>
-    request<Record<string, unknown>>("GET", "/api/blockchain/stats", {
+    request<Record<string, unknown>>("GET", "/api/v1/blockchain/stats", {
       cacheTtl: CACHE_TTL.MEDIUM,
       cacheTags: [CacheTag.BLOCKCHAIN],
       signal,
     }),
 
   getUserBets: (user: string, params?: { page?: number; page_size?: number }, signal?: AbortSignal) =>
-    request<Record<string, unknown>>("GET", `/api/blockchain/users/${encodeURIComponent(user)}/bets`, {
+    request<Record<string, unknown>>("GET", `/api/v1/blockchain/users/${encodeURIComponent(user)}/bets`, {
       params,
       cacheTtl: CACHE_TTL.MEDIUM,
       cacheTags: [CacheTag.BLOCKCHAIN],
@@ -348,14 +348,14 @@ export const api = {
     }),
 
   getOracleResult: (marketId: number | string, signal?: AbortSignal) =>
-    request<Record<string, unknown>>("GET", `/api/blockchain/oracle/${encodeURIComponent(marketId)}`, {
+    request<Record<string, unknown>>("GET", `/api/v1/blockchain/oracle/${encodeURIComponent(marketId)}`, {
       cacheTtl: CACHE_TTL.LONG,
       cacheTags: [CacheTag.BLOCKCHAIN],
       signal,
     }),
 
   getTransactionStatus: (txHash: string, signal?: AbortSignal) =>
-    request<Record<string, unknown>>("GET", `/api/blockchain/tx/${encodeURIComponent(txHash)}`, {
+    request<Record<string, unknown>>("GET", `/api/v1/blockchain/tx/${encodeURIComponent(txHash)}`, {
       cacheTtl: CACHE_TTL.LONG,
       cacheTags: [CacheTag.BLOCKCHAIN],
       signal,

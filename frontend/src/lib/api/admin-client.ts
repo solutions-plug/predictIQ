@@ -288,7 +288,7 @@ export const api = {
 
   // Admin / email
   resolveMarket: (marketId: number | string, signal?: AbortSignal) =>
-    request<{ invalidated_keys: number }>("POST", `/api/markets/${encodeURIComponent(marketId)}/resolve`, {
+    request<{ invalidated_keys: number }>("POST", `/api/v1/markets/${encodeURIComponent(marketId)}/resolve`, {
       cacheTags: [CacheTag.MARKETS, CacheTag.BLOCKCHAIN, CacheTag.STATISTICS],
       signal,
     }),
