@@ -4,7 +4,7 @@
 
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-grpc";
-import { Resource } from "@opentelemetry/resources";
+import { resourceFromAttributes } from "@opentelemetry/resources";
 import { SemanticResourceAttributes } from "@opentelemetry/semantic-conventions";
 import { HttpInstrumentation } from "@opentelemetry/instrumentation-http";
 
@@ -18,14 +18,14 @@ export function initTracing() {
   });
 
   const sdk = new NodeSDK({
-    resource: new Resource({
+    resource: resourceFromAttributes({
       [SemanticResourceAttributes.SERVICE_NAME]: serviceName,
       [SemanticResourceAttributes.SERVICE_VERSION]: "1.0.0",
     }),
     traceExporter,
     instrumentations: [
       new HttpInstrumentation({
-        ignoreIncomingPaths: ["/health"],
+        ignoreIncomingRequestHook: (req) => req.url === "/health",
       }),
     ],
   });
