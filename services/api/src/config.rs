@@ -244,7 +244,7 @@ pub struct DbPoolConfig {
     pub lock_timeout_ms: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Config {
     pub bind_addr: SocketAddr,
     pub redis_url: String,
@@ -626,7 +626,9 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(10_000),
-            is_production: env::var("PREDICTIQ_ENV")
+            // Canonical production flag derived from APP_ENV so a single
+            // environment variable controls all production-only behaviors.
+            is_production: env::var("APP_ENV")
                 .map(|v| v.eq_ignore_ascii_case("production"))
                 .unwrap_or(false),
             app_env: env::var("APP_ENV").unwrap_or_else(|_| "development".to_string()),
