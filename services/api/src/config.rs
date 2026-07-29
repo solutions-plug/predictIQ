@@ -737,6 +737,12 @@ impl Config {
             errors.push("DB_PASSWORD: environment variable is not set or is empty".to_string());
         }
 
+        // Reject well-known placeholder defaults in production to avoid
+        // accidentally starting with guessable credentials (issue #1108).
+        if self.db_credentials.password.expose_secret() == "postgres" && self.is_production {
+            errors.push("DB_PASSWORD: insecure default 'postgres' is not allowed in production".to_string());
+        }
+
         // Validate REDIS_URL
         if self.redis_url.is_empty() {
             errors.push("REDIS_URL: environment variable is not set or is empty".to_string());
