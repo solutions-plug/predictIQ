@@ -388,6 +388,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/newsletter/subscribe", post(handlers::newsletter_subscribe))
         .route("/api/v1/newsletter/confirm", get(handlers::newsletter_confirm))
         .route("/api/v1/newsletter/unsubscribe", get(handlers::newsletter_unsubscribe))
+        .route("/api/v1/newsletter/gdpr/request-token", post(handlers::newsletter_gdpr_request_token))
         .route("/api/v1/newsletter/gdpr/export", post(handlers::newsletter_gdpr_export))
         .route("/api/v1/newsletter/gdpr/delete", axum::routing::delete(handlers::newsletter_gdpr_delete))
         .layer(middleware::from_fn(correlation::correlation_id_middleware))
