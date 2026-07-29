@@ -235,6 +235,17 @@ export function providerErrorMessage(error: any): string {
   return error.message;
 }
 
+const VALID_PROVIDERS = new Set(["elevenlabs", "google"]);
+
+/** Validate that `provider` is a recognized value; return false and respond 400 if not. */
+function validateProvider(provider: any, res: Response): boolean {
+  if (provider !== undefined && !VALID_PROVIDERS.has(provider)) {
+    res.status(400).json({ error: `Unknown provider: ${provider}` });
+    return false;
+  }
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // TTS endpoints
 // ---------------------------------------------------------------------------
@@ -271,11 +282,13 @@ app.post("/tts/enqueue", async (req: Request, res: Response) => {
     }
 
     const voice = VOICES[voiceId];
-    if (!voice) {
-      return res.status(400).json({ error: `Unknown voice: ${voiceId}` });
-    }
+     if (!voice) {
+       return res.status(400).json({ error: `Unknown voice: ${voiceId}` });
+     }
 
-    // enqueueAsync so rate limiting is enforced consistently across
+     if (!validateProvider(provider, res)) return;
+
+     // enqueueAsync so rate limiting is enforced consistently across
     // replicas when REDIS_URL / config.sharedStore is configured (#1133).
     const credential = extractCredential(req);
     const jobId = await service.enqueueAsync(text, voice, provider, credential, rateLimitKey, bypassCache);
@@ -375,11 +388,13 @@ app.post("/tts/generate", async (req: Request, res: Response) => {
     }
 
     const voice = VOICES[voiceId];
-    if (!voice) {
-      return res.status(400).json({ error: `Unknown voice: ${voiceId}` });
-    }
+     if (!voice) {
+       return res.status(400).json({ error: `Unknown voice: ${voiceId}` });
+     }
 
-    const credential = extractCredential(req);
+     if (!validateProvider(provider, res)) return;
+
+     const credential = extractCredential(req);
     const outputPath = await service.generate(
       text,
       voice,
