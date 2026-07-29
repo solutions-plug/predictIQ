@@ -388,6 +388,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/newsletter/subscribe", post(handlers::newsletter_subscribe))
         .route("/api/v1/newsletter/confirm", get(handlers::newsletter_confirm))
         .route("/api/v1/newsletter/unsubscribe", get(handlers::newsletter_unsubscribe))
+        .route("/api/v1/newsletter/gdpr/request-token", post(handlers::newsletter_gdpr_request_token))
         .route("/api/v1/newsletter/gdpr/export", post(handlers::newsletter_gdpr_export))
         .route("/api/v1/newsletter/gdpr/delete", axum::routing::delete(handlers::newsletter_gdpr_delete))
         .layer(middleware::from_fn(correlation::correlation_id_middleware))
@@ -426,10 +427,13 @@ async fn main() -> anyhow::Result<()> {
         .layer(middleware::from_fn(validation::request_size_validation_middleware))
         .layer(middleware::from_fn(security::security_headers_middleware))
         .layer(middleware::from_fn_with_state(
-            security::WebhookConfig {
-                secret: state.config.sendgrid_webhook_secret.clone(),
-                replay_window_secs: state.config.webhook_replay_window_secs,
-            },
+            (
+                security::WebhookConfig {
+                    secret: state.config.sendgrid_webhook_secret.clone(),
+                    replay_window_secs: state.config.webhook_replay_window_secs,
+                },
+                state.clone(),
+            ),
             security::sendgrid_webhook_middleware,
         ))
         .layer(middleware::from_fn(correlation::correlation_id_middleware))

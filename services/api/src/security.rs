@@ -501,14 +501,15 @@ pub async fn metrics_auth_middleware(
 /// Route: `POST /webhooks/sendgrid`
 /// Auth: provider-signed (SendGrid HMAC) — no API key required.
 pub async fn sendgrid_webhook_middleware(
-    State(config): State<WebhookConfig>,
+    State((config, app_state)): State<(WebhookConfig, Arc<crate::AppState>)>,
     headers: HeaderMap,
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    let is_dev = std::env::var("ENVIRONMENT")
-        .map(|e| e == "development")
-        .unwrap_or(false); // default to non-dev so signature verification is enforced
+    // Use the canonical Config-derived production flag instead of reading
+    // ENVIRONMENT directly. This ensures a single source of truth for
+    // production-only safety checks (issue #1106).
+    let is_dev = !app_state.config.is_production();
 
     if config.secret.is_none() && !is_dev {
         return Err(StatusCode::UNAUTHORIZED);

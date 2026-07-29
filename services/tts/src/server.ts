@@ -18,7 +18,7 @@
 
 import express, { Express, Request, Response, NextFunction } from "express";
 import rateLimit from "express-rate-limit";
-import { TTSService, TTSConfig, VOICES, AuthError } from "./TTSService";
+import { TTSService, TTSConfig, VOICES, AuthError, TTSProviderError } from "./TTSService";
 import {
   HealthChecker,
   createHealthCheckHandler,
@@ -224,6 +224,29 @@ app.get("/health/ready", createReadinessHandler(healthChecker));
 app.get("/health/live", createLivenessHandler(healthChecker));
 
 // ---------------------------------------------------------------------------
+// Helper functions
+// ---------------------------------------------------------------------------
+
+/** Return a generic message for provider errors to avoid leaking upstream details. */
+export function providerErrorMessage(error: any): string {
+  if (error instanceof TTSProviderError) {
+    return "TTS provider request failed";
+  }
+  return error.message;
+}
+
+const VALID_PROVIDERS = new Set(["elevenlabs", "google"]);
+
+/** Validate that `provider` is a recognized value; return false and respond 400 if not. */
+function validateProvider(provider: any, res: Response): boolean {
+  if (provider !== undefined && !VALID_PROVIDERS.has(provider)) {
+    res.status(400).json({ error: `Unknown provider: ${provider}` });
+    return false;
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // TTS endpoints
 // ---------------------------------------------------------------------------
 
@@ -259,23 +282,25 @@ app.post("/tts/enqueue", async (req: Request, res: Response) => {
     }
 
     const voice = VOICES[voiceId];
-    if (!voice) {
-      return res.status(400).json({ error: `Unknown voice: ${voiceId}` });
-    }
+     if (!voice) {
+       return res.status(400).json({ error: `Unknown voice: ${voiceId}` });
+     }
 
-    // enqueueAsync so rate limiting is enforced consistently across
+     if (!validateProvider(provider, res)) return;
+
+     // enqueueAsync so rate limiting is enforced consistently across
     // replicas when REDIS_URL / config.sharedStore is configured (#1133).
     const credential = extractCredential(req);
     const jobId = await service.enqueueAsync(text, voice, provider, credential, rateLimitKey, bypassCache);
     res.json({ jobId, status: "pending" });
   } catch (error: any) {
-    const statusCode = error.statusCode || 500;
-    res.status(statusCode).json({ error: error.message });
-  }
-});
+     const statusCode = error.statusCode || 500;
+     res.status(statusCode).json({ error: providerErrorMessage(error) });
+   }
+ });
 
 /**
- * GET /tts/job/:id
+  * GET /tts/job/:id
  * Get the status and details of a TTS job.
  *
  * Response:
@@ -363,11 +388,13 @@ app.post("/tts/generate", async (req: Request, res: Response) => {
     }
 
     const voice = VOICES[voiceId];
-    if (!voice) {
-      return res.status(400).json({ error: `Unknown voice: ${voiceId}` });
-    }
+     if (!voice) {
+       return res.status(400).json({ error: `Unknown voice: ${voiceId}` });
+     }
 
-    const credential = extractCredential(req);
+     if (!validateProvider(provider, res)) return;
+
+     const credential = extractCredential(req);
     const outputPath = await service.generate(
       text,
       voice,
@@ -378,13 +405,13 @@ app.post("/tts/generate", async (req: Request, res: Response) => {
     );
     res.json({ outputPath });
   } catch (error: any) {
-    const statusCode = error.statusCode || 500;
-    res.status(statusCode).json({ error: error.message });
-  }
-});
+     const statusCode = error.statusCode || 500;
+     res.status(statusCode).json({ error: providerErrorMessage(error) });
+   }
+ });
 
 /**
- * GET /tts/voices
+  * GET /tts/voices
  * List available voices.
  *
  * Response:

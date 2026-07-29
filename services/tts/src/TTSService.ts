@@ -16,7 +16,7 @@
 
 import fs from "fs/promises";
 import path from "path";
-import { createHash } from "crypto";
+import { createHash, createHmac, timingSafeEqual } from "crypto";
 import { trace, SpanStatusCode, Span } from "@opentelemetry/api";
 import CircuitBreaker from "opossum";
 import type { SharedStoreConfig } from "./SharedStore";
@@ -433,6 +433,22 @@ export class AuthError extends Error {
 }
 
 /**
+ * Constant-time string comparison to prevent timing side-channel attacks
+ * (CWE-208). Both inputs are padded to equal length before comparison so
+ * that `timingSafeEqual` always receives same-length buffers.
+ */
+function constantTimeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  const len = Math.max(bufA.length, bufB.length);
+  const paddedA = Buffer.alloc(len, 0);
+  const paddedB = Buffer.alloc(len, 0);
+  bufA.copy(paddedA);
+  bufB.copy(paddedB);
+  return timingSafeEqual(paddedA, paddedB);
+}
+
+/**
  * Verify `credential` against `auth` and return a stable tenant identity for it:
  * - API key auth: the key itself is the tenant boundary.
  * - JWT auth: the `sub` claim if present, otherwise the raw credential.
@@ -442,7 +458,18 @@ export function authenticate(credential: string | undefined, auth: AuthConfig): 
   if (!credential) throw new AuthError("Missing credential");
 
   if (auth.type === "apikey") {
-    if (!auth.keys.includes(credential)) throw new AuthError("Invalid API key");
+    let keyValid = 0;
+    const credBuf = Buffer.from(credential);
+    for (const key of auth.keys) {
+      const keyBuf = Buffer.from(key);
+      const len = Math.max(credBuf.length, keyBuf.length);
+      const paddedCred = Buffer.alloc(len, 0);
+      const paddedKey = Buffer.alloc(len, 0);
+      credBuf.copy(paddedCred);
+      keyBuf.copy(paddedKey);
+      keyValid |= timingSafeEqual(paddedCred, paddedKey) ? 1 : 0;
+    }
+    if (keyValid === 0) throw new AuthError("Invalid API key");
     return credential;
   }
 
@@ -450,15 +477,14 @@ export function authenticate(credential: string | undefined, auth: AuthConfig): 
   if (parts.length !== 3) throw new AuthError("Malformed JWT");
 
   const [headerB64, payloadB64, sigB64] = parts;
-  const { createHmac } = require("crypto") as typeof import("crypto");
   const expected = createHmac("sha256", auth.secret)
     .update(`${headerB64}.${payloadB64}`)
     .digest("base64url");
 
-  if (expected !== sigB64) throw new AuthError("Invalid JWT signature");
+  if (!constantTimeEqual(expected, sigB64)) throw new AuthError("Invalid JWT signature");
 
   const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString());
-  if (payload.exp !== undefined && payload.exp < Math.floor(Date.now() / 1000)) {
+  if (payload.exp === undefined || payload.exp < Math.floor(Date.now() / 1000)) {
     throw new AuthError("JWT expired");
   }
 

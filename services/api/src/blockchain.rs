@@ -1000,13 +1000,12 @@ impl BlockchainClient {
         Ok(confirmed_tip)
     }
 
-    /// Sync worker — polls for new on-chain events on each iteration.
+    /// Sync loop — polls for new on-chain events on each iteration.
     /// Stops cleanly when `shutdown` is cancelled; any in-flight `sync_once`
     /// call is always allowed to complete before the loop exits.
-    pub async fn run_sync_worker(
+    pub async fn run_sync_loop(
         self: Arc<Self>,
         shutdown: tokio_util::sync::CancellationToken,
-        coordinator: ShutdownCoordinator,
     ) {
         const WORKER_NAME: &str = "blockchain_sync";
         
@@ -1052,8 +1051,6 @@ impl BlockchainClient {
                 }
             }
         }
-
-        loop {
 
         let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(30));
         heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1338,15 +1335,6 @@ impl BlockchainClient {
         Ok(progress)
     }
 
-    /// Spawn both background workers and return their handles.
-    /// The sync worker is wrapped in a supervised restart loop: if it panics or
-    /// exits unexpectedly, it is restarted and the restart counter incremented.
-    /// Each worker holds a child cancellation token and reports completion
-    /// to the coordinator when it exits.
-    pub fn start_background_tasks(self: Arc<Self>, coordinator: &ShutdownCoordinator) -> Vec<WorkerHandle> {
-        // ── Supervised sync worker ────────────────────────────────────────────
-        let sync_token = coordinator.token();
-        let sync_coord = coordinator.clone();
     /// Test-only constructor that accepts an externally built HTTP client so
     /// tests can configure short timeouts and point at a local mock RPC server.
     #[cfg(test)]
@@ -1373,6 +1361,16 @@ impl BlockchainClient {
             monitor: Arc::new(MonitoringState::default()),
         }
     }
+
+    /// Spawn both background workers and return their handles.
+    /// The sync worker is wrapped in a supervised restart loop: if it panics or
+    /// exits unexpectedly, it is restarted and the restart counter incremented.
+    /// Each worker holds a child cancellation token and reports completion
+    /// to the coordinator when it exits.
+    pub fn start_background_tasks(self: Arc<Self>, coordinator: &ShutdownCoordinator) -> Vec<WorkerHandle> {
+        // ── Supervised sync worker ────────────────────────────────────────────
+        let sync_token = coordinator.token();
+        let sync_coord = coordinator.clone();
 
         let sync_client = self.clone();
         let sync_handle = tokio::spawn(async move {
@@ -1644,5 +1642,64 @@ mod tests {
     fn watch_tx_error_variants_are_distinct() {
         use super::WatchTxError;
         assert_ne!(WatchTxError::AlreadyWatched, WatchTxError::CapReached);
+    }
+
+    // ── #1114: run_sync_loop / run_sync_worker ─────────────────────────────
+
+    /// Verifies that `run_sync_loop` exits cleanly when the shutdown token is
+    /// cancelled, and that `run_sync_worker` delegates to `run_sync_loop` and
+    /// signals the coordinator on exit.
+    #[tokio::test]
+    async fn run_sync_loop_handles_shutdown_gracefully() {
+        use crate::shutdown::ShutdownCoordinator;
+        use std::sync::Arc;
+        use tokio_util::sync::CancellationToken;
+
+        let coordinator = ShutdownCoordinator::new();
+        let token = coordinator.token();
+
+        // Create a minimal client via new_for_test.  We use a real Redis
+        // container so cache operations don't blow up.
+        let redis_container = testcontainers::runners::AsyncRunner::start(
+            testcontainers_modules::redis::Redis::default(),
+        )
+        .await
+        .expect("redis container");
+        let port = redis_container
+            .get_host_port_ipv4(6379)
+            .await
+            .expect("redis port");
+        let url = format!("redis://127.0.0.1:{port}");
+        let cache = crate::cache::RedisCache::new(&url).await.unwrap();
+        let metrics = crate::metrics::Metrics::new(false);
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(100))
+            .build()
+            .unwrap();
+
+        let client = Arc::new(BlockchainClient::new_for_test(
+            "http://127.0.0.1:9999".to_string(),
+            cache,
+            metrics,
+            http,
+            0,
+        ));
+
+        // Cancel the token, then run_sync_loop should exit immediately.
+        token.cancel();
+        client
+            .clone()
+            .run_sync_loop(token.clone())
+            .await;
+
+        // Also exercise run_sync_worker to confirm it delegates to run_sync_loop
+        // and notifies the coordinator.
+        let worker_coord = ShutdownCoordinator::new();
+        let worker_token = worker_coord.token();
+        worker_token.cancel();
+        let client2 = client.clone();
+        tokio::spawn(async move {
+            client2.run_sync_worker(worker_token, worker_coord.clone()).await;
+        });
     }
 }

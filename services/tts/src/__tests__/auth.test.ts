@@ -23,8 +23,9 @@ function makeJwt(payload: object, secret: string): string {
   return `${header}.${body}.${sig}`;
 }
 
-const VALID_JWT = makeJwt({ sub: "user1" }, JWT_SECRET);
+const VALID_JWT = makeJwt({ sub: "user1", exp: Math.floor(Date.now() / 1000) + 3600 }, JWT_SECRET);
 const EXPIRED_JWT = makeJwt({ sub: "user1", exp: Math.floor(Date.now() / 1000) - 60 }, JWT_SECRET);
+const NO_EXP_JWT = makeJwt({ sub: "user1" }, JWT_SECRET);
 
 // ---------------------------------------------------------------------------
 // authenticate() — API key
@@ -68,6 +69,10 @@ describe("authenticate — jwt", () => {
 
   it("throws AuthError for an expired JWT", () => {
     expect(() => authenticate(EXPIRED_JWT, JWT_CONFIG)).toThrow(AuthError);
+  });
+
+  it("throws AuthError for a JWT without an exp claim", () => {
+    expect(() => authenticate(NO_EXP_JWT, JWT_CONFIG)).toThrow(AuthError);
   });
 
   it("throws AuthError for a malformed token", () => {

@@ -186,16 +186,10 @@ pub async fn health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> i
         health_status["workers"]["email_queue_processing"] = processing_count.into();
     }
 
-    let sendgrid_status = match state.email_service.probe_sendgrid().await {
-        Ok(()) => "ok",
-        Err(e) => {
-            tracing::warn!(error = %e, "SendGrid connectivity probe failed");
-            degraded = true;
-            health_status["status"] = "degraded".into();
-            "degraded"
-        }
-    };
-    health_status["sendgrid"] = serde_json::json!({ "status": sendgrid_status });
+    // Avoid live external probes on the legacy `/health` endpoint to prevent
+    // unauthenticated amplification against third-party APIs (e.g. SendGrid).
+    // The detailed dependency endpoints still perform live checks.
+    health_status["sendgrid"] = serde_json::json!({ "status": "unknown" });
 
     let status_code = if degraded {
         StatusCode::SERVICE_UNAVAILABLE
@@ -350,6 +344,13 @@ pub struct NewsletterSubscribeRequest {
 #[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 pub struct NewsletterEmailRequest {
     pub email: String,
+    /// Signed verification token obtained from `/gdpr/request-token`.
+    pub token: String,
+}
+
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
+pub struct NewsletterGdprTokenRequest {
+    pub email: String,
 }
 
 #[derive(Debug, Clone, Deserialize, utoipa::IntoParams)]
@@ -370,6 +371,8 @@ pub struct NewsletterExportQuery {
 #[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 pub struct NewsletterExportBody {
     pub email: String,
+    /// Signed verification token obtained from `/gdpr/request-token`.
+    pub token: String,
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
@@ -392,6 +395,41 @@ fn normalized_email(raw: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Verify a GDPR verification token for `email`.
+///
+/// Returns `Some(response)` when the caller should be short-circuited
+/// (missing signing config, or an invalid/expired/mismatched token) and
+/// `None` when the token checks out and the request may proceed.
+fn check_gdpr_token(state: &AppState, email: &str, token: &str) -> Option<Response> {
+    let Some(secret) = state.config.unsubscribe_signing_secret.as_deref() else {
+        return Some(
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(NewsletterResponse {
+                    success: false,
+                    message: "GDPR verification not configured.".to_string(),
+                }),
+            )
+                .into_response(),
+        );
+    };
+
+    if !crate::newsletter::verify_gdpr_verification_token(token, email, secret) {
+        return Some(
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(NewsletterResponse {
+                    success: false,
+                    message: "Invalid or expired verification token.".to_string(),
+                }),
+            )
+                .into_response(),
+        );
+    }
+
+    None
 }
 
 fn is_disposable_email(email: &str) -> bool {
@@ -641,12 +679,98 @@ pub async fn newsletter_unsubscribe(
 
 #[utoipa::path(
     post,
+    path = "/api/v1/newsletter/gdpr/request-token",
+    tag = "newsletter",
+    request_body = NewsletterGdprTokenRequest,
+    responses(
+        (status = 200, description = "Verification email sent if the address is subscribed", body = NewsletterResponse),
+        (status = 400, description = "Invalid email", body = NewsletterResponse),
+        (status = 429, description = "Rate limited", body = NewsletterResponse),
+    )
+)]
+pub async fn newsletter_gdpr_request_token(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    connect_info: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>,
+    Json(payload): Json<NewsletterGdprTokenRequest>,
+) -> Result<Response, ApiError> {
+    use crate::security::extract_client_ip_cidrs;
+    let ip = extract_client_ip_cidrs(
+        &headers,
+        connect_info.as_ref(),
+        state.config.trust_proxy,
+        &state.config.trusted_proxy_cidrs,
+    );
+    let allowed = state
+        .newsletter_rate_limiter
+        .allow(
+            &format!("gdpr_token:ip:{ip}"),
+            state.config.gdpr_export_rate_limit as usize,
+            std::time::Duration::from_secs(state.config.gdpr_export_rate_window_secs),
+        )
+        .await;
+    if !allowed {
+        return Ok((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(NewsletterResponse {
+                success: false,
+                message: "Too many requests, please try again later.".to_string(),
+            }),
+        )
+            .into_response());
+    }
+
+    let Some(email) = normalized_email(&payload.email) else {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(NewsletterResponse {
+                success: false,
+                message: "Invalid email address.".to_string(),
+            }),
+        )
+            .into_response());
+    };
+
+    // Never disclose whether the address exists: only send an email when a
+    // record is found, but return the same generic response either way.
+    match state.db.newsletter_get_by_email(&email).await {
+        Ok(Some(_)) => {
+            if let Some(secret) = state.config.unsubscribe_signing_secret.as_deref() {
+                let token = crate::newsletter::generate_gdpr_verification_token(&email, secret);
+                if let Err(e) =
+                    crate::newsletter::send_gdpr_verification_email(&state.config, &email, &token)
+                        .await
+                {
+                    tracing::warn!(error = %e, "[newsletter] failed to send GDPR verification email");
+                }
+            } else {
+                tracing::warn!("[newsletter] GDPR verification requested but no signing secret configured");
+            }
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!(error = %e, "[newsletter] gdpr token lookup failed"),
+    }
+
+    Ok((
+        StatusCode::OK,
+        Json(NewsletterResponse {
+            success: true,
+            message: "If this email is subscribed, a verification code has been sent."
+                .to_string(),
+        }),
+    )
+        .into_response())
+}
+
+#[utoipa::path(
+    post,
     path = "/api/v1/newsletter/gdpr/export",
     tag = "newsletter",
     request_body = NewsletterExportBody,
     responses(
         (status = 200, description = "GDPR data export", body = NewsletterExportResponse),
         (status = 400, description = "Invalid email", body = NewsletterResponse),
+        (status = 401, description = "Invalid or expired verification token", body = NewsletterResponse),
         (status = 404, description = "No record found", body = NewsletterResponse),
         (status = 429, description = "Rate limited", body = NewsletterResponse),
     )
@@ -693,6 +817,10 @@ pub async fn newsletter_gdpr_export(
         )
             .into_response());
     };
+
+    if let Some(resp) = check_gdpr_token(&state, &email, &body.token) {
+        return Ok(resp);
+    }
 
     let data = state
         .db
@@ -749,12 +877,13 @@ pub async fn newsletter_gdpr_export(
     responses(
         (status = 200, description = "Data deleted", body = NewsletterResponse),
         (status = 400, description = "Invalid email", body = NewsletterResponse),
+        (status = 401, description = "Invalid or expired verification token", body = NewsletterResponse),
     )
 )]
 pub async fn newsletter_gdpr_delete(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<NewsletterEmailRequest>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<Response, ApiError> {
     let Some(email) = normalized_email(&payload.email) else {
         return Ok((
             StatusCode::BAD_REQUEST,
@@ -762,8 +891,13 @@ pub async fn newsletter_gdpr_delete(
                 success: false,
                 message: "Invalid email address.".to_string(),
             }),
-        ));
+        )
+            .into_response());
     };
+
+    if let Some(resp) = check_gdpr_token(&state, &email, &payload.token) {
+        return Ok(resp);
+    }
 
     let _ = state
         .db
@@ -779,7 +913,8 @@ pub async fn newsletter_gdpr_delete(
             success: true,
             message: "Data deleted.".to_string(),
         }),
-    ))
+    )
+        .into_response())
 }
 
 #[utoipa::path(
@@ -866,7 +1001,8 @@ pub async fn featured_markets(
     let start_idx = cursor
         .as_ref()
         .and_then(|c| c.parse::<usize>().ok())
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .min(payload.len());
     let end_idx = (start_idx + limit as usize).min(payload.len());
     let has_more = end_idx < payload.len();
     let next_cursor = if has_more {
@@ -925,7 +1061,8 @@ pub async fn content(
     let start_idx = cursor
         .as_ref()
         .and_then(|c| c.parse::<usize>().ok())
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .min(payload.len());
     let end_idx = (start_idx + limit as usize).min(payload.len());
     let has_more = end_idx < payload.len();
     let next_cursor = if has_more {
@@ -954,6 +1091,7 @@ pub async fn content(
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct InvalidationResult {
     pub invalidated_keys: usize,
+    pub cache_invalidated: bool,
 }
 
 /// Resolve a market by its ID.
@@ -1001,23 +1139,31 @@ pub async fn resolve_market(
         .map_err(into_api_error)?;
 
     // 2. Invalidate only the keys affected by this market's resolution via tag.
+    // This is best-effort: a cache invalidation failure should not roll back the DB write.
     let tag = InvalidationTag::MarketResolved {
         market_id,
         network: state.config.network_name().to_owned(),
         featured_limit: state.config.featured_limit,
     };
-    let invalidated = state.cache.invalidate_tag(&tag).await.map_err(into_api_error)?;
-
-    state
-        .metrics
-        .observe_invalidation("market_resolve", invalidated);
-
-    tracing::info!(market_id, invalidated, "market resolved and cache invalidated");
+    
+    let (invalidated, cache_invalidated) = match state.cache.invalidate_tag(&tag).await {
+        Ok(count) => {
+            state.metrics.observe_invalidation("market_resolve", count);
+            tracing::info!(market_id, count, "market resolved and cache invalidated");
+            (count, true)
+        }
+        Err(e) => {
+            tracing::warn!(market_id, error = %e, "cache invalidation failed after successful DB write");
+            state.metrics.observe_invalidation("market_resolve", 0);
+            (0, false)
+        }
+    };
 
     Ok((
         StatusCode::OK,
         Json(InvalidationResult {
             invalidated_keys: invalidated,
+            cache_invalidated,
         }),
     ))
 }
