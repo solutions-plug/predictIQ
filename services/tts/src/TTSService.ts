@@ -484,7 +484,7 @@ export function authenticate(credential: string | undefined, auth: AuthConfig): 
   if (!constantTimeEqual(expected, sigB64)) throw new AuthError("Invalid JWT signature");
 
   const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString());
-  if (payload.exp !== undefined && payload.exp < Math.floor(Date.now() / 1000)) {
+  if (payload.exp === undefined || payload.exp < Math.floor(Date.now() / 1000)) {
     throw new AuthError("JWT expired");
   }
 
