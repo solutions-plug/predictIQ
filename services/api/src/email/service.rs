@@ -419,6 +419,14 @@ impl EmailService {
 
     /// Send test email
     pub async fn send_test_email(&self, recipient: &str, template_name: &str) -> Result<String> {
+        // Validate template_name before proceeding
+        if !Self::is_valid_template_name(template_name) {
+            return Err(anyhow::anyhow!(
+                "Invalid template name '{}'. Valid templates are: newsletter_confirmation, waitlist_confirmation, contact_form_auto_response, welcome_email",
+                template_name
+            ));
+        }
+        
         let test_data = self.get_test_data(template_name);
         self.send_email(recipient, template_name, &test_data).await
     }
@@ -445,6 +453,15 @@ impl EmailService {
             }),
             _ => serde_json::json!({}),
         }
+    }
+
+    /// Check if a template name is valid
+    fn is_valid_template_name(template_name: &str) -> bool {
+        matches!(
+            template_name,
+            "newsletter_confirmation" | "waitlist_confirmation" | 
+            "contact_form_auto_response" | "welcome_email"
+        )
     }
 }
 

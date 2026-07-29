@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::ValidateEmail;
 
-use crate::{blockchain::HealthStatus, cache::{keys, InvalidationTag}, db::DbError, email::webhook::sendgrid_webhook_handler, pagination::{PaginatedResponse, PaginationQuery}, AppState};
+use crate::{blockchain::HealthStatus, cache::{keys, InvalidationTag}, db::DbError, email::webhook::sendgrid_webhook_handler, pagination::{PaginatedResponse, PaginationQuery}, body_redact, AppState};
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ApiError {
@@ -520,7 +520,8 @@ pub async fn newsletter_subscribe(
         .get(crate::correlation::REQUEST_ID_HEADER)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("-");
-    tracing::info!(request_id, email = %email, source = %source, ip = %ip, "newsletter subscription attempt");
+    let redacted_email = crate::body_redact::redact_email(&email);
+    tracing::info!(request_id, email = %redacted_email, source = %source, ip = %ip, "newsletter subscription attempt");
 
     Ok((
         StatusCode::ACCEPTED,
@@ -627,7 +628,8 @@ pub async fn newsletter_unsubscribe(
         .await
         .map_err(into_api_error)?;
 
-    tracing::info!("[newsletter] unsubscribed email={email}");
+    let redacted_email = crate::body_redact::redact_email(&email);
+    tracing::info!("[newsletter] unsubscribed email={redacted_email}");
 
     Ok((
         StatusCode::OK,
@@ -770,7 +772,8 @@ pub async fn newsletter_gdpr_delete(
         .await
         .map_err(into_api_error)?;
 
-    tracing::info!("[newsletter] gdpr delete email={email}");
+    let redacted_email = crate::body_redact::redact_email(&email);
+    tracing::info!("[newsletter] gdpr delete email={redacted_email}");
 
     Ok((
         StatusCode::OK,

@@ -268,46 +268,7 @@ pub async fn global_rate_limit_middleware(
     }
 }
 
-/// Redis-backed newsletter route rate limit middleware.
-/// Applied per-IP using the newsletter-specific limits from config.
-pub async fn newsletter_rate_limit_middleware(
-    State(state): State<Arc<crate::AppState>>,
-    headers: HeaderMap,
-    req: axum::extract::Request,
-    next: Next,
-) -> Response {
-    let client_key = client_key_from_headers(&headers);
-    let config = RateLimitConfig {
-        max_requests:   state.config.newsletter_rate_limit_max as u64,
-        window_seconds: state.config.newsletter_rate_limit_window_secs,
-        key_prefix:     "newsletter".to_string(),
-    };
-    let pool = Arc::new(state.cache.redis_pool());
-    match check_rate_limit(&pool, &config, &client_key).await {
-        Ok(_) => next.run(req).await,
-        Err(retry_after) => rate_limit_response(retry_after, &config),
-    }
-}
 
-/// Redis-backed admin route rate limit middleware (60 req/min per IP).
-pub async fn admin_rate_limit_middleware(
-    State(state): State<Arc<crate::AppState>>,
-    headers: HeaderMap,
-    req: axum::extract::Request,
-    next: Next,
-) -> Response {
-    let client_key = client_key_from_headers(&headers);
-    let config = RateLimitConfig {
-        max_requests:   60,
-        window_seconds: 60,
-        key_prefix:     "admin".to_string(),
-    };
-    let pool = Arc::new(state.cache.redis_pool());
-    match check_rate_limit(&pool, &config, &client_key).await {
-        Ok(_) => next.run(req).await,
-        Err(retry_after) => rate_limit_response(retry_after, &config),
-    }
-}
 
 fn rate_limit_response(retry_after: u64, config: &RateLimitConfig) -> Response {
     let body = RateLimitError {

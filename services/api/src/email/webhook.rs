@@ -7,6 +7,7 @@ use std::{sync::Arc, time::Duration};
 use crate::cache::RedisCache;
 use crate::db::Database;
 use crate::email::types::SuppressionType;
+use crate::body_redact;
 
 /// Maximum allowed raw webhook body size: 64 KiB.
 /// Payloads larger than this are rejected before any parsing occurs.
@@ -237,9 +238,10 @@ impl WebhookHandler {
         let email = event.email.as_str();
         let message_id = event.message_id.as_deref();
 
+        let redacted_email = crate::body_redact::redact_email(email);
         tracing::info!(
             event_type,
-            email,
+            email = %redacted_email,
             message_id,
             "Processing SendGrid event"
         );
@@ -260,7 +262,7 @@ impl WebhookHandler {
                 "Replay attack detected (Redis nonce) for event: {} {} {}",
                 message_id.unwrap_or(""),
                 event_type,
-                email
+                redacted_email
             );
             return Ok(());
         }
@@ -271,7 +273,7 @@ impl WebhookHandler {
                 "Duplicate event detected (DB) for event: {} {} {}",
                 message_id.unwrap_or(""),
                 event_type,
-                email
+                redacted_email
             );
             return Ok(());
         }
@@ -349,8 +351,9 @@ impl WebhookHandler {
             .email_increment_analytics_counter("bounced", None)
             .await?;
 
+        let redacted_email = crate::body_redact::redact_email(&event.email);
         tracing::warn!(
-            email = %event.email,
+            email = %redacted_email,
             bounce_type,
             reason,
             "Email bounced"
@@ -375,7 +378,8 @@ impl WebhookHandler {
             .email_increment_analytics_counter("complained", None)
             .await?;
 
-        tracing::warn!(email = %event.email, "Spam complaint received");
+        let redacted_email = crate::body_redact::redact_email(&event.email);
+        tracing::warn!(email = %redacted_email, "Spam complaint received");
 
         Ok(())
     }
@@ -396,7 +400,8 @@ impl WebhookHandler {
             .email_increment_analytics_counter("unsubscribed", None)
             .await?;
 
-        tracing::info!(email = %event.email, "User unsubscribed");
+        let redacted_email = crate::body_redact::redact_email(&event.email);
+        tracing::info!(email = %redacted_email, "User unsubscribed");
 
         Ok(())
     }

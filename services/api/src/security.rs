@@ -13,6 +13,7 @@ use axum::{
 };
 use ipnet::IpNet;
 use serde::Serialize;
+use subtle::ConstantTimeEq;
 
 /// Newtype wrapper so `trust_proxy: bool` can be injected as Axum `State`.
 #[derive(Clone, Copy, Debug)]
@@ -310,7 +311,12 @@ impl ApiKeyAuth {
 
     /// Synchronous check against static env-var keys only.
     pub fn verify(&self, key: &str) -> bool {
-        !self.valid_keys.is_empty() && self.valid_keys.iter().any(|k| k == key)
+        use subtle::ConstantTimeEq;
+        !self.valid_keys.is_empty()
+            && self.valid_keys
+                .iter()
+                .map(|k| k.as_bytes().ct_eq(key.as_bytes()))
+                .any(|eq| eq)
     }
 
     /// Asynchronous check that consults both static keys and the database.
