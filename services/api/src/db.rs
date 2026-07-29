@@ -78,14 +78,18 @@ pub struct Statistics {
     pub total_markets: i64,
     pub active_markets: i64,
     pub resolved_markets: i64,
-    pub total_volume: f64,
+    /// Exact decimal string (NUMERIC in the DB), matching the on-chain volume
+    /// string convention — avoids float rounding error when summing volumes.
+    pub total_volume: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeaturedMarket {
     pub id: i64,
     pub title: String,
-    pub volume: f64,
+    /// Exact decimal string (NUMERIC in the DB), matching the on-chain volume
+    /// string convention — avoids float rounding error when summing volumes.
+    pub volume: String,
     pub ends_at: DateTime<Utc>,
 }
 
@@ -227,7 +231,7 @@ impl Database {
                         COUNT(*)::BIGINT AS total_markets, \
                         COUNT(*) FILTER (WHERE status = 'active')::BIGINT AS active_markets, \
                         COUNT(*) FILTER (WHERE status = 'resolved')::BIGINT AS resolved_markets, \
-                        COALESCE(SUM(total_volume), 0)::DOUBLE PRECISION AS total_volume \
+                        COALESCE(SUM(total_volume), 0)::NUMERIC::TEXT AS total_volume \
                     FROM markets \
                     WHERE deleted_at IS NULL",
                 )
@@ -237,7 +241,7 @@ impl Database {
                     total_markets: row.try_get::<i64, _>("total_markets")?,
                     active_markets: row.try_get::<i64, _>("active_markets")?,
                     resolved_markets: row.try_get::<i64, _>("resolved_markets")?,
-                    total_volume: row.try_get::<f64, _>("total_volume")?,
+                    total_volume: row.try_get::<String, _>("total_volume")?,
                 })
             })
             .await?;
@@ -259,10 +263,10 @@ impl Database {
             .cache
             .get_or_set_json(&key, ttl, || async move {
                 let rows = self.with_timeout("featured_markets", sqlx::query(
-                    "SELECT id, title, total_volume, ends_at \
+                    "SELECT id, title, total_volume::TEXT AS total_volume, ends_at \
                     FROM markets \
                     WHERE status = 'active' AND deleted_at IS NULL \
-                    ORDER BY total_volume DESC, ends_at ASC \
+                    ORDER BY markets.total_volume DESC, ends_at ASC \
                     LIMIT $1",
                 )
                 .bind(limit)
@@ -273,7 +277,7 @@ impl Database {
                     markets.push(FeaturedMarket {
                         id: row.try_get::<i64, _>("id")?,
                         title: row.try_get::<String, _>("title")?,
-                        volume: row.try_get::<f64, _>("total_volume")?,
+                        volume: row.try_get::<String, _>("total_volume")?,
                         ends_at: row.try_get::<DateTime<Utc>, _>("ends_at")?,
                     });
                 }
@@ -659,8 +663,8 @@ impl Database {
         };
 
         let query_str = format!(
-            "INSERT INTO email_analytics (template_name, date, {})
-             VALUES ($1, $2, 1)
+            "INSERT INTO email_analytics (template_name, variant_name, date, {})
+             VALUES ($1, 'default', $2, 1)
              ON CONFLICT (template_name, variant_name, date) DO UPDATE SET
                  {} = email_analytics.{} + 1,
                  updated_at = NOW()",
@@ -817,7 +821,7 @@ impl Database {
         .bind(message_id)
         .bind(event_type)
         .bind(email)
-        .fetch_one(&self.pool)).await.unwrap_or(0);
+        .fetch_one(&self.pool)).await?;
         Ok(count > 0)
     }
 
@@ -1057,6 +1061,35 @@ impl Database {
     }
 }
 
+impl Database {
+    /// Test-only constructor that builds a `Database` backed by a lazy pool.
+    ///
+    /// The pool is created with `connect_lazy` so no actual TCP connection is
+    /// made at construction time — tests that never execute queries can use
+    /// this without a running Postgres instance.  Tests that *do* execute
+    /// queries will receive an error immediately because the pool acquire
+    /// timeout is set to 1 ms and no real database is present.
+    #[cfg(test)]
+    pub(crate) fn new_for_test(cache: RedisCache, metrics: Metrics) -> Self {
+        // connect_lazy accepts any syntactically valid postgres URL and defers
+        // the actual TCP dial until the first query is executed.  Tests that
+        // need a real DB should use `Database::new()` with a live URL instead.
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            // Fail fast on any query attempt so tests that call DB methods get a
+            // quick error rather than hanging until the OS connection timeout.
+            .acquire_timeout(Duration::from_millis(1))
+            .connect_lazy("postgres://test:test@localhost/test")
+            .expect("connect_lazy must not fail with a valid URL");
+        Self {
+            pool,
+            cache,
+            metrics,
+            query_timeout: Duration::from_millis(50),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1090,5 +1123,38 @@ mod tests {
     fn from_sqlx_other_maps_to_other() {
         let e = DbError::from(sqlx::Error::RowNotFound);
         assert!(matches!(e, DbError::Other(_)));
+    }
+
+    // ── #1117: email analytics variant_name ───────────────────────────────
+
+    /// Verifies that the INSERT generated by email_increment_analytics_counter
+    /// includes `variant_name` in both the column list and the VALUES clause so
+    /// that the ON CONFLICT upsert fires correctly (NULL != NULL would silently
+    /// insert duplicates).
+    #[test]
+    fn email_analytics_includes_variant_name_in_sql() {
+        let column = "sent_count";
+        let query = format!(
+            "INSERT INTO email_analytics (template_name, variant_name, date, {})
+             VALUES ($1, 'default', $2, 1)
+             ON CONFLICT (template_name, variant_name, date) DO UPDATE SET
+                 {} = email_analytics.{} + 1,
+                 updated_at = NOW()",
+            column, column, column
+        );
+
+        assert!(
+            query.contains("variant_name"),
+            "query must reference variant_name in columns and VALUES: {query}"
+        );
+        assert!(
+            query.contains("'default'"),
+            "query must use a non-null default for variant_name: {query}"
+        );
+        // Verify the ON CONFLICT clause references variant_name
+        assert!(
+            query.contains("ON CONFLICT (template_name, variant_name, date)"),
+            "ON CONFLICT must include variant_name: {query}"
+        );
     }
 }

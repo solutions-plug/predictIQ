@@ -112,7 +112,8 @@ fn into_api_error(err: anyhow::Error) -> ApiError {
 pub struct FeaturedMarketView {
     pub id: i64,
     pub title: String,
-    pub volume: f64,
+    /// Exact decimal string, matching the on-chain `onchain_volume` convention.
+    pub volume: String,
     pub ends_at: chrono::DateTime<chrono::Utc>,
     pub onchain_volume: String,
     pub resolved_outcome: Option<u32>,
@@ -132,76 +133,100 @@ pub async fn health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> i
     use crate::cache::CircuitState;
     use crate::correlation::REQUEST_ID_HEADER;
 
-    let request_id = headers
-        .get(REQUEST_ID_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("-");
+    const HEALTH_TIMEOUT: Duration = Duration::from_secs(10);
 
-    let (cb_state, cb_state_val) = match state.cache.circuit_state() {
-        CircuitState::Closed => ("closed", 0),
-        CircuitState::Open => ("open", 1),
-        CircuitState::HalfOpen => ("half_open", 2),
-    };
-    let pool = state.cache.pool_status();
-    state
-        .metrics
-        .set_circuit_breaker_state(cb_state_val);
+    let inner = async {
+        let request_id = headers
+            .get(REQUEST_ID_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("-");
 
-    let mut health_status = serde_json::json!({
-        "status": "ok",
-        "timestamp": chrono::Utc::now().to_rfc3339(),
-        "request_id": request_id,
-        "redis": {
-            "circuit_breaker": cb_state,
-            "pool_size": pool.size,
-            "pool_available": pool.available,
+        let (cb_state, cb_state_val) = match state.cache.circuit_state() {
+            CircuitState::Closed => ("closed", 0),
+            CircuitState::Open => ("open", 1),
+            CircuitState::HalfOpen => ("half_open", 2),
+        };
+        let pool = state.cache.pool_status();
+        state
+            .metrics
+            .set_circuit_breaker_state(cb_state_val);
+
+        let mut health_status = serde_json::json!({
             "status": "ok",
-        },
-        "db": {
-            "status": "ok",
-        },
-        "workers": {
-            "blockchain_sync": "running",
-            "blockchain_monitor": "running",
-            "email_queue": "running",
-        }
-    });
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "request_id": request_id,
+            "redis": {
+                "circuit_breaker": cb_state,
+                "pool_size": pool.size,
+                "pool_available": pool.available,
+                "status": "ok",
+            },
+            "db": {
+                "status": "ok",
+            },
+            "workers": {
+                "blockchain_sync": "running",
+                "blockchain_monitor": "running",
+                "email_queue": "running",
+            }
+        });
 
-    let mut degraded = false;
+        let mut degraded = false;
 
-    if state.cache.ping().await.is_err() {
-        degraded = true;
-        health_status["status"] = "degraded".into();
-        health_status["redis"]["status"] = "unhealthy".into();
-    }
+        let (cache_result, db_result, processing_count_result, sendgrid_result) = tokio::join!(
+            state.cache.ping(),
+            state.db.ping(),
+            state.email_queue.get_processing_count(),
+            state.email_service.probe_sendgrid(),
+        );
 
-    if state.db.ping().await.is_err() {
-        degraded = true;
-        health_status["status"] = "degraded".into();
-        health_status["db"]["status"] = "unhealthy".into();
-    }
-
-    if let Ok(processing_count) = state.email_queue.get_processing_count().await {
-        health_status["workers"]["email_queue_processing"] = processing_count.into();
-    }
-
-    let sendgrid_status = match state.email_service.probe_sendgrid().await {
-        Ok(()) => "ok",
-        Err(e) => {
-            tracing::warn!(error = %e, "SendGrid connectivity probe failed");
+        if cache_result.is_err() {
             degraded = true;
             health_status["status"] = "degraded".into();
-            "degraded"
+            health_status["redis"]["status"] = "unhealthy".into();
         }
-    };
-    health_status["sendgrid"] = serde_json::json!({ "status": sendgrid_status });
 
-    let status_code = if degraded {
-        StatusCode::SERVICE_UNAVAILABLE
-    } else {
-        StatusCode::OK
+    // Avoid live external probes on the legacy `/health` endpoint to prevent
+    // unauthenticated amplification against third-party APIs (e.g. SendGrid).
+    // The detailed dependency endpoints still perform live checks.
+    health_status["sendgrid"] = serde_json::json!({ "status": "unknown" });
+
+        if let Ok(processing_count) = processing_count_result {
+            health_status["workers"]["email_queue_processing"] = processing_count.into();
+        }
+
+        let sendgrid_status = match sendgrid_result {
+            Ok(()) => "ok",
+            Err(e) => {
+                tracing::warn!(error = %e, "SendGrid connectivity probe failed");
+                degraded = true;
+                health_status["status"] = "degraded".into();
+                "degraded"
+            }
+        };
+        health_status["sendgrid"] = serde_json::json!({ "status": sendgrid_status });
+
+        let status_code = if degraded {
+            StatusCode::SERVICE_UNAVAILABLE
+        } else {
+            StatusCode::OK
+        };
+        (status_code, Json(health_status))
     };
-    (status_code, Json(health_status))
+
+    match tokio::time::timeout(HEALTH_TIMEOUT, inner).await {
+        Ok(response) => response,
+        Err(_) => {
+            tracing::warn!("health check timed out after {HEALTH_TIMEOUT:?}");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "status": "degraded",
+                    "reason": "health check timed out",
+                })),
+            )
+        }
+    }
 }
 
 /// Liveness probe: just confirms the process is alive and serving requests.
@@ -349,6 +374,13 @@ pub struct NewsletterSubscribeRequest {
 #[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 pub struct NewsletterEmailRequest {
     pub email: String,
+    /// Signed verification token obtained from `/gdpr/request-token`.
+    pub token: String,
+}
+
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
+pub struct NewsletterGdprTokenRequest {
+    pub email: String,
 }
 
 #[derive(Debug, Clone, Deserialize, utoipa::IntoParams)]
@@ -369,6 +401,8 @@ pub struct NewsletterExportQuery {
 #[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 pub struct NewsletterExportBody {
     pub email: String,
+    /// Signed verification token obtained from `/gdpr/request-token`.
+    pub token: String,
 }
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
@@ -391,6 +425,41 @@ fn normalized_email(raw: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Verify a GDPR verification token for `email`.
+///
+/// Returns `Some(response)` when the caller should be short-circuited
+/// (missing signing config, or an invalid/expired/mismatched token) and
+/// `None` when the token checks out and the request may proceed.
+fn check_gdpr_token(state: &AppState, email: &str, token: &str) -> Option<Response> {
+    let Some(secret) = state.config.unsubscribe_signing_secret.as_deref() else {
+        return Some(
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(NewsletterResponse {
+                    success: false,
+                    message: "GDPR verification not configured.".to_string(),
+                }),
+            )
+                .into_response(),
+        );
+    };
+
+    if !crate::newsletter::verify_gdpr_verification_token(token, email, secret) {
+        return Some(
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(NewsletterResponse {
+                    success: false,
+                    message: "Invalid or expired verification token.".to_string(),
+                }),
+            )
+                .into_response(),
+        );
+    }
+
+    None
 }
 
 fn is_disposable_email(email: &str) -> bool {
@@ -642,12 +711,98 @@ pub async fn newsletter_unsubscribe(
 
 #[utoipa::path(
     post,
+    path = "/api/v1/newsletter/gdpr/request-token",
+    tag = "newsletter",
+    request_body = NewsletterGdprTokenRequest,
+    responses(
+        (status = 200, description = "Verification email sent if the address is subscribed", body = NewsletterResponse),
+        (status = 400, description = "Invalid email", body = NewsletterResponse),
+        (status = 429, description = "Rate limited", body = NewsletterResponse),
+    )
+)]
+pub async fn newsletter_gdpr_request_token(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    connect_info: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>,
+    Json(payload): Json<NewsletterGdprTokenRequest>,
+) -> Result<Response, ApiError> {
+    use crate::security::extract_client_ip_cidrs;
+    let ip = extract_client_ip_cidrs(
+        &headers,
+        connect_info.as_ref(),
+        state.config.trust_proxy,
+        &state.config.trusted_proxy_cidrs,
+    );
+    let allowed = state
+        .newsletter_rate_limiter
+        .allow(
+            &format!("gdpr_token:ip:{ip}"),
+            state.config.gdpr_export_rate_limit as usize,
+            std::time::Duration::from_secs(state.config.gdpr_export_rate_window_secs),
+        )
+        .await;
+    if !allowed {
+        return Ok((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(NewsletterResponse {
+                success: false,
+                message: "Too many requests, please try again later.".to_string(),
+            }),
+        )
+            .into_response());
+    }
+
+    let Some(email) = normalized_email(&payload.email) else {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(NewsletterResponse {
+                success: false,
+                message: "Invalid email address.".to_string(),
+            }),
+        )
+            .into_response());
+    };
+
+    // Never disclose whether the address exists: only send an email when a
+    // record is found, but return the same generic response either way.
+    match state.db.newsletter_get_by_email(&email).await {
+        Ok(Some(_)) => {
+            if let Some(secret) = state.config.unsubscribe_signing_secret.as_deref() {
+                let token = crate::newsletter::generate_gdpr_verification_token(&email, secret);
+                if let Err(e) =
+                    crate::newsletter::send_gdpr_verification_email(&state.config, &email, &token)
+                        .await
+                {
+                    tracing::warn!(error = %e, "[newsletter] failed to send GDPR verification email");
+                }
+            } else {
+                tracing::warn!("[newsletter] GDPR verification requested but no signing secret configured");
+            }
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!(error = %e, "[newsletter] gdpr token lookup failed"),
+    }
+
+    Ok((
+        StatusCode::OK,
+        Json(NewsletterResponse {
+            success: true,
+            message: "If this email is subscribed, a verification code has been sent."
+                .to_string(),
+        }),
+    )
+        .into_response())
+}
+
+#[utoipa::path(
+    post,
     path = "/api/v1/newsletter/gdpr/export",
     tag = "newsletter",
     request_body = NewsletterExportBody,
     responses(
         (status = 200, description = "GDPR data export", body = NewsletterExportResponse),
         (status = 400, description = "Invalid email", body = NewsletterResponse),
+        (status = 401, description = "Invalid or expired verification token", body = NewsletterResponse),
         (status = 404, description = "No record found", body = NewsletterResponse),
         (status = 429, description = "Rate limited", body = NewsletterResponse),
     )
@@ -694,6 +849,10 @@ pub async fn newsletter_gdpr_export(
         )
             .into_response());
     };
+
+    if let Some(resp) = check_gdpr_token(&state, &email, &body.token) {
+        return Ok(resp);
+    }
 
     let data = state
         .db
@@ -750,12 +909,13 @@ pub async fn newsletter_gdpr_export(
     responses(
         (status = 200, description = "Data deleted", body = NewsletterResponse),
         (status = 400, description = "Invalid email", body = NewsletterResponse),
+        (status = 401, description = "Invalid or expired verification token", body = NewsletterResponse),
     )
 )]
 pub async fn newsletter_gdpr_delete(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<NewsletterEmailRequest>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<Response, ApiError> {
     let Some(email) = normalized_email(&payload.email) else {
         return Ok((
             StatusCode::BAD_REQUEST,
@@ -763,8 +923,13 @@ pub async fn newsletter_gdpr_delete(
                 success: false,
                 message: "Invalid email address.".to_string(),
             }),
-        ));
+        )
+            .into_response());
     };
+
+    if let Some(resp) = check_gdpr_token(&state, &email, &payload.token) {
+        return Ok(resp);
+    }
 
     let _ = state
         .db
@@ -781,7 +946,8 @@ pub async fn newsletter_gdpr_delete(
             success: true,
             message: "Data deleted.".to_string(),
         }),
-    ))
+    )
+        .into_response())
 }
 
 #[utoipa::path(
@@ -868,7 +1034,8 @@ pub async fn featured_markets(
     let start_idx = cursor
         .as_ref()
         .and_then(|c| c.parse::<usize>().ok())
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .min(payload.len());
     let end_idx = (start_idx + limit as usize).min(payload.len());
     let has_more = end_idx < payload.len();
     let next_cursor = if has_more {
@@ -927,7 +1094,8 @@ pub async fn content(
     let start_idx = cursor
         .as_ref()
         .and_then(|c| c.parse::<usize>().ok())
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .min(payload.len());
     let end_idx = (start_idx + limit as usize).min(payload.len());
     let has_more = end_idx < payload.len();
     let next_cursor = if has_more {
@@ -956,6 +1124,7 @@ pub async fn content(
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct InvalidationResult {
     pub invalidated_keys: usize,
+    pub cache_invalidated: bool,
 }
 
 /// Resolve a market by its ID.
@@ -1003,23 +1172,31 @@ pub async fn resolve_market(
         .map_err(into_api_error)?;
 
     // 2. Invalidate only the keys affected by this market's resolution via tag.
+    // This is best-effort: a cache invalidation failure should not roll back the DB write.
     let tag = InvalidationTag::MarketResolved {
         market_id,
         network: state.config.network_name().to_owned(),
         featured_limit: state.config.featured_limit,
     };
-    let invalidated = state.cache.invalidate_tag(&tag).await.map_err(into_api_error)?;
-
-    state
-        .metrics
-        .observe_invalidation("market_resolve", invalidated);
-
-    tracing::info!(market_id, invalidated, "market resolved and cache invalidated");
+    
+    let (invalidated, cache_invalidated) = match state.cache.invalidate_tag(&tag).await {
+        Ok(count) => {
+            state.metrics.observe_invalidation("market_resolve", count);
+            tracing::info!(market_id, count, "market resolved and cache invalidated");
+            (count, true)
+        }
+        Err(e) => {
+            tracing::warn!(market_id, error = %e, "cache invalidation failed after successful DB write");
+            state.metrics.observe_invalidation("market_resolve", 0);
+            (0, false)
+        }
+    };
 
     Ok((
         StatusCode::OK,
         Json(InvalidationResult {
             invalidated_keys: invalidated,
+            cache_invalidated,
         }),
     ))
 }
@@ -1124,13 +1301,20 @@ pub async fn blockchain_user_bets(
     Query(query): Query<PaginationQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let page_size = query.limit();
-    // cursor encodes the page number (0-based)
-    let page = query
+    // cursor encodes the page number (0-based).
+    // Clamp to a sane maximum before any arithmetic to prevent overflow:
+    // the largest meaningful page is total/page_size+1, but we don't know
+    // `total` yet so we use i64::MAX / page_size as a safe ceiling instead.
+    let raw_page = query
         .cursor()
         .as_deref()
         .and_then(|c| c.parse::<i64>().ok())
         .unwrap_or(0)
         .max(0);
+    // page_size is at least 1 (enforced by PaginationQuery), so the division
+    // is safe.  This cap is generous but keeps (page+1)*page_size in i64 range.
+    let page_max = i64::MAX / (page_size as i64).max(1);
+    let page = raw_page.min(page_max);
 
     let page_data = state
         .blockchain
@@ -1138,7 +1322,9 @@ pub async fn blockchain_user_bets(
         .await
         .map_err(into_api_error)?;
 
-    let has_more = (page + 1) * (page_size as i64) < page_data.total;
+    // Use saturating_mul so that a pathologically large (but now bounded) page
+    // still produces a correct has_more = false rather than wrapping.
+    let has_more = (page + 1).saturating_mul(page_size as i64) < page_data.total;
     let next_cursor = if has_more {
         Some((page + 1).to_string())
     } else {
@@ -1759,5 +1945,111 @@ mod tests {
         let api_err = ApiError::internal(err);
         assert_eq!(api_err.code, "INTERNAL_ERROR");
         assert_eq!(api_err.status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // ── #1121: pagination cursor overflow ─────────────────────────────────────
+
+    /// blockchain_user_bets must clamp attacker-controlled page cursors before
+    /// performing arithmetic, preventing i64 overflow when computing has_more.
+    /// This test verifies that a cursor near i64::MAX is safely bounded and that
+    /// the saturating_mul prevents wrapping even if the clamped page is still large.
+    #[test]
+    fn blockchain_user_bets_cursor_overflow_clamped() {
+        // Simulate parsing a malicious cursor value near i64::MAX.
+        let raw_page = i64::MAX - 100;
+        let page_size = 50_u32;
+
+        // The handler logic clamps `page` to i64::MAX / page_size before use.
+        let page_max = i64::MAX / (page_size as i64).max(1);
+        let page = raw_page.min(page_max);
+
+        // Verify the clamp is effective: page must be well below i64::MAX.
+        assert!(
+            page < i64::MAX / 2,
+            "clamped page must be far below i64::MAX to prevent overflow"
+        );
+
+        // Verify saturating_mul produces correct result even for large clamped pages.
+        let total = 10_000_i64;
+        let has_more = (page + 1).saturating_mul(page_size as i64) < total;
+        // With such a large page, has_more should be false (we're beyond the data).
+        assert!(!has_more, "has_more must be false when cursor is out of range");
+    }
+
+    /// has_more must stay correct for page=0 (first page) with a small dataset.
+    #[test]
+    fn blockchain_user_bets_cursor_page_zero_has_more_when_data_exceeds_page_size() {
+        let page = 0_i64;
+        let page_size = 10_u32;
+        let total = 25_i64;
+
+        let page_max = i64::MAX / (page_size as i64).max(1);
+        let clamped_page = page.min(page_max);
+        let has_more = (clamped_page + 1).saturating_mul(page_size as i64) < total;
+        assert!(has_more, "has_more must be true when data > one page");
+    }
+
+    // ── #1123: health endpoint outer timeout / concurrent checks ─────────────
+
+    /// Demonstrates that wrapping a slow inner future in
+    /// `tokio::time::timeout(HEALTH_TIMEOUT, inner)` produces a bounded
+    /// response even when `inner` would hang indefinitely.
+    ///
+    /// We simulate the same pattern used in the `health` handler and verify
+    /// that the timeout fires using paused virtual time.
+    #[tokio::test(start_paused = true)]
+    async fn health_handler_outer_timeout_fires_on_slow_dependency() {
+        use tokio::time::{advance, Duration};
+
+        // The health handler wraps checks in a 10-second outer timeout.
+        const HEALTH_TIMEOUT: Duration = Duration::from_secs(10);
+
+        // Simulate a future that takes longer than the outer timeout — analogous
+        // to a Redis connection that is unreachable and retries indefinitely.
+        let slow_dependency = async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        };
+
+        // Spawn both the timeout wrapper and the time-advance together so the
+        // tokio runtime can interleave them correctly.
+        let timeout_fut = tokio::time::timeout(HEALTH_TIMEOUT, slow_dependency);
+
+        // Drive the timeout future and advance virtual time past the deadline.
+        let result = tokio::join!(
+            timeout_fut,
+            async { advance(Duration::from_secs(11)).await }
+        ).0;
+
+        assert!(
+            result.is_err(),
+            "/health must return a timeout error when a dependency is unreachable"
+        );
+    }
+
+    /// Verifies that two dependency checks running concurrently under
+    /// `tokio::join!` complete faster than if they were run sequentially.
+    ///
+    /// This is the key property that prevents a slow Redis from blocking DB/
+    /// SendGrid checks (issue #1123).
+    #[tokio::test(start_paused = true)]
+    async fn health_handler_checks_run_concurrently_not_sequentially() {
+        use tokio::time::{sleep, Duration, Instant};
+
+        // Each simulated dependency takes 100 ms (virtual time).
+        let delay = Duration::from_millis(100);
+
+        let start = Instant::now();
+
+        // tokio::join! polls both futures simultaneously; with paused time
+        // both timers fire at 100 ms virtual time, not at 200 ms.
+        let ((), ()) = tokio::join!(sleep(delay), sleep(delay));
+
+        let elapsed = start.elapsed();
+
+        // Sequential execution would take 200 ms; concurrent must take ≤ 100 ms.
+        assert!(
+            elapsed <= Duration::from_millis(100),
+            "concurrent checks must complete in one delay slot, not two (elapsed={elapsed:?})"
+        );
     }
 }

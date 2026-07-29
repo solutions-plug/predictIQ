@@ -15,7 +15,7 @@ describe('LandingPage success-message live-region', () => {
     });
     jest
       .spyOn(api, 'getStatistics')
-      .mockResolvedValue({ totalMarkets: 1, totalVolume: 1, activeUsers: 1 });
+      .mockResolvedValue({ total_markets: 1, total_volume: 1, active_markets: 1 });
   });
 
   afterEach(() => {

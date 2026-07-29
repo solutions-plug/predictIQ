@@ -1,12 +1,12 @@
 import React from 'react';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import LandingPage from '../LandingPage';
 import { api } from '../../lib/api/public-client';
 
 const originalFetch = global.fetch;
 
-describe('LandingPage handleKeyDown', () => {
+describe('LandingPage Enter-to-submit', () => {
   beforeEach(() => {
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
@@ -14,7 +14,7 @@ describe('LandingPage handleKeyDown', () => {
     });
     jest
       .spyOn(api, 'getStatistics')
-      .mockResolvedValue({ totalMarkets: 1, totalVolume: 1, activeUsers: 1 });
+      .mockResolvedValue({ total_markets: 1, total_volume: 1, active_markets: 1 });
   });
 
   afterEach(() => {
@@ -22,39 +22,33 @@ describe('LandingPage handleKeyDown', () => {
     jest.restoreAllMocks();
   });
 
-  it('submits the form when Enter is pressed on the form with a valid email', async () => {
+  // Regression test for a double-submit bug: an explicit onKeyDown handler
+  // called requestSubmit() on Enter without calling preventDefault(), so in
+  // a real browser the native implicit-submit-on-Enter behavior for a
+  // single-input form fired *as well*, submitting twice. fireEvent.keyDown
+  // does not exercise that native browser behavior (jsdom only triggers
+  // implicit submission from a real keypress sequence), so this uses
+  // userEvent to type into the field and press Enter as a genuine keypress.
+  it('submits the newsletter form exactly once when Enter is pressed in the email field', async () => {
     render(<LandingPage />);
     const emailInput = screen.getByLabelText(/email address/i);
-    await userEvent.type(emailInput, 'test@example.com');
 
-    const form = emailInput.closest('form')!;
-    fireEvent.keyDown(form, { key: 'Enter', code: 'Enter' });
+    await userEvent.type(emailInput, 'test@example.com{Enter}');
 
-    expect(
-      await screen.findByRole('button', { name: /subscribed/i }),
-    ).toBeInTheDocument();
+    await screen.findByRole('button', { name: /subscribed/i });
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
-  it('triggers validation when Enter is pressed on the form with empty email', () => {
+  it('triggers validation when Enter is pressed with an empty email, without calling the API', async () => {
     render(<LandingPage />);
-    const form = screen.getByLabelText(/email address/i).closest('form')!;
+    const emailInput = screen.getByLabelText(/email address/i);
+    emailInput.focus();
 
-    fireEvent.keyDown(form, { key: 'Enter', code: 'Enter' });
+    await userEvent.keyboard('{Enter}');
 
     expect(screen.getByRole('alert')).toHaveTextContent(/email is required/i);
-  });
-
-  it('does not trigger submission for non-Enter keys', async () => {
-    render(<LandingPage />);
-    const emailInput = screen.getByLabelText(/email address/i);
-    await userEvent.type(emailInput, 'test@example.com');
-
-    const form = emailInput.closest('form')!;
-    fireEvent.keyDown(form, { key: 'a', code: 'KeyA' });
-
-    expect(
-      screen.queryByRole('button', { name: /subscribed/i }),
-    ).not.toBeInTheDocument();
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it('keeps keyboard focus on the submit button through loading and success, instead of silently dropping it', async () => {
@@ -75,5 +69,6 @@ describe('LandingPage handleKeyDown', () => {
 
     await screen.findByRole('button', { name: /subscribed/i });
     expect(submitButton).toHaveFocus();
+    expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 });

@@ -2,8 +2,9 @@ use utoipa::OpenApi;
 
 use crate::handlers::{
     ApiError, AuditLogsQuery, AuditStatisticsQuery, EmailAnalyticsQuery, EmailTestRequest,
-    FeaturedMarketView, InvalidationResult, NewsletterEmailRequest, NewsletterExportResponse,
-    NewsletterResponse, NewsletterSubscribeRequest, ResolveMarketRequest,
+    FeaturedMarketView, InvalidationResult, NewsletterEmailRequest, NewsletterExportBody,
+    NewsletterExportResponse, NewsletterGdprTokenRequest, NewsletterResponse,
+    NewsletterSubscribeRequest, ResolveMarketRequest,
     NewsletterConfirmQuery, NewsletterUnsubscribeQuery, NewsletterExportQuery,
 };
 use crate::pagination::PaginationQuery;
@@ -27,6 +28,7 @@ use crate::pagination::PaginationQuery;
         crate::handlers::newsletter_subscribe,
         crate::handlers::newsletter_confirm,
         crate::handlers::newsletter_unsubscribe,
+        crate::handlers::newsletter_gdpr_request_token,
         crate::handlers::newsletter_gdpr_export,
         crate::handlers::newsletter_gdpr_delete,
         crate::handlers::statistics,
@@ -57,6 +59,8 @@ use crate::pagination::PaginationQuery;
             InvalidationResult,
             NewsletterSubscribeRequest,
             NewsletterEmailRequest,
+            NewsletterGdprTokenRequest,
+            NewsletterExportBody,
             NewsletterResponse,
             NewsletterExportResponse,
             ResolveMarketRequest,

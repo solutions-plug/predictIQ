@@ -7,7 +7,7 @@ describe('LandingPage data-driven sections', () => {
   beforeEach(() => {
     jest
       .spyOn(api, 'getStatistics')
-      .mockResolvedValue({ totalMarkets: 128, totalVolume: 45000, activeUsers: 512 });
+      .mockResolvedValue({ total_markets: 128, total_volume: 45000, active_markets: 512 });
   });
 
   afterEach(() => {

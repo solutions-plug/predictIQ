@@ -1,0 +1,3 @@
+ALTER TABLE markets
+    ALTER COLUMN total_volume TYPE DOUBLE PRECISION USING total_volume::DOUBLE PRECISION,
+    ALTER COLUMN total_volume SET DEFAULT 0;

@@ -123,6 +123,24 @@ mod tests {
     // -------------------------------------------------------------------------
 
     #[test]
+    fn trust_proxy_defaults_to_false_in_from_env() {
+        // Preserve existing env and restore after the test to avoid flakiness
+        let orig_trust = std::env::var("TRUST_PROXY").ok();
+        let orig_trusted = std::env::var("TRUSTED_PROXY_CIDRS").ok();
+        // Ensure variables are not set to simulate fresh deployment
+        std::env::remove_var("TRUST_PROXY");
+        std::env::remove_var("TRUSTED_PROXY_CIDRS");
+
+        let cfg = predictiq_api::config::Config::from_env();
+        assert_eq!(cfg.trust_proxy, false, "TRUST_PROXY must default to false");
+        assert!(cfg.trusted_proxy_cidrs.is_empty(), "TRUSTED_PROXY_CIDRS must default to empty");
+
+        // Restore original environment
+        if let Some(v) = orig_trust { std::env::set_var("TRUST_PROXY", v); }
+        if let Some(v) = orig_trusted { std::env::set_var("TRUSTED_PROXY_CIDRS", v); }
+    }
+
+    #[test]
     fn trust_proxy_disabled_xff_is_ignored() {
         use axum::extract::ConnectInfo;
         use axum::http::HeaderMap;

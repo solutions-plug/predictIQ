@@ -58,12 +58,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLFormElement>) => {
-    if (e.key === 'Enter') {
-      e.currentTarget.requestSubmit();
-    }
-  };
-
   const features = [
     { icon: '/icons/decentralized.svg', title: t('features.decentralized.title'), description: t('features.decentralized.description') },
     { icon: '/icons/secure.svg', title: t('features.secure.title'), description: t('features.secure.description') },
@@ -166,9 +160,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
           </p>
           
           {/* CTA Form */}
-          <form 
+          <form
             onSubmit={handleSubmit}
-            onKeyDown={handleKeyDown}
             aria-labelledby="signup-heading"
             aria-busy={isLoading}
             noValidate

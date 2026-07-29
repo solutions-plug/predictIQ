@@ -28,16 +28,16 @@ describe('API Client', () => {
     const base = 'http://localhost:3001';
 
     it.each([
-      ['getFeaturedMarkets', () => api.getFeaturedMarkets(), 'GET', '/api/markets/featured'],
-      ['getBlockchainStats', () => api.getBlockchainStats(), 'GET', '/api/blockchain/stats'],
-      ['getUserBets', () => api.getUserBets('GABC'), 'GET', '/api/blockchain/users/GABC/bets'],
-      ['getOracleResult', () => api.getOracleResult(7), 'GET', '/api/blockchain/oracle/7'],
-      ['getTransactionStatus', () => api.getTransactionStatus('0xdead'), 'GET', '/api/blockchain/tx/0xdead'],
+      ['getFeaturedMarkets', () => api.getFeaturedMarkets(), 'GET', '/api/v1/markets/featured'],
+      ['getBlockchainStats', () => api.getBlockchainStats(), 'GET', '/api/v1/blockchain/stats'],
+      ['getUserBets', () => api.getUserBets('GABC'), 'GET', '/api/v1/blockchain/users/GABC/bets'],
+      ['getOracleResult', () => api.getOracleResult(7), 'GET', '/api/v1/blockchain/oracle/7'],
+      ['getTransactionStatus', () => api.getTransactionStatus('0xdead'), 'GET', '/api/v1/blockchain/tx/0xdead'],
       ['newsletterConfirm', () => api.newsletterConfirm('tok'), 'GET', '/api/v1/newsletter/confirm'],
       ['newsletterUnsubscribe', () => api.newsletterUnsubscribe('a@b.com'), 'DELETE', '/api/v1/newsletter/unsubscribe'],
       ['newsletterGdprExport', () => api.newsletterGdprExport('a@b.com'), 'POST', '/api/v1/newsletter/gdpr/export'],
       ['newsletterGdprDelete', () => api.newsletterGdprDelete('a@b.com'), 'DELETE', '/api/v1/newsletter/gdpr/delete'],
-      ['resolveMarket', () => api.resolveMarket(3), 'POST', '/api/markets/3/resolve'],
+      ['resolveMarket', () => api.resolveMarket(3), 'POST', '/api/v1/markets/3/resolve'],
       ['emailPreview', () => api.emailPreview('welcome'), 'GET', '/api/v1/email/preview/welcome'],
       ['emailSendTest', () => api.emailSendTest({ recipient: 'a@b.com', template_name: 'welcome' }), 'POST', '/api/v1/email/test'],
       ['getEmailAnalytics', () => api.getEmailAnalytics({ days: 7 }), 'GET', '/api/v1/email/analytics'],
@@ -63,7 +63,7 @@ describe('API Client', () => {
        mockOk();
        await api.getBlockchainMarket('foo/bar');
        expect(global.fetch).toHaveBeenCalledWith(
-         expect.stringContaining('/api/blockchain/markets/foo%2Fbar'),
+         expect.stringContaining('/api/v1/blockchain/markets/foo%2Fbar'),
          expect.any(Object),
        );
      });
@@ -72,7 +72,7 @@ describe('API Client', () => {
        mockOk();
        await api.getUserBets('user/name');
        expect(global.fetch).toHaveBeenCalledWith(
-         expect.stringContaining('/api/blockchain/users/user%2Fname/bets'),
+         expect.stringContaining('/api/v1/blockchain/users/user%2Fname/bets'),
          expect.any(Object),
        );
      });
@@ -710,7 +710,7 @@ describe('API Client', () => {
       mockOk();
       await api.getBlockchainMarket('foo/bar');
       expect(global.fetch).toHaveBeenCalledWith(
-        `${base}/api/blockchain/markets/foo%2Fbar`,
+        `${base}/api/v1/blockchain/markets/foo%2Fbar`,
         expect.any(Object),
       );
     });
@@ -719,7 +719,7 @@ describe('API Client', () => {
       mockOk();
       await api.getUserBets('GA/BC');
       expect(global.fetch).toHaveBeenCalledWith(
-        expect.stringContaining('/api/blockchain/users/GA%2FBC/bets'),
+        expect.stringContaining('/api/v1/blockchain/users/GA%2FBC/bets'),
         expect.any(Object),
       );
     });
@@ -728,7 +728,7 @@ describe('API Client', () => {
       mockOk();
       await api.getOracleResult('a/b?c#d');
       expect(global.fetch).toHaveBeenCalledWith(
-        `${base}/api/blockchain/oracle/a%2Fb%3Fc%23d`,
+        `${base}/api/v1/blockchain/oracle/a%2Fb%3Fc%23d`,
         expect.any(Object),
       );
     });
@@ -737,7 +737,7 @@ describe('API Client', () => {
       mockOk();
       await api.getTransactionStatus('0x/dead');
       expect(global.fetch).toHaveBeenCalledWith(
-        `${base}/api/blockchain/tx/0x%2Fdead`,
+        `${base}/api/v1/blockchain/tx/0x%2Fdead`,
         expect.any(Object),
       );
     });
@@ -746,7 +746,7 @@ describe('API Client', () => {
       mockOk();
       await api.resolveMarket('10/20');
       expect(global.fetch).toHaveBeenCalledWith(
-        `${base}/api/markets/10%2F20/resolve`,
+        `${base}/api/v1/markets/10%2F20/resolve`,
         expect.any(Object),
       );
     });
@@ -764,7 +764,7 @@ describe('API Client', () => {
       mockOk();
       await api.getBlockchainMarket(42);
       expect(global.fetch).toHaveBeenCalledWith(
-        `${base}/api/blockchain/markets/42`,
+        `${base}/api/v1/blockchain/markets/42`,
         expect.any(Object),
       );
     });
@@ -804,7 +804,7 @@ describe('API Client', () => {
       mockOk();
       await api.getBlockchainMarket('foo/bar');
       expect(global.fetch).toHaveBeenCalledWith(
-        `${base}/api/blockchain/markets/foo%2Fbar`,
+        `${base}/api/v1/blockchain/markets/foo%2Fbar`,
         expect.any(Object),
       );
     });
@@ -813,7 +813,7 @@ describe('API Client', () => {
       mockOk();
       await api.getUserBets('GA/BC');
       expect(global.fetch).toHaveBeenCalledWith(
-        expect.stringContaining('/api/blockchain/users/GA%2FBC/bets'),
+        expect.stringContaining('/api/v1/blockchain/users/GA%2FBC/bets'),
         expect.any(Object),
       );
     });
@@ -822,7 +822,7 @@ describe('API Client', () => {
       mockOk();
       await api.getOracleResult('a/b?c#d');
       expect(global.fetch).toHaveBeenCalledWith(
-        `${base}/api/blockchain/oracle/a%2Fb%3Fc%23d`,
+        `${base}/api/v1/blockchain/oracle/a%2Fb%3Fc%23d`,
         expect.any(Object),
       );
     });
@@ -831,7 +831,7 @@ describe('API Client', () => {
       mockOk();
       await api.getTransactionStatus('0x/dead');
       expect(global.fetch).toHaveBeenCalledWith(
-        `${base}/api/blockchain/tx/0x%2Fdead`,
+        `${base}/api/v1/blockchain/tx/0x%2Fdead`,
         expect.any(Object),
       );
     });
@@ -840,7 +840,7 @@ describe('API Client', () => {
       mockOk();
       await api.resolveMarket('10/20');
       expect(global.fetch).toHaveBeenCalledWith(
-        `${base}/api/markets/10%2F20/resolve`,
+        `${base}/api/v1/markets/10%2F20/resolve`,
         expect.any(Object),
       );
     });
@@ -858,7 +858,7 @@ describe('API Client', () => {
       mockOk();
       await api.getBlockchainMarket(42);
       expect(global.fetch).toHaveBeenCalledWith(
-        `${base}/api/blockchain/markets/42`,
+        `${base}/api/v1/blockchain/markets/42`,
         expect.any(Object),
       );
     });

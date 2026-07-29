@@ -27,10 +27,14 @@ describe('Statistics', () => {
   });
 
   it('displays data when loaded successfully', async () => {
+    // Shape returned by the real /api/v1/statistics backend response
+    // (services/api/src/db.rs Statistics struct — snake_case, with an
+    // extra field the UI doesn't display, to prove unknown fields are ignored).
     const mockData = {
-      totalMarkets: 150,
-      totalVolume: 2500000,
-      activeUsers: 50000,
+      total_markets: 150,
+      total_volume: 2500000,
+      active_markets: 50000,
+      resolved_markets: 12,
     };
     mockApi.getStatistics.mockResolvedValue(mockData);
 
@@ -64,7 +68,7 @@ describe('Statistics', () => {
   it('retries on button click', async () => {
     mockApi.getStatistics
       .mockRejectedValueOnce(new Error('Network error'))
-      .mockResolvedValueOnce({ totalMarkets: 100 });
+      .mockResolvedValueOnce({ total_markets: 100 });
 
     render(<Statistics />);
 
@@ -169,7 +173,7 @@ describe('Statistics wrapped in ErrorBoundary', () => {
     // Normal statistics content should not be present
     expect(screen.queryByText('Total Markets')).not.toBeInTheDocument();
     expect(screen.queryByText('Total Volume')).not.toBeInTheDocument();
-    expect(screen.queryByText('Active Users')).not.toBeInTheDocument();
+    expect(screen.queryByText('Active Markets')).not.toBeInTheDocument();
 
     // Fallback should be visible instead
     expect(screen.getByRole('alert')).toBeInTheDocument();

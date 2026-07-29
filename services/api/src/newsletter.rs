@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::cache::RedisCache;
 use crate::metrics::Metrics;
 
@@ -139,6 +139,112 @@ pub fn generate_opaque_unsubscribe_token() -> (String, String) {
 /// querying `unsubscribe_tokens.token_hash`.
 pub fn hash_unsubscribe_token(raw_token: &str) -> String {
     hex::encode(Sha256::digest(raw_token.as_bytes()))
+}
+
+// ── GDPR verification tokens ─────────────────────────────────────────────────
+//
+// GDPR export/delete (issue #1101) previously accepted a bare email address
+// as proof of ownership, letting anyone who knows or guesses a subscriber's
+// email pull or destroy their record. Both endpoints now require a signed,
+// short-lived token bound to the target email, obtained via
+// `/api/v1/newsletter/gdpr/request-token` and delivered only to that address.
+//
+// The token is a stateless HMAC-SHA256 signature (reusing the same primitive
+// already used to verify SendGrid webhook signatures — see
+// `security::signing`) rather than a stored opaque token, so verification
+// needs no database round-trip.
+
+/// How long a GDPR verification token remains valid after issuance.
+pub const GDPR_TOKEN_TTL_SECS: u64 = 900; // 15 minutes
+
+fn gdpr_token_payload(email: &str, expires_at: u64) -> String {
+    format!("gdpr:{email}:{expires_at}")
+}
+
+/// Generate a signed, time-limited token proving control of `email`.
+///
+/// Format: `{expires_at_unix}.{hmac_signature}`. The signature covers both
+/// the email and the expiry, so a token can't be replayed against a
+/// different address or accepted past its expiry.
+pub fn generate_gdpr_verification_token(email: &str, secret: &str) -> String {
+    let expires_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        + GDPR_TOKEN_TTL_SECS;
+    let signature = crate::security::signing::generate_signature(
+        gdpr_token_payload(email, expires_at).as_bytes(),
+        secret,
+    )
+    .unwrap_or_default();
+    format!("{expires_at}.{signature}")
+}
+
+/// Verify a token produced by [`generate_gdpr_verification_token`] against
+/// `email`. Returns `false` for a missing/malformed/expired/mismatched token.
+pub fn verify_gdpr_verification_token(token: &str, email: &str, secret: &str) -> bool {
+    let Some((expires_at_str, signature)) = token.split_once('.') else {
+        return false;
+    };
+    let Ok(expires_at) = expires_at_str.parse::<u64>() else {
+        return false;
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    if now > expires_at {
+        return false;
+    }
+    crate::security::signing::verify_signature(
+        gdpr_token_payload(email, expires_at).as_bytes(),
+        signature,
+        secret,
+    )
+}
+
+/// Email a GDPR verification token to `email`.
+pub async fn send_gdpr_verification_email(
+    config: &Config,
+    email: &str,
+    token: &str,
+) -> anyhow::Result<()> {
+    let api_key = config
+        .sendgrid_api_key
+        .as_deref()
+        .context("missing SENDGRID_API_KEY")?;
+    let from_email = config.from_email.as_deref().context("missing FROM_EMAIL")?;
+
+    let payload = json!({
+        "personalizations": [{ "to": [{ "email": email }] }],
+        "from": { "email": from_email },
+        "subject": "Verify your data request",
+        "content": [{
+            "type": "text/plain",
+            "value": format!(
+                "Use this verification code to confirm your data export or deletion request: {token}\n\nThis code expires in 15 minutes. If you did not request this, you can ignore this email."
+            )
+        }]
+    });
+
+    let response = reqwest::Client::new()
+        .post("https://api.sendgrid.com/v3/mail/send")
+        .bearer_auth(api_key)
+        .json(&payload)
+        .send()
+        .await
+        .context("sendgrid request failed")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to read SendGrid error response body");
+            String::new()
+        });
+        anyhow::bail!("sendgrid returned {status}: {body}");
+    }
+
+    Ok(())
 }
 
 /// Result of attempting to redeem an unsubscribe token.
@@ -406,6 +512,85 @@ mod tests {
             !allowed,
             "rate limiter must fail CLOSED (deny) when Redis is unavailable"
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // #1101: GDPR verification token tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn gdpr_token_roundtrip_valid() {
+        let token = generate_gdpr_verification_token("user@example.com", "test-secret");
+        assert!(verify_gdpr_verification_token(
+            &token,
+            "user@example.com",
+            "test-secret"
+        ));
+    }
+
+    #[test]
+    fn gdpr_token_rejects_wrong_email() {
+        let token = generate_gdpr_verification_token("user@example.com", "test-secret");
+        assert!(!verify_gdpr_verification_token(
+            &token,
+            "attacker@example.com",
+            "test-secret"
+        ));
+    }
+
+    #[test]
+    fn gdpr_token_rejects_wrong_secret() {
+        let token = generate_gdpr_verification_token("user@example.com", "test-secret");
+        assert!(!verify_gdpr_verification_token(
+            &token,
+            "user@example.com",
+            "wrong-secret"
+        ));
+    }
+
+    #[test]
+    fn gdpr_token_rejects_tampered_expiry() {
+        let token = generate_gdpr_verification_token("user@example.com", "test-secret");
+        let (_, signature) = token.split_once('.').unwrap();
+        // Attacker rewrites the expiry to push it further into the future,
+        // reusing the original signature — must not verify.
+        let forged = format!("9999999999.{signature}");
+        assert!(!verify_gdpr_verification_token(
+            &forged,
+            "user@example.com",
+            "test-secret"
+        ));
+    }
+
+    #[test]
+    fn gdpr_token_rejects_expired_token() {
+        let expired = format!(
+            "1.{}",
+            crate::security::signing::generate_signature(
+                gdpr_token_payload("user@example.com", 1).as_bytes(),
+                "test-secret"
+            )
+            .unwrap()
+        );
+        assert!(!verify_gdpr_verification_token(
+            &expired,
+            "user@example.com",
+            "test-secret"
+        ));
+    }
+
+    #[test]
+    fn gdpr_token_rejects_malformed_token() {
+        assert!(!verify_gdpr_verification_token(
+            "not-a-valid-token",
+            "user@example.com",
+            "test-secret"
+        ));
+        assert!(!verify_gdpr_verification_token(
+            "",
+            "user@example.com",
+            "test-secret"
+        ));
     }
 
     // -------------------------------------------------------------------------

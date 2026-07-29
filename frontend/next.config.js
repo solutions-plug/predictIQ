@@ -72,10 +72,11 @@ const nextConfig = {
             key: 'Strict-Transport-Security',
             value: 'max-age=63072000; includeSubDomains; preload',
           },
-          {
-            key: 'Content-Security-Policy',
-            value: "default-src 'self'; script-src 'self' 'strict-dynamic'; style-src 'self'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests",
-          },
+          // Content-Security-Policy is intentionally NOT set here. It is
+          // computed per-request in src/proxy.ts, which needs a fresh nonce
+          // and the runtime API origin for connect-src — values this static
+          // config cannot supply. Defining it in both places would mean two
+          // divergent policies write the same header for the same routes.
         ],
       },
     ];

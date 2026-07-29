@@ -16,14 +16,23 @@ export {
   CacheTag,
 } from './public-client';
 
-import { api as publicApi, CacheTag } from './public-client';
+import { api as publicApi, CacheTag, fillPath } from './public-client';
 import { apiCache, CACHE_TTL } from './cache';
 import { getEnvConfig } from '../env';
+import type { paths, components } from './schema';
 
 const config = getEnvConfig();
 const BASE_URL = config.NEXT_PUBLIC_API_URL.replace(/\/$/, "");
 
 type HttpMethod = "GET" | "POST" | "DELETE";
+
+/**
+ * Admin-only request paths, checked with `satisfies keyof paths` against
+ * schema.d.ts (see the matching comment in public-client.ts, and #50/#51).
+ */
+const PATHS = {
+  resolveMarket: "/api/v1/markets/{market_id}/resolve",
+} satisfies Record<string, keyof paths>;
 
 // ---------------------------------------------------------------------------
 // Internal request helper (mirrors public-client; kept private to this module)
@@ -288,10 +297,11 @@ export const api = {
 
   // Admin / email
   resolveMarket: (marketId: number | string, signal?: AbortSignal) =>
-    request<{ invalidated_keys: number }>("POST", `/api/markets/${encodeURIComponent(marketId)}/resolve`, {
-      cacheTags: [CacheTag.MARKETS, CacheTag.BLOCKCHAIN, CacheTag.STATISTICS],
-      signal,
-    }),
+    request<components['schemas']['InvalidationResult']>(
+      "POST",
+      fillPath(PATHS.resolveMarket, 'market_id', marketId),
+      { cacheTags: [CacheTag.MARKETS, CacheTag.BLOCKCHAIN, CacheTag.STATISTICS], signal },
+    ),
 
   emailPreview: (templateName: string, signal?: AbortSignal) =>
     request<Record<string, unknown>>("GET", `/api/v1/email/preview/${encodeURIComponent(templateName)}`, {

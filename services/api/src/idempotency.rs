@@ -12,7 +12,7 @@ use std::{
 
 use axum::{
     body::Body,
-    extract::{Request, State},
+    extract::{ConnectInfo, Request, State},
     http::{HeaderValue, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -20,7 +20,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::AppState;
+use crate::{security::extract_client_ip_cidrs, AppState};
 
 const IDEMPOTENCY_HEADER: &str = "Idempotency-Key";
 const MAX_KEY_LEN: usize = 128;
@@ -40,8 +40,13 @@ fn idempotency_cache_key(user_id: &str, raw_key: &str) -> String {
 }
 
 /// Extract a stable identity string from request headers.
+///
 /// Uses the API key prefix, or falls back to the Authorization header value.
-fn extract_user_identity(req: &Request) -> String {
+/// If neither credential is present, the caller is unauthenticated: identity
+/// is derived from the client IP + User-Agent rather than a single fixed
+/// `"anonymous"` bucket, so unrelated unauthenticated clients never collide
+/// on the same scoped cache key (issue #1104).
+fn extract_user_identity(req: &Request, client_ip: &str) -> String {
     req.headers()
         .get("x-api-key")
         .and_then(|v| v.to_str().ok())
@@ -53,9 +58,19 @@ fn extract_user_identity(req: &Request) -> String {
             req.headers()
                 .get("authorization")
                 .and_then(|v| v.to_str().ok())
-                .map(|s| format!("auth:{}", &s[..32.min(s.len())]))
+                .map(|s| format!("auth:{}", s.chars().take(32).collect::<String>()))
         })
-        .unwrap_or_else(|| "anonymous".to_string())
+        .unwrap_or_else(|| {
+            let user_agent = req
+                .headers()
+                .get("user-agent")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            let hash = hex::encode(Sha256::digest(
+                format!("{client_ip}|{user_agent}").as_bytes(),
+            ));
+            format!("anon:{}", hash)
+        })
 }
 
 /// Middleware that deduplicates POST requests using an `Idempotency-Key` header.
@@ -66,6 +81,7 @@ fn extract_user_identity(req: &Request) -> String {
 /// - Otherwise the request is executed, the response is cached, and returned.
 pub async fn idempotency_middleware(
     State(state): State<Arc<AppState>>,
+    connect_info: Option<ConnectInfo<std::net::SocketAddr>>,
     req: Request,
     next: Next,
 ) -> Response {
@@ -80,7 +96,13 @@ pub async fn idempotency_middleware(
         None => return next.run(req).await,
     };
 
-    let user_id = extract_user_identity(&req);
+    let client_ip = extract_client_ip_cidrs(
+        req.headers(),
+        connect_info.as_ref(),
+        state.config.trust_proxy,
+        &state.config.trusted_proxy_cidrs,
+    );
+    let user_id = extract_user_identity(&req, &client_ip);
     let cache_key = idempotency_cache_key(&user_id, &raw_key);
     let ttl = Duration::from_secs(state.config.idempotency_window_secs);
 
@@ -263,5 +285,48 @@ mod tests {
     fn unknown_key_returns_none() {
         let store = IdempotencyStore::new(Duration::from_secs(60));
         assert!(store.get("user_a", "nonexistent").unwrap().is_none());
+    }
+
+    #[test]
+    fn extract_user_identity_does_not_panic_on_multibyte_utf8_boundary() {
+        // 31 ASCII bytes followed by a 2-byte UTF-8 character straddle byte
+        // offset 32, which is not a char boundary — `&s[..32]` used to panic.
+        let crafted = format!("{}{}", "a".repeat(31), "é");
+        let req = Request::builder()
+            .uri("/")
+            .header("authorization", crafted.as_str())
+            .body(Body::empty())
+            .unwrap();
+
+        let identity = extract_user_identity(&req, "203.0.113.1");
+        assert!(identity.starts_with("auth:"));
+    }
+
+    #[test]
+    fn extract_user_identity_differs_for_unauthenticated_clients_on_different_ips() {
+        let req_a = Request::builder().uri("/").body(Body::empty()).unwrap();
+        let req_b = Request::builder().uri("/").body(Body::empty()).unwrap();
+
+        let identity_a = extract_user_identity(&req_a, "203.0.113.1");
+        let identity_b = extract_user_identity(&req_b, "203.0.113.2");
+
+        assert_ne!(
+            identity_a, identity_b,
+            "unauthenticated clients on different IPs must not share a cache identity"
+        );
+    }
+
+    #[test]
+    fn extract_user_identity_stable_for_same_unauthenticated_client() {
+        let req_a = Request::builder().uri("/").body(Body::empty()).unwrap();
+        let req_b = Request::builder().uri("/").body(Body::empty()).unwrap();
+
+        let identity_a = extract_user_identity(&req_a, "203.0.113.1");
+        let identity_b = extract_user_identity(&req_b, "203.0.113.1");
+
+        assert_eq!(
+            identity_a, identity_b,
+            "the same unauthenticated client retrying must get the same identity"
+        );
     }
 }

@@ -12,13 +12,15 @@
  * TTS endpoints:
  * - POST /tts/enqueue — Enqueue a TTS job
  * - GET /tts/job/:id — Get job status
+ * - GET /tts/job/:id/audio — Download the generated audio for a completed job
  * - GET /tts/jobs — List all jobs
  * - POST /tts/generate — Synchronous generation
  */
 
+import { createReadStream } from "fs";
 import express, { Express, Request, Response, NextFunction } from "express";
 import rateLimit from "express-rate-limit";
-import { TTSService, TTSConfig, VOICES, AuthError } from "./TTSService";
+import { TTSService, TTSConfig, VOICES, AuthError, TTSProviderError } from "./TTSService";
 import {
   HealthChecker,
   createHealthCheckHandler,
@@ -224,6 +226,29 @@ app.get("/health/ready", createReadinessHandler(healthChecker));
 app.get("/health/live", createLivenessHandler(healthChecker));
 
 // ---------------------------------------------------------------------------
+// Helper functions
+// ---------------------------------------------------------------------------
+
+/** Return a generic message for provider errors to avoid leaking upstream details. */
+export function providerErrorMessage(error: any): string {
+  if (error instanceof TTSProviderError) {
+    return "TTS provider request failed";
+  }
+  return error.message;
+}
+
+const VALID_PROVIDERS = new Set(["elevenlabs", "google"]);
+
+/** Validate that `provider` is a recognized value; return false and respond 400 if not. */
+function validateProvider(provider: any, res: Response): boolean {
+  if (provider !== undefined && !VALID_PROVIDERS.has(provider)) {
+    res.status(400).json({ error: `Unknown provider: ${provider}` });
+    return false;
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // TTS endpoints
 // ---------------------------------------------------------------------------
 
@@ -259,23 +284,25 @@ app.post("/tts/enqueue", async (req: Request, res: Response) => {
     }
 
     const voice = VOICES[voiceId];
-    if (!voice) {
-      return res.status(400).json({ error: `Unknown voice: ${voiceId}` });
-    }
+     if (!voice) {
+       return res.status(400).json({ error: `Unknown voice: ${voiceId}` });
+     }
 
-    // enqueueAsync so rate limiting is enforced consistently across
+     if (!validateProvider(provider, res)) return;
+
+     // enqueueAsync so rate limiting is enforced consistently across
     // replicas when REDIS_URL / config.sharedStore is configured (#1133).
     const credential = extractCredential(req);
     const jobId = await service.enqueueAsync(text, voice, provider, credential, rateLimitKey, bypassCache);
     res.json({ jobId, status: "pending" });
   } catch (error: any) {
-    const statusCode = error.statusCode || 500;
-    res.status(statusCode).json({ error: error.message });
-  }
-});
+     const statusCode = error.statusCode || 500;
+     res.status(statusCode).json({ error: providerErrorMessage(error) });
+   }
+ });
 
 /**
- * GET /tts/job/:id
+  * GET /tts/job/:id
  * Get the status and details of a TTS job.
  *
  * Response:
@@ -301,6 +328,55 @@ app.get("/tts/job/:id", async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Job not found" });
     }
     res.json(job);
+  } catch (error: any) {
+    const statusCode = error.statusCode || 500;
+    res.status(statusCode).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /tts/job/:id/audio
+ * Download the generated audio for a completed job (issue #1130).
+ *
+ * The job endpoint above returns `outputPath`, a filesystem path local to
+ * this container — there was previously no way for an external caller to
+ * actually retrieve that file over HTTP. Enforces the same ownership check
+ * as GET /tts/job/:id: a credential can only download audio for jobs it
+ * created.
+ *
+ * Headers:
+ * - Authorization: Bearer <api-key> (required if auth configured)
+ *
+ * Response: audio/mpeg stream (200), or JSON error (404 not found /
+ * not owned by caller, 409 job not yet complete).
+ */
+app.get("/tts/job/:id/audio", async (req: Request, res: Response) => {
+  try {
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    const credential = extractCredential(req);
+    const job = await service.getJobAsync(id, credential);
+    if (!job) {
+      // Same response whether the job doesn't exist or belongs to another
+      // tenant, matching GET /tts/job/:id's ownership check.
+      return res.status(404).json({ error: "Job not found" });
+    }
+    if (job.status !== "done" || !job.outputPath) {
+      return res.status(409).json({ error: `Job is not complete (status: ${job.status})` });
+    }
+
+    res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader("Content-Disposition", `attachment; filename="${id}.mp3"`);
+
+    const stream = createReadStream(job.outputPath);
+    stream.on("error", (err) => {
+      console.error(`[server] Failed to stream audio for job ${id}: ${err.message}`);
+      if (!res.headersSent) {
+        res.status(500).json({ error: "Failed to read audio file" });
+      } else {
+        res.destroy();
+      }
+    });
+    stream.pipe(res);
   } catch (error: any) {
     const statusCode = error.statusCode || 500;
     res.status(statusCode).json({ error: error.message });
@@ -363,11 +439,13 @@ app.post("/tts/generate", async (req: Request, res: Response) => {
     }
 
     const voice = VOICES[voiceId];
-    if (!voice) {
-      return res.status(400).json({ error: `Unknown voice: ${voiceId}` });
-    }
+     if (!voice) {
+       return res.status(400).json({ error: `Unknown voice: ${voiceId}` });
+     }
 
-    const credential = extractCredential(req);
+     if (!validateProvider(provider, res)) return;
+
+     const credential = extractCredential(req);
     const outputPath = await service.generate(
       text,
       voice,
@@ -378,13 +456,13 @@ app.post("/tts/generate", async (req: Request, res: Response) => {
     );
     res.json({ outputPath });
   } catch (error: any) {
-    const statusCode = error.statusCode || 500;
-    res.status(statusCode).json({ error: error.message });
-  }
-});
+     const statusCode = error.statusCode || 500;
+     res.status(statusCode).json({ error: providerErrorMessage(error) });
+   }
+ });
 
 /**
- * GET /tts/voices
+  * GET /tts/voices
  * List available voices.
  *
  * Response:

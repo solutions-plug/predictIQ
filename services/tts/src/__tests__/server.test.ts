@@ -8,6 +8,10 @@
 
 import request from "supertest";
 import app from "../server";
+import { TTSProviderError } from "../TTSService";
+import { providerErrorMessage } from "../server";
+
+const GENERIC_PROVIDER_ERROR = "TTS provider request failed";
 
 describe("security headers", () => {
   it("are present on a successful response (GET /tts/voices)", async () => {
@@ -73,5 +77,72 @@ describe("existing TTS functionality is unaffected by the new middleware", () =>
     const res = await request(app).post("/tts/enqueue").send({ text: "hello" });
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/Missing text or voiceId/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue: provider error messages are sanitized (no upstream details leaked)
+// ---------------------------------------------------------------------------
+
+describe("provider error sanitization", () => {
+  it("providerErrorMessage returns a generic message for TTSProviderError", () => {
+    const err = new TTSProviderError("elevenlabs", "Upstream body leaked internal request-id");
+    expect(providerErrorMessage(err)).toBe(GENERIC_PROVIDER_ERROR);
+  });
+
+  it("providerErrorMessage returns the original message for non-provider errors", () => {
+    const err = new Error("Some other error");
+    expect(providerErrorMessage(err)).toBe("Some other error");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue: provider value is validated in route handlers
+// ---------------------------------------------------------------------------
+
+describe("provider validation", () => {
+  it("POST /tts/enqueue returns 400 for an unrecognized provider", async () => {
+    const res = await request(app)
+      .post("/tts/enqueue")
+      .send({ text: "hello", voiceId: "el-rachel-en", provider: "azure" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Unknown provider/);
+  });
+
+  it("POST /tts/enqueue returns 400 for a misspelled provider", async () => {
+    const res = await request(app)
+      .post("/tts/enqueue")
+      .send({ text: "hello", voiceId: "el-rachel-en", provider: "elevenlabs-pro" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Unknown provider/);
+  });
+
+  it("POST /tts/enqueue continues to work with provider omitted", async () => {
+    const res = await request(app)
+      .post("/tts/enqueue")
+      .send({ text: "hello", voiceId: "el-rachel-en" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("pending");
+  });
+
+  it("POST /tts/generate returns 400 for an unrecognized provider", async () => {
+    const res = await request(app)
+      .post("/tts/generate")
+      .send({ text: "hello", voiceId: "el-rachel-en", provider: "unknown" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Unknown provider/);
+  });
+
+  it("POST /tts/generate continues to work with provider omitted", async () => {
+    const res = await request(app)
+      .post("/tts/generate")
+      .send({ text: "hello", voiceId: "el-rachel-en" });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty("outputPath");
   });
 });

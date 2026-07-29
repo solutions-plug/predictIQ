@@ -14,11 +14,36 @@
 
 import { getEnvConfig } from '../env';
 import { apiCache, CACHE_TTL } from './cache';
+import type { paths, components } from './schema';
 
 const config = getEnvConfig();
 const BASE_URL = config.NEXT_PUBLIC_API_URL.replace(/\/$/, "");
 
 type HttpMethod = "GET" | "POST" | "DELETE";
+
+/**
+ * Request paths, keyed by client method name. Each value is checked with
+ * `satisfies keyof paths` against schema.d.ts (auto-generated from
+ * services/api/openapi.yaml) so that renaming or removing a path on the
+ * backend fails this file's type check instead of shipping a silent 404
+ * (see #50, #51).
+ */
+const PATHS = {
+  statistics: "/api/v1/statistics",
+  featuredMarkets: "/api/v1/markets/featured",
+  content: "/api/v1/content",
+  blockchainHealth: "/api/v1/blockchain/health",
+  blockchainMarket: "/api/v1/blockchain/markets/{market_id}",
+  blockchainStats: "/api/v1/blockchain/stats",
+  userBets: "/api/v1/blockchain/users/{user}/bets",
+  oracleResult: "/api/v1/blockchain/oracle/{market_id}",
+  transactionStatus: "/api/v1/blockchain/tx/{tx_hash}",
+} satisfies Record<string, keyof paths>;
+
+/** Fills a `{placeholder}` segment of a schema path template with an encoded value. */
+export function fillPath(template: string, placeholder: string, value: string | number): string {
+  return template.replace(`{${placeholder}}`, encodeURIComponent(value));
+}
 
 const DEFAULT_RETRY_CONFIG: RetryConfig = {
   maxRetries: 3,
@@ -292,55 +317,46 @@ export const api = {
   health: (signal?: AbortSignal) => request<string>("GET", "/health", { signal }),
 
   getStatistics: (signal?: AbortSignal) =>
-    request<Record<string, unknown>>("GET", "/api/statistics", {
+    request<components['schemas']['AnyObject']>("GET", PATHS.statistics, {
       cacheTtl: CACHE_TTL.MEDIUM,
       cacheTags: [CacheTag.STATISTICS],
       signal,
     }),
 
   getFeaturedMarkets: (signal?: AbortSignal) =>
-    request<
-      Array<{
-        id: number;
-        title: string;
-        volume: number;
-        ends_at: string;
-        onchain_volume: string;
-        resolved_outcome?: number | null;
-      }>
-    >("GET", "/api/markets/featured", {
+    request<components['schemas']['FeaturedMarketView'][]>("GET", PATHS.featuredMarkets, {
       cacheTtl: CACHE_TTL.SHORT,
       cacheTags: [CacheTag.MARKETS],
       signal,
     }),
 
   getContent: (params?: { page?: number; page_size?: number }, signal?: AbortSignal) =>
-    request<Record<string, unknown>>("GET", "/api/content", { params, cacheTtl: CACHE_TTL.MEDIUM, signal }),
+    request<components['schemas']['AnyObject']>("GET", PATHS.content, { params, cacheTtl: CACHE_TTL.MEDIUM, signal }),
 
   // Blockchain (read-only)
   getBlockchainHealth: (signal?: AbortSignal) =>
-    request<Record<string, unknown>>("GET", "/api/blockchain/health", {
+    request<components['schemas']['BlockchainHealth']>("GET", PATHS.blockchainHealth, {
       cacheTtl: CACHE_TTL.SHORT,
       cacheTags: [CacheTag.BLOCKCHAIN],
       signal,
     }),
 
   getBlockchainMarket: (marketId: number | string, signal?: AbortSignal) =>
-    request<Record<string, unknown>>("GET", `/api/blockchain/markets/${encodeURIComponent(marketId)}`, {
-      cacheTtl: CACHE_TTL.MEDIUM,
-      cacheTags: [CacheTag.BLOCKCHAIN, CacheTag.MARKETS],
-      signal,
-    }),
+    request<components['schemas']['AnyObject']>(
+      "GET",
+      fillPath(PATHS.blockchainMarket, 'market_id', marketId),
+      { cacheTtl: CACHE_TTL.MEDIUM, cacheTags: [CacheTag.BLOCKCHAIN, CacheTag.MARKETS], signal },
+    ),
 
   getBlockchainStats: (signal?: AbortSignal) =>
-    request<Record<string, unknown>>("GET", "/api/blockchain/stats", {
+    request<components['schemas']['AnyObject']>("GET", PATHS.blockchainStats, {
       cacheTtl: CACHE_TTL.MEDIUM,
       cacheTags: [CacheTag.BLOCKCHAIN],
       signal,
     }),
 
   getUserBets: (user: string, params?: { page?: number; page_size?: number }, signal?: AbortSignal) =>
-    request<Record<string, unknown>>("GET", `/api/blockchain/users/${encodeURIComponent(user)}/bets`, {
+    request<components['schemas']['AnyObject']>("GET", fillPath(PATHS.userBets, 'user', user), {
       params,
       cacheTtl: CACHE_TTL.MEDIUM,
       cacheTags: [CacheTag.BLOCKCHAIN],
@@ -348,14 +364,14 @@ export const api = {
     }),
 
   getOracleResult: (marketId: number | string, signal?: AbortSignal) =>
-    request<Record<string, unknown>>("GET", `/api/blockchain/oracle/${encodeURIComponent(marketId)}`, {
-      cacheTtl: CACHE_TTL.LONG,
-      cacheTags: [CacheTag.BLOCKCHAIN],
-      signal,
-    }),
+    request<components['schemas']['AnyObject']>(
+      "GET",
+      fillPath(PATHS.oracleResult, 'market_id', marketId),
+      { cacheTtl: CACHE_TTL.LONG, cacheTags: [CacheTag.BLOCKCHAIN], signal },
+    ),
 
   getTransactionStatus: (txHash: string, signal?: AbortSignal) =>
-    request<Record<string, unknown>>("GET", `/api/blockchain/tx/${encodeURIComponent(txHash)}`, {
+    request<components['schemas']['AnyObject']>("GET", fillPath(PATHS.transactionStatus, 'tx_hash', txHash), {
       cacheTtl: CACHE_TTL.LONG,
       cacheTags: [CacheTag.BLOCKCHAIN],
       signal,

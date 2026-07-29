@@ -16,7 +16,7 @@
 
 import fs from "fs/promises";
 import path from "path";
-import { createHash } from "crypto";
+import { createHash, createHmac, timingSafeEqual } from "crypto";
 import { trace, SpanStatusCode, Span } from "@opentelemetry/api";
 import CircuitBreaker from "opossum";
 import type { SharedStoreConfig } from "./SharedStore";
@@ -283,6 +283,26 @@ function isRetryable(err: unknown): boolean {
   return true;
 }
 
+/**
+ * Derives the synchronous `generate()` wait timeout from the configured
+ * retry budget (issue #1136): worst case a job burns through
+ * `retry.maxRetries + 1` attempts per provider, each up to `retry.maxDelayMs`
+ * of backoff plus `providerTimeoutMs` for the call itself, and — on failure —
+ * falls over to a second provider that gets its own full budget. Without
+ * this, a hardcoded synchronous timeout smaller than the retry budget can
+ * reject the HTTP caller while `_process(job)` keeps running in the
+ * background and eventually completes with no way for the caller to know.
+ */
+export function deriveSyncWaitTimeoutMs(
+  retry: RetryConfig,
+  providerCount: number,
+  providerTimeoutMs: number
+): number {
+  const attemptsPerProvider = retry.maxRetries + 1;
+  const perProviderBudgetMs = attemptsPerProvider * (retry.maxDelayMs + providerTimeoutMs);
+  return perProviderBudgetMs * Math.max(providerCount, 1);
+}
+
 /** Full-jitter exponential backoff: delay ∈ [0, min(maxDelayMs, 1000 * 2^attempt)]. */
 export async function backoffDelay(attempt: number, maxDelayMs: number): Promise<void> {
   const cap = Math.min(maxDelayMs, 1000 * Math.pow(2, attempt));
@@ -390,6 +410,16 @@ export interface TTSConfig {
   /** Retry config for transient provider errors — omit to use defaults */
   retry?: RetryConfig;
   /**
+   * Timeout in milliseconds for the synchronous `generate()` / POST
+   * /tts/generate wait loop (issue #1136). Omit to derive it from `retry`
+   * and `circuitBreaker.timeoutMs` via `deriveSyncWaitTimeoutMs` so it can
+   * never be smaller than the budget background processing is actually
+   * allowed to use — a hardcoded value here that's shorter than that budget
+   * causes the HTTP caller to time out while `_process(job)` keeps running
+   * and eventually completes with no way for the caller to know.
+   */
+  syncWaitTimeoutMs?: number;
+  /**
    * Shared, cross-replica backing (e.g. Redis) for job status, rate
    * limiting, and cache (issue #1133). Omit to keep process-local in-memory
    * state, which only gives correct results for a single instance.
@@ -433,6 +463,22 @@ export class AuthError extends Error {
 }
 
 /**
+ * Constant-time string comparison to prevent timing side-channel attacks
+ * (CWE-208). Both inputs are padded to equal length before comparison so
+ * that `timingSafeEqual` always receives same-length buffers.
+ */
+function constantTimeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  const len = Math.max(bufA.length, bufB.length);
+  const paddedA = Buffer.alloc(len, 0);
+  const paddedB = Buffer.alloc(len, 0);
+  bufA.copy(paddedA);
+  bufB.copy(paddedB);
+  return timingSafeEqual(paddedA, paddedB);
+}
+
+/**
  * Verify `credential` against `auth` and return a stable tenant identity for it:
  * - API key auth: the key itself is the tenant boundary.
  * - JWT auth: the `sub` claim if present, otherwise the raw credential.
@@ -442,7 +488,18 @@ export function authenticate(credential: string | undefined, auth: AuthConfig): 
   if (!credential) throw new AuthError("Missing credential");
 
   if (auth.type === "apikey") {
-    if (!auth.keys.includes(credential)) throw new AuthError("Invalid API key");
+    let keyValid = 0;
+    const credBuf = Buffer.from(credential);
+    for (const key of auth.keys) {
+      const keyBuf = Buffer.from(key);
+      const len = Math.max(credBuf.length, keyBuf.length);
+      const paddedCred = Buffer.alloc(len, 0);
+      const paddedKey = Buffer.alloc(len, 0);
+      credBuf.copy(paddedCred);
+      keyBuf.copy(paddedKey);
+      keyValid |= timingSafeEqual(paddedCred, paddedKey) ? 1 : 0;
+    }
+    if (keyValid === 0) throw new AuthError("Invalid API key");
     return credential;
   }
 
@@ -450,15 +507,14 @@ export function authenticate(credential: string | undefined, auth: AuthConfig): 
   if (parts.length !== 3) throw new AuthError("Malformed JWT");
 
   const [headerB64, payloadB64, sigB64] = parts;
-  const { createHmac } = require("crypto") as typeof import("crypto");
   const expected = createHmac("sha256", auth.secret)
     .update(`${headerB64}.${payloadB64}`)
     .digest("base64url");
 
-  if (expected !== sigB64) throw new AuthError("Invalid JWT signature");
+  if (!constantTimeEqual(expected, sigB64)) throw new AuthError("Invalid JWT signature");
 
   const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString());
-  if (payload.exp !== undefined && payload.exp < Math.floor(Date.now() / 1000)) {
+  if (payload.exp === undefined || payload.exp < Math.floor(Date.now() / 1000)) {
     throw new AuthError("JWT expired");
   }
 
@@ -827,6 +883,17 @@ export class TTSService {
   }
 
   /**
+   * Resolves the synchronous wait timeout: an explicit `config.syncWaitTimeoutMs`
+   * wins, otherwise it's derived from the retry budget (see
+   * `deriveSyncWaitTimeoutMs` and the `syncWaitTimeoutMs` doc comment).
+   */
+  private _syncWaitTimeoutMs(): number {
+    if (this.config.syncWaitTimeoutMs !== undefined) return this.config.syncWaitTimeoutMs;
+    const providerCount = (this.config.elevenlabs ? 1 : 0) + (this.config.google ? 1 : 0);
+    return deriveSyncWaitTimeoutMs(this._retryConfig(), providerCount, this.cbConfig.timeoutMs);
+  }
+
+  /**
    * Returns a snapshot of each provider's circuit breaker state.
    * Exposed in /health/ready so operators can see the breaker state
    * without needing to inspect service logs.
@@ -1006,7 +1073,7 @@ export class TTSService {
     bypassCache?: boolean
   ): Promise<string> {
     const id = await this.enqueueAsync(text, voice, provider, credential, rateLimitKey, bypassCache);
-    return this._waitForJob(id);
+    return this._waitForJob(id, 200, this._syncWaitTimeoutMs());
   }
 
   async generateAndMerge(
@@ -1218,7 +1285,7 @@ export class TTSService {
     }
   }
 
-  private _waitForJob(id: string, intervalMs = 200, timeoutMs = 60_000): Promise<string> {
+  private _waitForJob(id: string, intervalMs: number, timeoutMs: number): Promise<string> {
     return new Promise((resolve, reject) => {
       const start = Date.now();
       const tick = setInterval(() => {

@@ -13,18 +13,23 @@ function apiOrigin(): string {
 
 export function proxy(request: NextRequest) {
   const nonce = Buffer.from(crypto.randomUUID()).toString('base64');
-  const connectSrc = ["'self'", 'https:', apiOrigin()].filter(Boolean).join(' ');
+  // Explicit allow-list only: 'self' plus the configured API origin. A bare
+  // https: scheme-source would let an injected script fetch()/load images
+  // from *any* HTTPS host, defeating the point of computing apiOrigin() at all.
+  const connectSrc = ["'self'", apiOrigin()].filter(Boolean).join(' ');
+  const imgSrc = ["'self'", 'data:', apiOrigin()].filter(Boolean).join(' ');
 
   const cspHeader = [
     "default-src 'self'",
     `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`,
     "style-src 'self'",
-    "img-src 'self' data: https:",
+    `img-src ${imgSrc}`,
     "font-src 'self' data:",
     `connect-src ${connectSrc}`,
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",
+    "object-src 'none'",
     "upgrade-insecure-requests",
   ].join('; ');
 
