@@ -15,7 +15,18 @@
 use anyhow::{bail, Context};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
-use tracing::info;
+use tracing::{info, warn};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn warn_macro_is_in_scope() {
+        // Verify that the warn! macro compiles and runs without panic.
+        warn!(test = "migration_warn_scope", "warn! is available in migrations module");
+    }
+}
 
 /// Returns true when the `MIGRATE_DRY_RUN` environment variable is set to `"true"`.
 fn is_dry_run() -> bool {

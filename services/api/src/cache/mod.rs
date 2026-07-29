@@ -605,12 +605,83 @@ impl RedisCache {
             return Ok((value, false));
         }
 
-        if let Ok(Some(cached)) = self.get_json(key).await {
-            return Ok((cached, true));
+        // Try CachedEntry format (XFetch metadata).
+        if let Ok(Some(entry)) = self.get_json::<CachedEntry<T>>(key).await {
+            if !xfetch_should_refresh(&entry, StampedeConfig::default().xfetch_beta) {
+                return Ok((entry.value, true));
+            }
+        } else if let Ok(Some(value)) = self.get_json::<T>(key).await {
+            // Legacy format — plain value, no XFetch metadata.
+            return Ok((value, true));
         }
 
-        // Cache miss — call fetcher and store the result.
-        self.recompute_and_store(key, ttl, fetcher).await
+        // Cache miss or XFetch early refresh — try to acquire a mutex lock
+        // so only one request calls the fetcher.
+        let lock_key = format!("stampede_lock:{key}");
+        let lock_ttl = Duration::from_secs(10);
+
+        let lock_acquired = self
+            .exec(|mut conn| {
+                let lock_key = lock_key.clone();
+                async move {
+                    let result: Option<String> = redis::cmd("SET")
+                        .arg(&lock_key)
+                        .arg("1")
+                        .arg("NX")
+                        .arg("EX")
+                        .arg(lock_ttl.as_secs())
+                        .query_async(&mut conn)
+                        .await?;
+                    Ok(result.is_some())
+                }
+            })
+            .await
+            .unwrap_or(false);
+
+        if lock_acquired {
+            // We won the lock — recompute and store with XFetch metadata.
+            let start = std::time::Instant::now();
+            let value = fetcher().await?;
+            let delta_secs = start.elapsed().as_secs_f64();
+
+            let entry = CachedEntry {
+                expires_at: chrono::Utc::now().timestamp() + ttl.as_secs() as i64,
+                delta_secs,
+                value: value.clone(),
+            };
+
+            if let Err(e) = self.set_entry(key, &entry, ttl).await {
+                tracing::warn!(key, error = %e, "cache write failed after recompute");
+            }
+
+            // Release lock (best-effort).
+            let _ = self.del(&lock_key).await;
+
+            Ok((value, false))
+        } else {
+            // Another request is recomputing — poll briefly for the result.
+            for _ in 0..20 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+
+                if let Ok(Some(entry)) = self.get_json::<CachedEntry<T>>(key).await {
+                    return Ok((entry.value, false));
+                }
+                if let Ok(Some(value)) = self.get_json::<T>(key).await {
+                    return Ok((value, false));
+                }
+
+                if !self.cb.allow(&self.metrics) {
+                    break;
+                }
+            }
+
+            // Lock wait timeout — call fetcher directly as fallback.
+            let value = fetcher().await?;
+            if let Err(e) = self.set_json(key, &value, ttl).await {
+                tracing::warn!(key, error = %e, "cache write failed after lock timeout");
+            }
+            Ok((value, false))
+        }
     }
 
     async fn set_entry<T>(&self, key: &str, entry: &CachedEntry<T>, ttl: Duration) -> anyhow::Result<()>
@@ -1425,5 +1496,53 @@ mod tests {
         }
 
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
+    }
+
+    // ── #1118: stampede protection in get_or_set_json ──────────────────────
+
+    /// Simulates N concurrent requests on a cold cache and asserts the fetcher
+    /// is called exactly once thanks to the Redis SET NX mutex lock.
+    #[tokio::test]
+    async fn concurrent_cache_miss_triggers_single_fetch() {
+        let (cache, _c) = start_cache().await;
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let key = "stampede:test:concurrent";
+
+        // Spawn 10 concurrent get_or_set_json calls with a slow fetcher.
+        let mut handles = Vec::new();
+        for _ in 0..10 {
+            let cache = cache.clone();
+            let count = Arc::clone(&call_count);
+            handles.push(tokio::spawn(async move {
+                let (val, hit) = cache
+                    .get_or_set_json::<u32, _, _>(key, Duration::from_secs(60), || {
+                        let count = count.clone();
+                        async move {
+                            // Simulate a slow upstream fetch.
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            count.fetch_add(1, Ordering::SeqCst);
+                            Ok(42u32)
+                        }
+                    })
+                    .await
+                    .unwrap();
+                (val, hit)
+            }));
+        }
+
+        let mut results = Vec::new();
+        for h in handles {
+            results.push(h.await.unwrap());
+        }
+
+        // All requests must return 42.
+        for (val, _) in &results {
+            assert_eq!(*val, 42, "all concurrent requests must return the correct value");
+        }
+
+        // The fetcher must have been called exactly once.
+        let total_calls = call_count.load(Ordering::SeqCst);
+        assert_eq!(total_calls, 1, "expected 1 fetcher call, got {total_calls}");
     }
 }
