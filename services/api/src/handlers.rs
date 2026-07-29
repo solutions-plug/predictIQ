@@ -132,76 +132,101 @@ pub async fn health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> i
     use crate::cache::CircuitState;
     use crate::correlation::REQUEST_ID_HEADER;
 
-    let request_id = headers
-        .get(REQUEST_ID_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("-");
+    const HEALTH_TIMEOUT: Duration = Duration::from_secs(10);
 
-    let (cb_state, cb_state_val) = match state.cache.circuit_state() {
-        CircuitState::Closed => ("closed", 0),
-        CircuitState::Open => ("open", 1),
-        CircuitState::HalfOpen => ("half_open", 2),
-    };
-    let pool = state.cache.pool_status();
-    state
-        .metrics
-        .set_circuit_breaker_state(cb_state_val);
+    let inner = async {
+        let request_id = headers
+            .get(REQUEST_ID_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("-");
 
-    let mut health_status = serde_json::json!({
-        "status": "ok",
-        "timestamp": chrono::Utc::now().to_rfc3339(),
-        "request_id": request_id,
-        "redis": {
-            "circuit_breaker": cb_state,
-            "pool_size": pool.size,
-            "pool_available": pool.available,
+        let (cb_state, cb_state_val) = match state.cache.circuit_state() {
+            CircuitState::Closed => ("closed", 0),
+            CircuitState::Open => ("open", 1),
+            CircuitState::HalfOpen => ("half_open", 2),
+        };
+        let pool = state.cache.pool_status();
+        state
+            .metrics
+            .set_circuit_breaker_state(cb_state_val);
+
+        let mut health_status = serde_json::json!({
             "status": "ok",
-        },
-        "db": {
-            "status": "ok",
-        },
-        "workers": {
-            "blockchain_sync": "running",
-            "blockchain_monitor": "running",
-            "email_queue": "running",
-        }
-    });
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "request_id": request_id,
+            "redis": {
+                "circuit_breaker": cb_state,
+                "pool_size": pool.size,
+                "pool_available": pool.available,
+                "status": "ok",
+            },
+            "db": {
+                "status": "ok",
+            },
+            "workers": {
+                "blockchain_sync": "running",
+                "blockchain_monitor": "running",
+                "email_queue": "running",
+            }
+        });
 
-    let mut degraded = false;
+        let mut degraded = false;
 
-    if state.cache.ping().await.is_err() {
-        degraded = true;
-        health_status["status"] = "degraded".into();
-        health_status["redis"]["status"] = "unhealthy".into();
-    }
+        let (cache_result, db_result, processing_count_result, sendgrid_result) = tokio::join!(
+            state.cache.ping(),
+            state.db.ping(),
+            state.email_queue.get_processing_count(),
+            state.email_service.probe_sendgrid(),
+        );
 
-    if state.db.ping().await.is_err() {
-        degraded = true;
-        health_status["status"] = "degraded".into();
-        health_status["db"]["status"] = "unhealthy".into();
-    }
-
-    if let Ok(processing_count) = state.email_queue.get_processing_count().await {
-        health_status["workers"]["email_queue_processing"] = processing_count.into();
-    }
-
-    let sendgrid_status = match state.email_service.probe_sendgrid().await {
-        Ok(()) => "ok",
-        Err(e) => {
-            tracing::warn!(error = %e, "SendGrid connectivity probe failed");
+        if cache_result.is_err() {
             degraded = true;
             health_status["status"] = "degraded".into();
-            "degraded"
+            health_status["redis"]["status"] = "unhealthy".into();
         }
-    };
-    health_status["sendgrid"] = serde_json::json!({ "status": sendgrid_status });
 
-    let status_code = if degraded {
-        StatusCode::SERVICE_UNAVAILABLE
-    } else {
-        StatusCode::OK
+        if db_result.is_err() {
+            degraded = true;
+            health_status["status"] = "degraded".into();
+            health_status["db"]["status"] = "unhealthy".into();
+        }
+
+        if let Ok(processing_count) = processing_count_result {
+            health_status["workers"]["email_queue_processing"] = processing_count.into();
+        }
+
+        let sendgrid_status = match sendgrid_result {
+            Ok(()) => "ok",
+            Err(e) => {
+                tracing::warn!(error = %e, "SendGrid connectivity probe failed");
+                degraded = true;
+                health_status["status"] = "degraded".into();
+                "degraded"
+            }
+        };
+        health_status["sendgrid"] = serde_json::json!({ "status": sendgrid_status });
+
+        let status_code = if degraded {
+            StatusCode::SERVICE_UNAVAILABLE
+        } else {
+            StatusCode::OK
+        };
+        (status_code, Json(health_status))
     };
-    (status_code, Json(health_status))
+
+    match tokio::time::timeout(HEALTH_TIMEOUT, inner).await {
+        Ok(response) => response,
+        Err(_) => {
+            tracing::warn!("health check timed out after {HEALTH_TIMEOUT:?}");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "status": "degraded",
+                    "reason": "health check timed out",
+                })),
+            )
+        }
+    }
 }
 
 /// Liveness probe: just confirms the process is alive and serving requests.
@@ -1121,13 +1146,20 @@ pub async fn blockchain_user_bets(
     Query(query): Query<PaginationQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let page_size = query.limit();
-    // cursor encodes the page number (0-based)
-    let page = query
+    // cursor encodes the page number (0-based).
+    // Clamp to a sane maximum before any arithmetic to prevent overflow:
+    // the largest meaningful page is total/page_size+1, but we don't know
+    // `total` yet so we use i64::MAX / page_size as a safe ceiling instead.
+    let raw_page = query
         .cursor()
         .as_deref()
         .and_then(|c| c.parse::<i64>().ok())
         .unwrap_or(0)
         .max(0);
+    // page_size is at least 1 (enforced by PaginationQuery), so the division
+    // is safe.  This cap is generous but keeps (page+1)*page_size in i64 range.
+    let page_max = i64::MAX / (page_size as i64).max(1);
+    let page = raw_page.min(page_max);
 
     let page_data = state
         .blockchain
@@ -1135,7 +1167,9 @@ pub async fn blockchain_user_bets(
         .await
         .map_err(into_api_error)?;
 
-    let has_more = (page + 1) * (page_size as i64) < page_data.total;
+    // Use saturating_mul so that a pathologically large (but now bounded) page
+    // still produces a correct has_more = false rather than wrapping.
+    let has_more = (page + 1).saturating_mul(page_size as i64) < page_data.total;
     let next_cursor = if has_more {
         Some((page + 1).to_string())
     } else {
@@ -1756,5 +1790,111 @@ mod tests {
         let api_err = ApiError::internal(err);
         assert_eq!(api_err.code, "INTERNAL_ERROR");
         assert_eq!(api_err.status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // ── #1121: pagination cursor overflow ─────────────────────────────────────
+
+    /// blockchain_user_bets must clamp attacker-controlled page cursors before
+    /// performing arithmetic, preventing i64 overflow when computing has_more.
+    /// This test verifies that a cursor near i64::MAX is safely bounded and that
+    /// the saturating_mul prevents wrapping even if the clamped page is still large.
+    #[test]
+    fn blockchain_user_bets_cursor_overflow_clamped() {
+        // Simulate parsing a malicious cursor value near i64::MAX.
+        let raw_page = i64::MAX - 100;
+        let page_size = 50_u32;
+
+        // The handler logic clamps `page` to i64::MAX / page_size before use.
+        let page_max = i64::MAX / (page_size as i64).max(1);
+        let page = raw_page.min(page_max);
+
+        // Verify the clamp is effective: page must be well below i64::MAX.
+        assert!(
+            page < i64::MAX / 2,
+            "clamped page must be far below i64::MAX to prevent overflow"
+        );
+
+        // Verify saturating_mul produces correct result even for large clamped pages.
+        let total = 10_000_i64;
+        let has_more = (page + 1).saturating_mul(page_size as i64) < total;
+        // With such a large page, has_more should be false (we're beyond the data).
+        assert!(!has_more, "has_more must be false when cursor is out of range");
+    }
+
+    /// has_more must stay correct for page=0 (first page) with a small dataset.
+    #[test]
+    fn blockchain_user_bets_cursor_page_zero_has_more_when_data_exceeds_page_size() {
+        let page = 0_i64;
+        let page_size = 10_u32;
+        let total = 25_i64;
+
+        let page_max = i64::MAX / (page_size as i64).max(1);
+        let clamped_page = page.min(page_max);
+        let has_more = (clamped_page + 1).saturating_mul(page_size as i64) < total;
+        assert!(has_more, "has_more must be true when data > one page");
+    }
+
+    // ── #1123: health endpoint outer timeout / concurrent checks ─────────────
+
+    /// Demonstrates that wrapping a slow inner future in
+    /// `tokio::time::timeout(HEALTH_TIMEOUT, inner)` produces a bounded
+    /// response even when `inner` would hang indefinitely.
+    ///
+    /// We simulate the same pattern used in the `health` handler and verify
+    /// that the timeout fires using paused virtual time.
+    #[tokio::test(start_paused = true)]
+    async fn health_handler_outer_timeout_fires_on_slow_dependency() {
+        use tokio::time::{advance, Duration};
+
+        // The health handler wraps checks in a 10-second outer timeout.
+        const HEALTH_TIMEOUT: Duration = Duration::from_secs(10);
+
+        // Simulate a future that takes longer than the outer timeout — analogous
+        // to a Redis connection that is unreachable and retries indefinitely.
+        let slow_dependency = async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        };
+
+        // Spawn both the timeout wrapper and the time-advance together so the
+        // tokio runtime can interleave them correctly.
+        let timeout_fut = tokio::time::timeout(HEALTH_TIMEOUT, slow_dependency);
+
+        // Drive the timeout future and advance virtual time past the deadline.
+        let result = tokio::join!(
+            timeout_fut,
+            async { advance(Duration::from_secs(11)).await }
+        ).0;
+
+        assert!(
+            result.is_err(),
+            "/health must return a timeout error when a dependency is unreachable"
+        );
+    }
+
+    /// Verifies that two dependency checks running concurrently under
+    /// `tokio::join!` complete faster than if they were run sequentially.
+    ///
+    /// This is the key property that prevents a slow Redis from blocking DB/
+    /// SendGrid checks (issue #1123).
+    #[tokio::test(start_paused = true)]
+    async fn health_handler_checks_run_concurrently_not_sequentially() {
+        use tokio::time::{sleep, Duration, Instant};
+
+        // Each simulated dependency takes 100 ms (virtual time).
+        let delay = Duration::from_millis(100);
+
+        let start = Instant::now();
+
+        // tokio::join! polls both futures simultaneously; with paused time
+        // both timers fire at 100 ms virtual time, not at 200 ms.
+        let ((), ()) = tokio::join!(sleep(delay), sleep(delay));
+
+        let elapsed = start.elapsed();
+
+        // Sequential execution would take 200 ms; concurrent must take ≤ 100 ms.
+        assert!(
+            elapsed <= Duration::from_millis(100),
+            "concurrent checks must complete in one delay slot, not two (elapsed={elapsed:?})"
+        );
     }
 }

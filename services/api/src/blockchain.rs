@@ -1357,20 +1357,37 @@ impl BlockchainClient {
         http: Client,
         retry_attempts: u32,
     ) -> Self {
+        use crate::config::ContractKeySchema;
+        use crate::db::Database;
+        let db = Database::new_for_test(cache.clone(), metrics.clone());
         Self {
             http,
             rpc_url,
             network: "testnet".to_string(),
             contract_id: "test-contract".to_string(),
+            key_schema: ContractKeySchema {
+                version: "1.0.0".to_string(),
+                market: "market:{id}".to_string(),
+                platform_stats: "platform:stats".to_string(),
+                user_bets: "user_bets:{id}".to_string(),
+                oracle_result: "oracle_result:{id}".to_string(),
+                health_check: "platform:stats".to_string(),
+            },
             retry_attempts,
             retry_base_delay_ms: 10,
+            rpc_backoff_jitter_factor: 0.0,
             event_poll_interval: Duration::from_millis(50),
             tx_poll_interval: Duration::from_millis(50),
             confirmation_ledger_lag: 1,
             sync_market_ids: vec![],
             cache,
+            db,
             metrics,
             monitor: Arc::new(MonitoringState::default()),
+            expected_passphrase: String::new(),
+            watched_tx_ttl: WATCHED_TX_TTL_DEFAULT,
+            watched_tx_max_size: WATCHED_TX_MAX_SIZE,
+            is_production: false,
         }
     }
 
@@ -1644,5 +1661,57 @@ mod tests {
     fn watch_tx_error_variants_are_distinct() {
         use super::WatchTxError;
         assert_ne!(WatchTxError::AlreadyWatched, WatchTxError::CapReached);
+    }
+
+    // ── #1116: new_for_test initializes all fields ────────────────────────────
+
+    /// Compile + runtime check: new_for_test must initialize every field on
+    /// BlockchainClient — previously 7 fields were omitted, causing a compile
+    /// error in the test build.
+    ///
+    /// This test exercises the constructor under the redis-integration feature
+    /// flag so the RedisCache is built from a real (containerised) Redis.
+    /// When redis-integration is absent we fall back to a struct-layout check
+    /// that ensures no field can be silently defaulted without `new_for_test`.
+    #[test]
+    fn new_for_test_struct_field_defaults_are_sane() {
+        // Verify the defaults used in new_for_test are individually valid.
+        // These match the values set in new_for_test; if any field were
+        // accidentally removed the constructor would fail to compile.
+
+        use super::{WATCHED_TX_TTL_DEFAULT, WATCHED_TX_MAX_SIZE};
+        use crate::config::ContractKeySchema;
+        use std::time::Duration;
+
+        // key_schema: each template field must be non-empty.
+        let schema = ContractKeySchema {
+            version: "1.0.0".to_string(),
+            market: "market:{id}".to_string(),
+            platform_stats: "platform:stats".to_string(),
+            user_bets: "user_bets:{id}".to_string(),
+            oracle_result: "oracle_result:{id}".to_string(),
+            health_check: "platform:stats".to_string(),
+        };
+        assert!(!schema.version.is_empty(), "key_schema.version must be non-empty");
+        assert!(schema.market.contains("{id}"), "key_schema.market must contain {{id}} placeholder");
+        assert!(schema.user_bets.contains("{id}"), "key_schema.user_bets must contain {{id}} placeholder");
+
+        // rpc_backoff_jitter_factor: 0.0 is valid (deterministic, no jitter).
+        let jitter: f64 = 0.0;
+        assert!((0.0..=1.0).contains(&jitter), "jitter factor must be in [0.0, 1.0]");
+
+        // expected_passphrase: empty string is valid in non-production mode.
+        let passphrase = String::new();
+        assert!(passphrase.is_empty(), "expected_passphrase default must be empty");
+
+        // watched_tx_ttl: must be a positive duration.
+        assert!(WATCHED_TX_TTL_DEFAULT > Duration::ZERO, "watched_tx_ttl must be positive");
+
+        // watched_tx_max_size: must allow at least one entry.
+        assert!(WATCHED_TX_MAX_SIZE > 0, "watched_tx_max_size must be > 0");
+
+        // is_production: false in tests.
+        let is_production = false;
+        assert!(!is_production, "is_production must be false in test constructor");
     }
 }

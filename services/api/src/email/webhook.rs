@@ -266,14 +266,27 @@ impl WebhookHandler {
         }
 
         // Secondary guard: DB dedup for events that arrive after the Redis TTL expires.
-        if self.db.email_event_exists(message_id, event_type, email).await? {
-            tracing::warn!(
-                "Duplicate event detected (DB) for event: {} {} {}",
-                message_id.unwrap_or(""),
-                event_type,
-                email
-            );
-            return Ok(());
+        match self.db.email_event_exists(message_id, event_type, email).await {
+            Ok(true) => {
+                tracing::warn!(
+                    "Duplicate event detected (DB) for event: {} {} {}",
+                    message_id.unwrap_or(""),
+                    event_type,
+                    email
+                );
+                return Ok(());
+            }
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "DB dedup check failed for event: {} {} {} — skipping",
+                    message_id.unwrap_or(""),
+                    event_type,
+                    email
+                );
+                return Ok(());
+            }
         }
 
         // Persist the sanitized, allow-listed event.
