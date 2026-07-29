@@ -91,3 +91,48 @@ describe('proxy Content-Security-Policy', () => {
     expect(csp).toContain("style-src 'self'");
   });
 });
+
+describe('proxy connect-src / img-src allow-list', () => {
+  // jest.config.js defaults NEXT_PUBLIC_API_URL to this for the test env.
+  const apiOrigin = 'http://localhost:3001';
+
+  function directive(csp: string, name: string): string {
+    return csp.match(new RegExp(`${name}\\s+([^;]+)`))?.[1] ?? '';
+  }
+
+  it('restricts connect-src to self and the configured API origin, not a bare https: wildcard', () => {
+    const csp = runProxy('/').response.headers.get('Content-Security-Policy')!;
+    const connectSrc = directive(csp, 'connect-src');
+
+    expect(connectSrc).toContain("'self'");
+    expect(connectSrc).toContain(apiOrigin);
+    // A bare `https:` scheme-source would permit fetch()/XHR to *any* HTTPS
+    // origin (e.g. an attacker-controlled exfiltration endpoint), which is
+    // exactly what an explicit allow-list is meant to rule out.
+    expect(connectSrc.split(/\s+/)).not.toContain('https:');
+  });
+
+  it('restricts img-src to self, data:, and the configured API origin, not a bare https: wildcard', () => {
+    const csp = runProxy('/').response.headers.get('Content-Security-Policy')!;
+    const imgSrc = directive(csp, 'img-src');
+
+    expect(imgSrc).toContain("'self'");
+    expect(imgSrc).toContain('data:');
+    expect(imgSrc).toContain(apiOrigin);
+    expect(imgSrc.split(/\s+/)).not.toContain('https:');
+  });
+
+  it('would block a fetch to an arbitrary third-party HTTPS origin under this policy', () => {
+    const csp = runProxy('/').response.headers.get('Content-Security-Policy')!;
+    const connectSrc = directive(csp, 'connect-src').split(/\s+/);
+    const thirdParty = 'https://evil.example.com';
+
+    // No source-list entry other than 'self'/apiOrigin would match an
+    // arbitrary third-party origin, so a real browser's CSP enforcement
+    // would block a fetch() to it (manually verifiable in a browser devtools
+    // console against a page served with this header).
+    expect(connectSrc).not.toContain('https:');
+    expect(connectSrc).not.toContain(thirdParty);
+    expect(connectSrc.some((src) => thirdParty.startsWith(src))).toBe(false);
+  });
+});
