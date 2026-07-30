@@ -57,7 +57,7 @@ jobs:
     timeout-minutes: 20
     needs: validate-secrets
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Run Checkov
         uses: bridgecrewio/checkov-action@7b972723c44fb3d256283fac96fae5d7c1894bb7 # v12
@@ -91,7 +91,7 @@ jobs:
       TF_VAR_redis_auth_token: ${{ secrets[format('REDIS_AUTH_TOKEN_{0}', matrix.environment)] }}
       TF_VAR_sendgrid_key_rotated_at: ${{ secrets[format('SENDGRID_KEY_ROTATED_AT_{0}', matrix.environment)] }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4
@@ -164,7 +164,7 @@ jobs:
       TF_VAR_redis_auth_token: ${{ secrets[format('REDIS_AUTH_TOKEN_{0}', matrix.environment)] }}
       TF_VAR_sendgrid_key_rotated_at: ${{ secrets[format('SENDGRID_KEY_ROTATED_AT_{0}', matrix.environment)] }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4
