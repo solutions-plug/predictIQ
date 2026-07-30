@@ -637,6 +637,35 @@ async function generateElevenLabs(
   });
 }
 
+interface GoogleTTSClient {
+  synthesizeSpeech: (
+    req: object,
+    options?: object
+  ) => Promise<[{ audioContent: Buffer | string }]>;
+}
+
+/**
+ * One TextToSpeechClient per distinct `google` config object, lazily created
+ * and cached for the lifetime of that config. Constructing the client sets up
+ * its credentials/auth (a gRPC channel, token fetch, etc.), so re-creating it
+ * on every synthesis call adds that setup cost to every request instead of
+ * once per process.
+ */
+const googleClientCache = new WeakMap<object, GoogleTTSClient>();
+
+function getGoogleClient(config: NonNullable<TTSConfig["google"]>): GoogleTTSClient {
+  let client = googleClientCache.get(config);
+  if (!client) {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { TextToSpeechClient } = require("@google-cloud/text-to-speech") as {
+      TextToSpeechClient: new (opts: object) => GoogleTTSClient;
+    };
+    client = new TextToSpeechClient(config);
+    googleClientCache.set(config, client);
+  }
+  return client;
+}
+
 async function generateGoogle(
   text: string,
   voice: TTSVoice,
@@ -650,17 +679,7 @@ async function generateGoogle(
       span.setAttribute("tts.voice.id", voice.voiceId);
       span.setAttribute("tts.text.length", text.length);
 
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const { TextToSpeechClient } = require("@google-cloud/text-to-speech") as {
-        TextToSpeechClient: new (opts: object) => {
-          synthesizeSpeech: (
-            req: object,
-            options?: object
-          ) => Promise<[{ audioContent: Buffer | string }]>;
-        };
-      };
-
-      const client = new TextToSpeechClient(config);
+      const client = getGoogleClient(config);
 
       let response: { audioContent: Buffer | string };
       try {
