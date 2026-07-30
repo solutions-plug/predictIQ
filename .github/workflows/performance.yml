@@ -277,7 +277,7 @@ jobs:
           fetch-depth: 0
 
       - name: Download current results
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v8
         with:
           name: performance-reports
           path: performance/backend/reports/
@@ -345,7 +345,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Download performance results
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v8
         with:
           name: performance-reports
           path: performance/backend/reports/
