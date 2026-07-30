@@ -413,7 +413,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@314ff8b43182423b84c50b1670b0e10f858f2d98 # master
+        uses: aquasecurity/trivy-action@c07df6fec6fa692e6fd1200d50aaa1fdd66f03c8 # master
         with:
           scan-type: "fs"
           scan-ref: "."
@@ -456,7 +456,7 @@ jobs:
         run: docker build -t predictiq-api:${{ github.sha }} -f Dockerfile .
 
       - name: Scan API container with Trivy
-        uses: aquasecurity/trivy-action@314ff8b43182423b84c50b1670b0e10f858f2d98 # master
+        uses: aquasecurity/trivy-action@c07df6fec6fa692e6fd1200d50aaa1fdd66f03c8 # master
         with:
           image-ref: "predictiq-api:${{ github.sha }}"
           format: "sarif"
@@ -476,7 +476,7 @@ jobs:
         continue-on-error: true
 
       - name: Scan TTS container with Trivy
-        uses: aquasecurity/trivy-action@314ff8b43182423b84c50b1670b0e10f858f2d98 # master
+        uses: aquasecurity/trivy-action@c07df6fec6fa692e6fd1200d50aaa1fdd66f03c8 # master
         if: success()
         with:
           image-ref: "predictiq-tts:${{ github.sha }}"
