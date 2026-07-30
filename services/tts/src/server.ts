@@ -106,6 +106,26 @@ const healthChecker = new HealthChecker(config, service);
 const app: Express = express();
 const port = process.env.PORT || 3000;
 
+// Without an explicit trust proxy setting, Express derives req.ip from the
+// raw socket address. Deployed behind any reverse proxy/load balancer, every
+// request then appears to originate from the proxy's address, collapsing all
+// distinct clients into a single rate-limit bucket (req.ip is used both as
+// the Express-level rate-limit key below and as the TTSService rate-limit
+// key in the route handlers). TRUST_PROXY configures how many hops (or which
+// trusted subnets) sit between the client and this process so Express parses
+// X-Forwarded-For and populates req.ip with the real client address.
+// Defaults to 1 hop — a single load balancer, the common deployment topology
+// — override via the env var to match a different topology (e.g. "false" for
+// a direct/no-proxy deployment, a higher hop count, or a trusted-subnet
+// keyword Express recognizes, such as "loopback").
+const trustProxyEnv = process.env.TRUST_PROXY ?? "1";
+const trustProxySetting: number | boolean | string =
+  trustProxyEnv === "true" ? true
+  : trustProxyEnv === "false" ? false
+  : /^-?\d+$/.test(trustProxyEnv) ? Number(trustProxyEnv)
+  : trustProxyEnv;
+app.set("trust proxy", trustProxySetting);
+
 // Security headers — applied to every response (JSON error bodies included).
 // Mirrors services/api/src/security.rs's security_headers_middleware.
 app.use((req: Request, res: Response, next: NextFunction) => {
