@@ -74,6 +74,10 @@ const config: TTSConfig = {
   cache: {
     ttlMs: parseInt(process.env.TTS_CACHE_TTL_MS || "86400000", 10),
     maxEntries: parseInt(process.env.TTS_CACHE_MAX_ENTRIES || "1000", 10),
+    // Bounds total cached audio bytes, not just entry count — MAX_INPUT_LENGTH
+    // allows several-MB buffers per entry, so maxEntries alone permits
+    // gigabytes of heap growth. Default: 256 MiB.
+    maxBytes: parseInt(process.env.TTS_CACHE_MAX_BYTES || String(256 * 1024 * 1024), 10),
   },
   retry: {
     maxRetries: parseInt(process.env.TTS_MAX_RETRIES || "3", 10),
