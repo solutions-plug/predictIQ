@@ -5,6 +5,9 @@
   "private": true,
   "main": "dist/TTSService.js",
   "types": "dist/TTSService.d.ts",
+  "engines": {
+    "node": ">=20.0.0 <21.0.0"
+  },
   "scripts": {
     "build": "tsc",
     "dev": "ts-node src/server.ts",
@@ -18,21 +21,27 @@
   "dependencies": {
     "@google-cloud/text-to-speech": "^6.4.1",
     "@opentelemetry/api": "^1.9.1",
-    "@opentelemetry/core": "^2.7.1",
-    "@opentelemetry/exporter-trace-otlp-grpc": "^0.218.0",
-    "@opentelemetry/instrumentation-http": "^0.218.0",
-    "@opentelemetry/resources": "^2.7.1",
-    "@opentelemetry/sdk-node": "^0.218.0",
-    "@opentelemetry/semantic-conventions": "^1.41.1",
-    "express": "^5.2.1"
+    "@opentelemetry/core": "^2.10.0",
+    "@opentelemetry/exporter-trace-otlp-grpc": "^0.221.0",
+    "@opentelemetry/instrumentation-http": "^0.221.0",
+    "@opentelemetry/resources": "^2.10.0",
+    "@opentelemetry/sdk-node": "^0.221.0",
+    "@opentelemetry/semantic-conventions": "^1.43.0",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.6.1",
+    "ioredis": "^5.11.1",
+    "opossum": "^10.0.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/jest": "30.0.0",
-    "@types/node": "^25.9.1",
+    "@types/node": "^26.1.1",
+    "@types/opossum": "^8.1.8",
+    "@types/supertest": "^7.2.1",
     "jest": "^30.4.2",
-    "ts-jest": "^29.4.11",
+    "supertest": "^7.2.2",
+    "ts-jest": "^29.4.12",
     "ts-node": "^10.9.0",
-    "typescript": "^6.0.3"
+    "typescript": "^7.0.2"
   }
 }

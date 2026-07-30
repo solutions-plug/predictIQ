@@ -1,0 +1,13 @@
+<svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="PredictIQ">
+  <defs>
+    <linearGradient id="pq-mark" x1="4" y1="4" x2="36" y2="36" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F59E0B"/>
+      <stop offset="0.5" stop-color="#FBBF24"/>
+      <stop offset="1" stop-color="#8B5CF6"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="36" height="36" rx="11" fill="url(#pq-mark)"/>
+  <path d="M11 26.5 L17 19.5 L22 23.5 L29 14" stroke="#0B1120" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="29" cy="14" r="2.6" fill="#0B1120"/>
+  <circle cx="11" cy="26.5" r="2.2" fill="#0B1120"/>
+</svg>

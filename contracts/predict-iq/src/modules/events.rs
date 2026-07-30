@@ -185,9 +185,25 @@ pub fn emit_circuit_breaker_auto(e: &Env, contract_address: Address, error_count
     );
 }
 
-pub fn emit_fee_collected(e: &Env, _market_id: u64, contract_address: Address, amount: i128) {
+/// Emits a standardized fee-collection event.
+///
+/// Topic layout (fixed across every call site so indexers can interpret it
+/// unambiguously regardless of which fee path emitted it):
+/// - Topic 0: `fee_colct` symbol
+/// - Topic 1: market_id (u64, 0 when not tied to a specific market)
+/// - Topic 2: token - the asset address the fee was collected in
+/// - Topic 3: recipient - the address that actually holds the fee (e.g. the
+///   protocol treasury for market-creation fees, or this contract itself for
+///   accumulated per-bet fees tracked via `DataKey::FeeRevenue(token)`)
+pub fn emit_fee_collected(
+    e: &Env,
+    _market_id: u64,
+    token: Address,
+    recipient: Address,
+    amount: i128,
+) {
     e.events().publish(
-        (symbol_short!("fee_colct"), 0u64, contract_address),
+        (symbol_short!("fee_colct"), 0u64, token, recipient),
         (EVENT_VERSION, amount),
     );
 }

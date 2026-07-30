@@ -1,0 +1,40 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "Required template variables for each PredictIQ email template. This file is the source-of-truth for startup validation and unit tests.",
+  "templates": {
+    "newsletter_confirmation": {
+      "description": "Sent when a user subscribes to the newsletter and must confirm their address.",
+      "required_variables": ["confirm_url", "email"],
+      "variable_descriptions": {
+        "confirm_url": "Full confirmation URL including token query parameter",
+        "email": "Subscriber email address shown in the email body"
+      }
+    },
+    "waitlist_confirmation": {
+      "description": "Sent when a user joins the launch waitlist.",
+      "required_variables": ["email"],
+      "variable_descriptions": {
+        "email": "User email address shown in the confirmation message"
+      }
+    },
+    "contact_form_auto_response": {
+      "description": "Auto-response sent when a user submits the contact form.",
+      "required_variables": ["name", "subject", "message"],
+      "variable_descriptions": {
+        "name": "User's display name from the contact form",
+        "subject": "Subject line the user entered in the contact form",
+        "message": "Full message body the user submitted"
+      }
+    },
+    "welcome_email": {
+      "description": "Sent when a new user account is created.",
+      "required_variables": ["name", "dashboard_url", "help_url", "unsubscribe_url"],
+      "variable_descriptions": {
+        "name": "User's display name",
+        "dashboard_url": "Absolute URL to the user dashboard",
+        "help_url": "Absolute URL to the help centre",
+        "unsubscribe_url": "Absolute URL to the newsletter unsubscribe endpoint"
+      }
+    }
+  }
+}

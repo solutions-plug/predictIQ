@@ -28,6 +28,14 @@ pub fn set_state(e: &Env, state: CircuitBreakerState) -> Result<(), ErrorCode> {
     _set_state_internal(e, state)
 }
 
+/// Issue #1190/#1191: entrypoint for governance's guardian-majority emergency
+/// pause. Writes/TTL-manages CircuitBreakerState the same way every other
+/// transition does, avoiding the persistent-storage TTL mismatch from directly
+/// poking instance storage elsewhere.
+pub(crate) fn force_pause(e: &Env) -> Result<(), ErrorCode> {
+    _set_state_internal(e, CircuitBreakerState::Paused)
+}
+
 fn _set_state_internal(e: &Env, state: CircuitBreakerState) -> Result<(), ErrorCode> {
     match state {
         CircuitBreakerState::Open => {

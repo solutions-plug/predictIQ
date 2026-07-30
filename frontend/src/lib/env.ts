@@ -25,7 +25,7 @@ export function validateEnvironment(): EnvConfig {
   });
 
   if (!result.success) {
-    const issues = result.error.errors
+    const issues = result.error.issues
       .map((e) => `  - ${e.path.join('.')}: ${e.message}`)
       .join('\n');
     throw new Error(`Missing or invalid environment variables:\n${issues}`);

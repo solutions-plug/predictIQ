@@ -2,9 +2,11 @@
 
 import React, { ReactNode, ReactElement } from 'react';
 
+type FallbackRenderer = (reset: () => void) => ReactElement;
+
 interface Props {
   children: ReactNode;
-  fallback?: ReactElement;
+  fallback?: ReactElement | FallbackRenderer;
   onError?: (error: Error, errorInfo: React.ErrorInfo) => void;
   section?: string;
 }
@@ -18,6 +20,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
   constructor(props: Props) {
     super(props);
     this.state = { hasError: false, error: null };
+    this.reset = this.reset.bind(this);
   }
 
   static getDerivedStateFromError(error: Error): State {
@@ -29,8 +32,18 @@ export class ErrorBoundary extends React.Component<Props, State> {
     this.props.onError?.(error, errorInfo);
   }
 
+  // Soft-resets the boundary so children remount and retry on their own,
+  // instead of forcing a full page reload for recoverable errors.
+  reset() {
+    this.setState({ hasError: false, error: null });
+  }
+
   render() {
     if (this.state.hasError) {
+      if (typeof this.props.fallback === 'function') {
+        return this.props.fallback(this.reset);
+      }
+
       return (
         this.props.fallback || (
           <div 

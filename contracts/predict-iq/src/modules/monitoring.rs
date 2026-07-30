@@ -119,8 +119,8 @@ mod tests {
         reset_monitoring, track_error, track_storage_count, DataKey, STORAGE_ALERT_THRESHOLD,
     };
     use soroban_sdk::{
-        testutils::{Events, Ledger},
-        Env,
+        testutils::{Address as _, Events, Ledger},
+        Address, Env,
     };
 
     #[test]
@@ -185,5 +185,31 @@ mod tests {
         let e = Env::default();
         let count = track_storage_count(&e);
         assert!(count >= 0);
+    }
+
+    /// Issue: track_error was documented as the trigger for the auto circuit
+    /// breaker but nothing in the codebase ever called it from a real failure
+    /// path. This drives a burst of failures through `sac::safe_transfer`
+    /// (transfers to an address with no deployed token contract, which
+    /// `try_transfer` surfaces as a recoverable error rather than a host trap)
+    /// and asserts the documented threshold actually trips the breaker.
+    #[test]
+    fn repeated_transfer_failures_trip_circuit_breaker() {
+        let e = Env::default();
+        let token = Address::generate(&e);
+        let from = Address::generate(&e);
+        let to = Address::generate(&e);
+
+        for _ in 0..11 {
+            let result = crate::modules::sac::safe_transfer(&e, &token, &from, &to, &100);
+            assert!(result.is_err());
+        }
+
+        let state: crate::types::CircuitBreakerState = e
+            .storage()
+            .instance()
+            .get(&crate::types::ConfigKey::CircuitBreakerState)
+            .unwrap();
+        assert_eq!(state, crate::types::CircuitBreakerState::Open);
     }
 }

@@ -76,6 +76,19 @@ impl EmailTemplateEngine {
     }
 
     pub fn render(&self, template_name: &str, data: &Value) -> Result<String> {
+        // Guard: reject oversized context data before allocating in the renderer.
+        // A malicious or buggy caller could pass a multi-MB JSON object; serialising
+        // it inside Handlebars would cause excessive memory allocation.
+        const MAX_CONTEXT_BYTES: usize = 64 * 1024; // 64 KB
+        let serialized_len = data.to_string().len();
+        if serialized_len > MAX_CONTEXT_BYTES {
+            anyhow::bail!(
+                "template context for '{}' exceeds the 64 KB limit ({} bytes)",
+                template_name,
+                serialized_len
+            );
+        }
+
         self.handlebars
             .render(template_name, data)
             .with_context(|| format!("Failed to render template: {}", template_name))
@@ -166,5 +179,186 @@ mod tests {
 
         let subject = engine.get_subject("newsletter_confirmation", &data);
         assert_eq!(subject, "Confirm your newsletter subscription");
+    }
+
+    // ── Context size limit tests (Issue 3) ────────────────────────────────────
+
+    #[test]
+    fn oversized_context_is_rejected() {
+        let engine = EmailTemplateEngine::new().unwrap();
+        // Build a context that exceeds 64 KB when serialised.
+        let big_string = "x".repeat(70_000);
+        let data = json!({
+            "confirm_url": "https://example.com/confirm",
+            "email": big_string
+        });
+        let err = engine.render("newsletter_confirmation", &data).unwrap_err();
+        assert!(
+            err.to_string().contains("64 KB limit"),
+            "error should mention the 64 KB limit, got: {err}"
+        );
+    }
+
+    #[test]
+    fn context_at_limit_boundary_is_accepted() {
+        let engine = EmailTemplateEngine::new().unwrap();
+        // Build a context just under 64 KB.
+        let padding = "a".repeat(60_000);
+        let data = json!({
+            "confirm_url": "https://example.com/confirm?token=abc",
+            "email": padding
+        });
+        // Should not return a size error (may fail rendering due to the raw value
+        // appearing in the template, but we just want the size check to pass).
+        let result = engine.render("newsletter_confirmation", &data);
+        // Size check passes — it may succeed or fail for other reasons, but NOT
+        // because of the 64 KB limit.
+        if let Err(ref e) = result {
+            assert!(
+                !e.to_string().contains("64 KB limit"),
+                "should not hit size limit at {}, err: {e}",
+                serde_json::to_string(&data).unwrap().len()
+            );
+        }
+    }
+
+    // ── Boundary-value tests per template (Issue 4) ───────────────────────────
+
+    // newsletter_confirmation
+
+    #[test]
+    fn newsletter_confirmation_empty_strings() {
+        let engine = EmailTemplateEngine::new().unwrap();
+        let data = json!({ "confirm_url": "", "email": "" });
+        // Strict mode is on; empty strings are valid values — should render.
+        assert!(engine.render("newsletter_confirmation", &data).is_ok());
+    }
+
+    #[test]
+    fn newsletter_confirmation_special_chars() {
+        let engine = EmailTemplateEngine::new().unwrap();
+        let data = json!({
+            "confirm_url": "https://example.com/confirm?token=<script>alert(1)</script>",
+            "email": "user+tag@example.com"
+        });
+        let html = engine.render("newsletter_confirmation", &data).unwrap();
+        // Handlebars HTML-escapes by default; angle brackets must be escaped.
+        assert!(!html.contains("<script>"), "XSS payload must be escaped");
+    }
+
+    #[test]
+    fn newsletter_confirmation_long_strings() {
+        let engine = EmailTemplateEngine::new().unwrap();
+        let long_url = format!("https://example.com/confirm?token={}", "a".repeat(2000));
+        let data = json!({ "confirm_url": long_url, "email": "user@example.com" });
+        assert!(engine.render("newsletter_confirmation", &data).is_ok());
+    }
+
+    // waitlist_confirmation
+
+    #[test]
+    fn waitlist_confirmation_empty_email() {
+        let engine = EmailTemplateEngine::new().unwrap();
+        let data = json!({ "email": "" });
+        assert!(engine.render("waitlist_confirmation", &data).is_ok());
+    }
+
+    #[test]
+    fn waitlist_confirmation_special_chars_in_email() {
+        let engine = EmailTemplateEngine::new().unwrap();
+        let data = json!({ "email": "user+test&special=<chars>@example.com" });
+        let html = engine.render("waitlist_confirmation", &data).unwrap();
+        assert!(!html.contains("<chars>"), "angle brackets must be HTML-escaped");
+    }
+
+    #[test]
+    fn waitlist_confirmation_long_email() {
+        let engine = EmailTemplateEngine::new().unwrap();
+        let local = "a".repeat(64);
+        let data = json!({ "email": format!("{local}@example.com") });
+        assert!(engine.render("waitlist_confirmation", &data).is_ok());
+    }
+
+    // contact_form_auto_response
+
+    #[test]
+    fn contact_form_empty_fields() {
+        let engine = EmailTemplateEngine::new().unwrap();
+        let data = json!({ "name": "", "subject": "", "message": "" });
+        assert!(engine.render("contact_form_auto_response", &data).is_ok());
+    }
+
+    #[test]
+    fn contact_form_special_chars() {
+        let engine = EmailTemplateEngine::new().unwrap();
+        let data = json!({
+            "name": "<script>alert('xss')</script>",
+            "subject": "Re: Test & <HTML>",
+            "message": "Hello \"world\" & <world>"
+        });
+        let html = engine.render("contact_form_auto_response", &data).unwrap();
+        assert!(!html.contains("<script>"), "script tags must be escaped");
+        assert!(!html.contains("<HTML>"), "angle brackets must be escaped");
+    }
+
+    #[test]
+    fn contact_form_long_message() {
+        let engine = EmailTemplateEngine::new().unwrap();
+        let data = json!({
+            "name": "Test User",
+            "subject": "Long message test",
+            "message": "a".repeat(5000)
+        });
+        assert!(engine.render("contact_form_auto_response", &data).is_ok());
+    }
+
+    // welcome_email
+
+    #[test]
+    fn welcome_email_empty_strings() {
+        let engine = EmailTemplateEngine::new().unwrap();
+        let data = json!({
+            "name": "",
+            "dashboard_url": "",
+            "help_url": "",
+            "unsubscribe_url": ""
+        });
+        assert!(engine.render("welcome_email", &data).is_ok());
+    }
+
+    #[test]
+    fn welcome_email_special_chars_in_name() {
+        let engine = EmailTemplateEngine::new().unwrap();
+        let data = json!({
+            "name": "O'Brien & <Test>",
+            "dashboard_url": "https://example.com/dashboard",
+            "help_url": "https://example.com/help",
+            "unsubscribe_url": "https://example.com/unsubscribe"
+        });
+        let html = engine.render("welcome_email", &data).unwrap();
+        assert!(!html.contains("<Test>"), "angle brackets must be escaped");
+    }
+
+    #[test]
+    fn welcome_email_long_name() {
+        let engine = EmailTemplateEngine::new().unwrap();
+        let data = json!({
+            "name": "A".repeat(200),
+            "dashboard_url": "https://example.com/dashboard",
+            "help_url": "https://example.com/help",
+            "unsubscribe_url": "https://example.com/unsubscribe"
+        });
+        assert!(engine.render("welcome_email", &data).is_ok());
+    }
+
+    // ── Startup validation sanity check ──────────────────────────────────────
+
+    #[test]
+    fn engine_init_validates_all_templates_at_startup() {
+        // If any template has a syntax error or missing variable, new() will fail.
+        assert!(
+            EmailTemplateEngine::new().is_ok(),
+            "All templates must be valid at startup"
+        );
     }
 }

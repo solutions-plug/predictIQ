@@ -35,6 +35,8 @@ tags:
   - name: newsletter
   - name: email
   - name: webhooks
+  - name: audit
+    description: Audit log retrieval and statistics (admin, requires ApiKeyAuth)
 
 paths:
   /health:
@@ -385,17 +387,16 @@ paths:
           $ref: "#/components/responses/ApiError"
 
   /api/v1/newsletter/gdpr/export:
-    get:
+    post:
       tags: [newsletter]
       operationId: newsletterGdprExport
       summary: GDPR data export for a subscriber
-      parameters:
-        - name: email
-          in: query
-          required: true
-          schema:
-            type: string
-            format: email
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmailRequest"
       responses:
         "200":
           description: Subscriber data
@@ -880,8 +881,7 @@ components:
         title:
           type: string
         volume:
-          type: number
-          format: double
+          type: string
         ends_at:
           type: string
           format: date-time
@@ -894,10 +894,12 @@ components:
 
     InvalidationResult:
       type: object
-      required: [invalidated_keys]
+      required: [invalidated_keys, cache_invalidated]
       properties:
         invalidated_keys:
           type: integer
+        cache_invalidated:
+          type: boolean
 
     NewsletterSubscribeRequest:
       type: object

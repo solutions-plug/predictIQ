@@ -5,7 +5,7 @@ use crate::errors::ErrorCode;
 use crate::modules::markets;
 use crate::types::{CreatorReputation, MarketStatus, MarketTier, OracleConfig};
 use crate::{PredictIQ, PredictIQClient};
-use soroban_sdk::{testutils::Address as _, Address, Env, String, Vec};
+use soroban_sdk::{testutils::Address as _, token, Address, Env, String, Vec};
 
 fn setup() -> (Env, PredictIQClient<'static>, Address, Address) {
     let env = Env::default();
@@ -413,4 +413,109 @@ fn test_tier_upgrade_path() {
         &0,
         &0,
     );
+}
+
+// ── place_bet accessor functions (markets::get_outcome_stake / set_outcome_stake /
+// increment_outcome_bet_count / validate_parent_market) ────────────────────────
+
+/// place_bet must correctly accumulate per-outcome stakes and unique-bettor counts
+/// via the real markets accessor functions, including on a conditional (child) market.
+#[test]
+fn test_place_bet_tracks_outcome_stakes_and_winner_counts() {
+    let (env, client, admin, cid) = setup();
+
+    let parent_id = create_resolved_market(&env, &client, &cid, &admin, 1000, 2000, 0);
+
+    let token_admin = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin);
+    let token = token_id.address();
+
+    let child_id = client.create_market(
+        &admin,
+        &String::from_str(&env, "Child"),
+        &two_options(&env),
+        &1500,
+        &1800,
+        &oracle_config(&env),
+        &MarketTier::Basic,
+        &token,
+        &parent_id,
+        &0, // parent resolved to outcome 0
+    );
+
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let carol = Address::generate(&env);
+    let token_client = token::StellarAssetClient::new(&env, &token);
+    token_client.mint(&alice, &10_000);
+    token_client.mint(&bob, &10_000);
+    token_client.mint(&carol, &10_000);
+
+    client.place_bet(&alice, &child_id, &0, &4_000, &token, &None);
+    client.place_bet(&bob, &child_id, &0, &1_500, &token, &None); // same outcome, different bettor
+    client.place_bet(&carol, &child_id, &1, &2_500, &token, &None);
+
+    let market = client.get_market(&child_id).unwrap();
+    assert_eq!(
+        market.outcome_stakes.get(0).unwrap_or(0),
+        5_500,
+        "outcome 0 stake should be the sum of alice's and bob's bets"
+    );
+    assert_eq!(
+        market.outcome_stakes.get(1).unwrap_or(0),
+        2_500,
+        "outcome 1 stake should equal carol's bet"
+    );
+    assert_eq!(
+        market.winner_counts.get(0).unwrap_or(0),
+        2,
+        "two unique bettors placed bets on outcome 0"
+    );
+    assert_eq!(
+        market.winner_counts.get(1).unwrap_or(0),
+        1,
+        "one unique bettor placed a bet on outcome 1"
+    );
+}
+
+/// place_bet must re-validate the parent market at bet time via
+/// markets::validate_parent_market, not just trust state captured when the
+/// conditional market was created.
+#[test]
+fn test_place_bet_on_conditional_market_rejected_when_parent_reverts() {
+    let (env, client, admin, cid) = setup();
+
+    let parent_id = create_resolved_market(&env, &client, &cid, &admin, 1000, 2000, 0);
+
+    let token_admin = Address::generate(&env);
+    let token_id = env.register_stellar_asset_contract_v2(token_admin);
+    let token = token_id.address();
+
+    let child_id = client.create_market(
+        &admin,
+        &String::from_str(&env, "Child"),
+        &two_options(&env),
+        &1500,
+        &1800,
+        &oracle_config(&env),
+        &MarketTier::Basic,
+        &token,
+        &parent_id,
+        &0,
+    );
+
+    // Simulate the parent's resolution being reverted (e.g. by a dispute) after
+    // the child market was already created.
+    env.as_contract(&cid, || {
+        let mut parent = markets::get_market(&env, parent_id).unwrap();
+        parent.status = MarketStatus::Active;
+        markets::update_market(&env, parent);
+    });
+
+    let alice = Address::generate(&env);
+    let token_client = token::StellarAssetClient::new(&env, &token);
+    token_client.mint(&alice, &10_000);
+
+    let result = client.try_place_bet(&alice, &child_id, &0, &1_000, &token, &None);
+    assert_eq!(result, Err(Ok(ErrorCode::ParentMarketNotResolved)));
 }

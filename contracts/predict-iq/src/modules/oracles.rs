@@ -100,6 +100,7 @@ pub fn validate_oracle_staleness(
             any_found = true;
             let age = current_time.saturating_sub(update_time);
             if age > max_staleness {
+                crate::modules::monitoring::track_error(e);
                 return Err(ErrorCode::StalePrice);
             }
         }
@@ -108,6 +109,7 @@ pub fn validate_oracle_staleness(
     if any_found {
         Ok(())
     } else {
+        crate::modules::monitoring::track_error(e);
         Err(ErrorCode::OracleFailure)
     }
 }

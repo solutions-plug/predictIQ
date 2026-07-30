@@ -148,6 +148,63 @@ cd services/api
 cargo test
 ```
 
+### Integration Tests (API — requires backing services)
+
+Integration tests require PostgreSQL, Redis, and a Stellar RPC node.
+The easiest way to start them is via the provided Makefile target, which
+starts a Docker Compose stack, runs the tests, and tears the stack down:
+
+```bash
+make test-integration
+```
+
+You can also manage the services manually:
+
+```bash
+# Start services
+docker compose -f docker-compose.test.yml up -d --wait
+
+# Run tests
+cd services/api
+TEST_DATABASE_URL=postgres://predictiq_test:predictiq_test@localhost:5433/predictiq_test \
+TEST_REDIS_URL=redis://localhost:6380 \
+STELLAR_RPC_URL=http://localhost:8080 \
+cargo test --test '*' -- --test-threads=1
+
+# Tear down (always run, even on failure)
+docker compose -f docker-compose.test.yml down -v
+```
+
+If a previous run left the stack running, clean it up first:
+
+```bash
+make test-integration-down
+```
+
+#### Database fixture — transaction rollback
+
+Each integration test that touches the database should use the
+`with_test_transaction` helper from `tests/common/db_fixture.rs`.
+It wraps the test body in a database transaction that is **rolled back**
+at the end, so no test leaves rows that can affect subsequent tests:
+
+```rust
+use common::db_fixture::with_test_transaction;
+
+#[tokio::test]
+async fn my_test() {
+    let pool = common::db_fixture::test_pool().await;
+    with_test_transaction(&pool, |mut conn| async move {
+        // use conn for all DB operations in this test
+        sqlx::query("INSERT INTO ...").execute(&mut *conn).await.unwrap();
+        // transaction is automatically rolled back when this closure returns
+    }).await;
+}
+```
+
+Do **not** commit within the closure — the rollback guarantees a clean slate
+for the next test regardless of execution order.
+
 ### Frontend (Next.js)
 
 ```bash
@@ -223,6 +280,58 @@ make test
 
 ---
 
+### Property-Based Tests
+
+Validation logic in `src/validation.rs` is covered by property-based tests
+using [`proptest`](https://github.com/proptest-rs/proptest).  These run as
+part of `cargo test` and are gated in CI with at least **1 000 cases per
+property** via `PROPTEST_CASES=1000`.
+
+To run them locally with the same case count:
+
+```bash
+cd services/api
+PROPTEST_CASES=1000 cargo test prop_
+```
+
+When adding a new validation function, add a corresponding `proptest!` block
+that at minimum covers:
+
+- Zero-length input
+- Input longer than `MAX_LEN + 1`
+- All-whitespace strings
+- Strings containing null bytes (`\0`)
+- Strings that must pass unchanged (valid inputs)
+
+## Minimum Supported Rust Version (MSRV)
+
+The `services/api` crate declares a `rust-version` field in its `Cargo.toml`.
+This is the **oldest** Rust toolchain version the crate is guaranteed to compile on.
+
+### Current MSRV
+
+| Crate | MSRV |
+|-------|------|
+| `predictiq-api` (`services/api`) | **1.75.0** |
+
+### Policy
+
+- The MSRV is set to the version required by the most-restrictive direct dependency
+  (currently `axum 0.7`, `sqlx 0.8`, and `tower-http 0.6`, all of which require ≥ 1.75).
+- Bumping the MSRV is a **semver-minor** change and must be documented in `CHANGELOG.md`
+  via a `chore(api): bump MSRV to X.Y.Z` commit.
+- A dedicated CI job (`.github/workflows/msrv.yml`) installs the declared MSRV toolchain
+  using `rustup` and runs `cargo check` + `cargo build --release` against it on every PR
+  that touches `services/api/`.
+- To verify the MSRV locally:
+
+  ```bash
+  rustup toolchain install 1.75
+  rustup run 1.75 cargo check --manifest-path services/api/Cargo.toml
+  ```
+
+---
+
 ## Code Style
 
 ### Rust
@@ -264,6 +373,47 @@ Sensitive paths have designated reviewers defined in [`.github/CODEOWNERS`](.git
 - Copy `services/api/.env.example` to `services/api/.env` and fill in real values locally. The `.env` file is gitignored.
 - All placeholder values in `.env.example` are intentionally empty or clearly fake.
 - Gitleaks runs on every push to detect accidental secret commits (see `.gitleaks.toml`).
+
+---
+
+## SAST and Security Tooling
+
+This project enforces security scanning at every stage of the development lifecycle.
+
+### Tools and thresholds
+
+| Tool | Scope | Threshold |
+|------|-------|-----------|
+| [cargo-audit](https://github.com/RustSec/rustsec/tree/main/cargo-audit) | Rust dependencies (contracts + API) | Fails CI on any known CVE |
+| [Semgrep](https://semgrep.dev/) | Rust, Node.js, TypeScript, JavaScript source | Fails CI on `error`-level findings; rulesets: `p/security-audit`, `p/rust`, `p/nodejs`, `p/typescript`, `p/javascript` |
+| [Gitleaks](https://github.com/gitleaks/gitleaks) | Git history and staged changes | Fails CI and pre-push hook on any detected secret |
+| [TruffleHog](https://github.com/trufflesecurity/trufflehog) | Git history (verified secrets only) | Fails CI on verified secrets |
+| [Trivy](https://github.com/aquasecurity/trivy) | Filesystem and container images | Fails CI on `CRITICAL` or `HIGH` findings |
+| [CodeQL](https://codeql.github.com/) | JavaScript, TypeScript, Rust | Fails CI on security-extended queries |
+
+### Local setup
+
+Install and activate the gitleaks pre-push hook to catch secrets before they reach CI:
+
+```bash
+# Install gitleaks (macOS)
+brew install gitleaks
+
+# Or on Linux
+wget https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks_linux_amd64 -O gitleaks
+sudo install gitleaks /usr/local/bin/
+
+# Activate the project hook (run once after cloning)
+git config core.hooksPath .githooks
+```
+
+The hook runs `gitleaks protect --staged` on every `git push`, scanning staged commits against `.gitleaks.toml`. To skip in an emergency (e.g. a false positive you've already triaged):
+
+```bash
+SKIP=gitleaks git push
+```
+
+Custom rules for Stellar keys and API tokens are defined in `.gitleaks.toml`.
 
 ---
 

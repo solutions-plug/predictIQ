@@ -87,19 +87,6 @@ pub fn set_governance_token(e: &Env, token: Address) -> Result<(), ErrorCode> {
     Ok(())
 }
 
-pub fn set_fee_admin(e: &Env, fee_admin: Address) -> Result<(), ErrorCode> {
-    require_admin(e)?;
-    e.storage()
-        .persistent()
-        .set(&ConfigKey::GuardianAccount, &fee_admin);
-    bump_gov_ttl(e, &ConfigKey::GuardianAccount);
-    Ok(())
-}
-
-pub fn get_fee_admin(e: &Env) -> Option<Address> {
-    e.storage().persistent().get(&ConfigKey::GuardianAccount)
-}
-
 #[cfg(test)]
 mod ownership_transfer_tests {
     use super::{accept_admin, cancel_admin_transfer, get_admin, propose_admin, set_admin};
@@ -162,5 +149,37 @@ mod ownership_transfer_tests {
         let caller = Address::generate(&e);
         let err = accept_admin(&e, caller).unwrap_err();
         assert_eq!(err, ErrorCode::PendingTransferNotFound);
+    }
+}
+
+/// Issue #1195: admin::set_fee_admin/get_fee_admin used to write/read
+/// ConfigKey::GuardianAccount — the same key set_guardian/get_guardian use —
+/// instead of the dedicated ConfigKey::FeeAdmin key that fees::set_fee_admin
+/// correctly uses. The landmine functions have been removed; this test
+/// confirms the guardian address is never touched by the real fee-admin flow.
+#[cfg(test)]
+mod fee_admin_guardian_isolation_tests {
+    use super::{get_guardian, set_admin, set_guardian};
+    use crate::modules::fees;
+    use soroban_sdk::{testutils::Address as _, Address, Env};
+
+    #[test]
+    fn fee_admin_flow_does_not_affect_guardian_address() {
+        let e = Env::default();
+        e.mock_all_auths();
+
+        let owner = Address::generate(&e);
+        set_admin(&e, owner);
+
+        let guardian = Address::generate(&e);
+        set_guardian(&e, guardian.clone()).unwrap();
+
+        let fee_admin = Address::generate(&e);
+        fees::set_fee_admin(&e, fee_admin.clone()).unwrap();
+
+        // The guardian address must be unchanged by the fee-admin flow, and
+        // the fee-admin and guardian addresses must be independently readable.
+        assert_eq!(get_guardian(&e), Some(guardian));
+        assert_eq!(fees::get_fee_admin(&e), Some(fee_admin));
     }
 }

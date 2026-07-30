@@ -74,6 +74,51 @@ services:
     networks:
       - predictiq-tracing
 
+  # ── TTS Service ──────────────────────────────────────────────────────────────
+  # Included so the TTS service can export traces to the OpenTelemetry Collector
+  # running in this compose stack.
+  tts:
+    build:
+      context: ./services/tts
+      dockerfile: Dockerfile
+    container_name: predictiq-tts
+    ports:
+      - "3000:3000"
+    environment:
+      - TTS_PROVIDER=${TTS_PROVIDER:-elevenlabs}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+      - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS:-}
+      - TTS_OUTPUT_DIR=/tmp/tts-output
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - OTEL_SERVICE_NAME=predictiq-tts
+    volumes:
+      - tts-output:/tmp/tts-output
+    healthcheck:
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - "require('http').get('http://localhost:3000/health/live',(r)=>{process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    depends_on:
+      - otel-collector
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    networks:
+      - predictiq-tracing
+
 networks:
   predictiq-tracing:
     driver: bridge
+
+volumes:
+  tts-output:

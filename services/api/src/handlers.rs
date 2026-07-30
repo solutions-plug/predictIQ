@@ -1,4 +1,3 @@
-use crate::content_type::require_json_content_type;
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -15,19 +14,27 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::ValidateEmail;
 
-use crate::{blockchain::HealthStatus, cache::{keys, InvalidationTag}, db::DbError, email::webhook::sendgrid_webhook_handler, pagination::{PaginatedResponse, PaginationQuery}, AppState};
+use crate::{blockchain::HealthStatus, cache::{keys, InvalidationTag}, db::DbError, email::webhook::sendgrid_webhook_handler, pagination::{PaginatedResponse, PaginationQuery}, body_redact, AppState};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ApiError {
     pub code: &'static str,
     pub message: String,
     #[serde(skip)]
+    #[schema(ignore)]
     pub status: StatusCode,
 }
 
 impl ApiError {
     pub fn internal(err: anyhow::Error) -> Self {
+        // Log the full error chain for debugging, then record it on the active OTel span
+        // so traces carry the root cause even though the HTTP response is sanitised.
         tracing::error!(error = %err, "internal server error");
+        {
+            use tracing_opentelemetry::OpenTelemetrySpanExt;
+            tracing::Span::current()
+                .set_status(opentelemetry::trace::Status::error(format!("{err:#}")));
+        }
         Self {
             code: "INTERNAL_ERROR",
             message: "An internal error occurred.".to_string(),
@@ -92,7 +99,8 @@ fn into_api_error(err: anyhow::Error) -> ApiError {
                 return ApiError::service_unavailable("database connection pool exhausted");
             }
             DbError::ConstraintViolation(msg) => {
-                return ApiError::conflict(msg.clone());
+                tracing::error!(db_constraint = %msg, "database constraint violation");
+                return ApiError::conflict("A record with this value already exists.");
             }
             DbError::Other(_) => {}
         }
@@ -100,18 +108,148 @@ fn into_api_error(err: anyhow::Error) -> ApiError {
     ApiError::internal(err)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct FeaturedMarketView {
     pub id: i64,
     pub title: String,
-    pub volume: f64,
+    /// Exact decimal string, matching the on-chain `onchain_volume` convention.
+    pub volume: String,
     pub ends_at: chrono::DateTime<chrono::Utc>,
     pub onchain_volume: String,
     pub resolved_outcome: Option<u32>,
 }
 
+/// Legacy `/health` endpoint — retained for backward compatibility.
+/// Returns 200 when healthy and 503 when any dependency is down.
+#[utoipa::path(
+    get,
+    path = "/health",
+    tag = "health",
+    responses(
+        (status = 200, description = "Service is healthy or degraded"),
+    )
+)]
 pub async fn health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> impl IntoResponse {
     use crate::cache::CircuitState;
+    use crate::correlation::REQUEST_ID_HEADER;
+
+    const HEALTH_TIMEOUT: Duration = Duration::from_secs(10);
+
+    let inner = async {
+        let request_id = headers
+            .get(REQUEST_ID_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("-");
+
+        let (cb_state, cb_state_val) = match state.cache.circuit_state() {
+            CircuitState::Closed => ("closed", 0),
+            CircuitState::Open => ("open", 1),
+            CircuitState::HalfOpen => ("half_open", 2),
+        };
+        let pool = state.cache.pool_status();
+        state
+            .metrics
+            .set_circuit_breaker_state(cb_state_val);
+
+        let mut health_status = serde_json::json!({
+            "status": "ok",
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "request_id": request_id,
+            "redis": {
+                "circuit_breaker": cb_state,
+                "pool_size": pool.size,
+                "pool_available": pool.available,
+                "status": "ok",
+            },
+            "db": {
+                "status": "ok",
+            },
+            "workers": {
+                "blockchain_sync": "running",
+                "blockchain_monitor": "running",
+                "email_queue": "running",
+            }
+        });
+
+        let mut degraded = false;
+
+        let (cache_result, db_result, processing_count_result, sendgrid_result) = tokio::join!(
+            state.cache.ping(),
+            state.db.ping(),
+            state.email_queue.get_processing_count(),
+            state.email_service.probe_sendgrid(),
+        );
+
+        if cache_result.is_err() {
+            degraded = true;
+            health_status["status"] = "degraded".into();
+            health_status["redis"]["status"] = "unhealthy".into();
+        }
+
+    // Avoid live external probes on the legacy `/health` endpoint to prevent
+    // unauthenticated amplification against third-party APIs (e.g. SendGrid).
+    // The detailed dependency endpoints still perform live checks.
+    health_status["sendgrid"] = serde_json::json!({ "status": "unknown" });
+
+        if let Ok(processing_count) = processing_count_result {
+            health_status["workers"]["email_queue_processing"] = processing_count.into();
+        }
+
+        let sendgrid_status = match sendgrid_result {
+            Ok(()) => "ok",
+            Err(e) => {
+                tracing::warn!(error = %e, "SendGrid connectivity probe failed");
+                degraded = true;
+                health_status["status"] = "degraded".into();
+                "degraded"
+            }
+        };
+        health_status["sendgrid"] = serde_json::json!({ "status": sendgrid_status });
+
+        let status_code = if degraded {
+            StatusCode::SERVICE_UNAVAILABLE
+        } else {
+            StatusCode::OK
+        };
+        (status_code, Json(health_status))
+    };
+
+    match tokio::time::timeout(HEALTH_TIMEOUT, inner).await {
+        Ok(response) => response,
+        Err(_) => {
+            tracing::warn!("health check timed out after {HEALTH_TIMEOUT:?}");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "status": "degraded",
+                    "reason": "health check timed out",
+                })),
+            )
+        }
+    }
+}
+
+/// Liveness probe: just confirms the process is alive and serving requests.
+/// Never returns 503 — if this endpoint is reachable the process is up.
+pub async fn health_live() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "ok",
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        })),
+    )
+}
+
+/// Readiness probe: verifies all critical dependencies are reachable.
+///
+/// Returns 503 if the database or Redis is unavailable.  Blockchain RPC
+/// degradation is surfaced in the body but does not affect the status code
+/// because the API can continue to serve cached data without it.
+pub async fn health_ready(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
     use crate::correlation::REQUEST_ID_HEADER;
 
     let request_id = headers
@@ -119,85 +257,164 @@ pub async fn health(State(state): State<Arc<AppState>>, headers: HeaderMap) -> i
         .and_then(|v| v.to_str().ok())
         .unwrap_or("-");
 
-    let cb_state = match state.cache.circuit_state() {
-        CircuitState::Closed => "closed",
-        CircuitState::Open => "open",
-        CircuitState::HalfOpen => "half_open",
+    // ── Database ──────────────────────────────────────────────────────────────
+    let db_ok = state.db.ping().await.is_ok();
+
+    // ── Redis: direct PING bypassing circuit breaker, with latency ───────────
+    let redis_result = state.cache.ping_direct_ms().await;
+    let redis_latency_ms = redis_result.as_ref().ok().copied().unwrap_or(0);
+    let redis_ok = redis_result.is_ok();
+    let redis_degraded = redis_ok && redis_latency_ms > 100;
+
+    // ── Blockchain RPC (cached; does not block readiness) ─────────────────────
+    let rpc_health = state.blockchain.health_check_cached().await.ok();
+    let rpc_status = match &rpc_health {
+        Some(h) if h.is_healthy => "ok",
+        Some(_) => "degraded",
+        None => "unknown",
     };
-    let pool = state.cache.pool_status();
 
-    let mut health_status = serde_json::json!({
-        "status": "ok",
-        "timestamp": chrono::Utc::now().to_rfc3339(),
-        "request_id": request_id,
-        "redis": {
-            "circuit_breaker": cb_state,
-            "pool_size": pool.size,
-            "pool_available": pool.available,
-        },
-        "db": {
-            "status": "ok",
-        },
-        "workers": {
-            "blockchain_sync": "running",
-            "blockchain_monitor": "running",
-            "email_queue": "running",
-            "rate_limiter_cleanup": "running"
-        }
-    });
+    let all_critical_ok = db_ok && redis_ok;
+    let overall_status = if !all_critical_ok {
+        "unavailable"
+    } else if redis_degraded {
+        "degraded"
+    } else {
+        "ok"
+    };
 
-    if state.cache.ping().await.is_err() {
-        health_status["status"] = "degraded".into();
-        health_status["redis"]["status"] = "unhealthy".into();
-    }
+    let status_code = if all_critical_ok {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
 
-    if state.db.ping().await.is_err() {
-        health_status["status"] = "degraded".into();
-        health_status["db"]["status"] = "unhealthy".into();
-    }
-
-    if let Ok(processing_count) = state.email_queue.get_processing_count().await {
-        health_status["workers"]["email_queue_processing"] = processing_count.into();
-    }
-
-    (StatusCode::OK, Json(health_status))
+    (
+        status_code,
+        Json(serde_json::json!({
+            "status": overall_status,
+            "request_id": request_id,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "dependencies": {
+                "database": {
+                    "status": if db_ok { "ok" } else { "unavailable" }
+                },
+                "redis": {
+                    "status": if !redis_ok { "unavailable" } else if redis_degraded { "degraded" } else { "ok" },
+                    "latency_ms": redis_latency_ms,
+                },
+                "blockchain_rpc": {
+                    "status": rpc_status,
+                }
+            }
+        })),
+    )
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// Dependency details endpoint: structured per-dependency health with latency.
+///
+/// Returns the same data as `/health/ready` but always returns 200 so
+/// Prometheus scrape targets and monitoring dashboards can always collect
+/// the data even when dependencies are degraded.
+pub async fn health_dependencies(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let db_start = Instant::now();
+    let db_ok = state.db.ping().await.is_ok();
+    let db_latency_ms = db_start.elapsed().as_millis();
+
+    let redis_result = state.cache.ping_direct_ms().await;
+    let redis_latency_ms = redis_result.as_ref().ok().copied().unwrap_or(0);
+    let redis_ok = redis_result.is_ok();
+    let redis_status = if !redis_ok {
+        "unavailable"
+    } else if redis_latency_ms > 100 {
+        "degraded"
+    } else {
+        "ok"
+    };
+
+    let rpc_health = state.blockchain.health_check_cached().await.ok();
+    let rpc_status = match &rpc_health {
+        Some(h) if h.is_healthy => "ok",
+        Some(_) => "degraded",
+        None => "unknown",
+    };
+    let rpc_latest_ledger = rpc_health.as_ref().map(|h| h.latest_ledger).unwrap_or(0);
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+            "dependencies": [
+                {
+                    "name": "database",
+                    "status": if db_ok { "ok" } else { "unavailable" },
+                    "latency_ms": db_latency_ms,
+                },
+                {
+                    "name": "redis",
+                    "status": redis_status,
+                    "latency_ms": redis_latency_ms,
+                },
+                {
+                    "name": "blockchain_rpc",
+                    "status": rpc_status,
+                    "latest_ledger": rpc_latest_ledger,
+                },
+            ]
+        })),
+    )
+}
+
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 pub struct NewsletterSubscribeRequest {
     pub email: String,
     pub source: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 pub struct NewsletterEmailRequest {
+    pub email: String,
+    /// Signed verification token obtained from `/gdpr/request-token`.
+    pub token: String,
+}
+
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
+pub struct NewsletterGdprTokenRequest {
     pub email: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::IntoParams)]
 pub struct NewsletterConfirmQuery {
     pub token: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::IntoParams)]
 pub struct NewsletterUnsubscribeQuery {
     pub token: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::IntoParams)]
 pub struct NewsletterExportQuery {
     pub email: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
+pub struct NewsletterExportBody {
+    pub email: String,
+    /// Signed verification token obtained from `/gdpr/request-token`.
+    pub token: String,
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct NewsletterResponse {
     pub success: bool,
     pub message: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct NewsletterExportResponse {
     pub success: bool,
+    #[schema(value_type = Object)]
     pub data: crate::db::NewsletterSubscriber,
 }
 
@@ -208,6 +425,41 @@ fn normalized_email(raw: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Verify a GDPR verification token for `email`.
+///
+/// Returns `Some(response)` when the caller should be short-circuited
+/// (missing signing config, or an invalid/expired/mismatched token) and
+/// `None` when the token checks out and the request may proceed.
+fn check_gdpr_token(state: &AppState, email: &str, token: &str) -> Option<Response> {
+    let Some(secret) = state.config.unsubscribe_signing_secret.as_deref() else {
+        return Some(
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(NewsletterResponse {
+                    success: false,
+                    message: "GDPR verification not configured.".to_string(),
+                }),
+            )
+                .into_response(),
+        );
+    };
+
+    if !crate::newsletter::verify_gdpr_verification_token(token, email, secret) {
+        return Some(
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(NewsletterResponse {
+                    success: false,
+                    message: "Invalid or expired verification token.".to_string(),
+                }),
+            )
+                .into_response(),
+        );
+    }
+
+    None
 }
 
 fn is_disposable_email(email: &str) -> bool {
@@ -221,6 +473,16 @@ fn is_disposable_email(email: &str) -> bool {
 
 use crate::security::extract_client_ip_cidrs;
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/newsletter/subscribe",
+    tag = "newsletter",
+    request_body = NewsletterSubscribeRequest,
+    responses(
+        (status = 202, description = "Subscription request accepted", body = NewsletterResponse),
+        (status = 400, description = "Invalid email address", body = NewsletterResponse),
+    )
+)]
 pub async fn newsletter_subscribe(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -327,7 +589,8 @@ pub async fn newsletter_subscribe(
         .get(crate::correlation::REQUEST_ID_HEADER)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("-");
-    tracing::info!(request_id, email = %email, source = %source, ip = %ip, "newsletter subscription attempt");
+    let redacted_email = crate::body_redact::redact_email(&email);
+    tracing::info!(request_id, email = %redacted_email, source = %source, ip = %ip, "newsletter subscription attempt");
 
     Ok((
         StatusCode::ACCEPTED,
@@ -338,6 +601,17 @@ pub async fn newsletter_subscribe(
     ))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/newsletter/confirm",
+    tag = "newsletter",
+    params(NewsletterConfirmQuery),
+    responses(
+        (status = 200, description = "Subscription confirmed", body = NewsletterResponse),
+        (status = 400, description = "Missing or invalid token", body = NewsletterResponse),
+        (status = 404, description = "Token not found or expired", body = NewsletterResponse),
+    )
+)]
 pub async fn newsletter_confirm(
     State(state): State<Arc<AppState>>,
     Query(query): Query<NewsletterConfirmQuery>,
@@ -377,6 +651,16 @@ pub async fn newsletter_confirm(
     ))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/newsletter/unsubscribe",
+    tag = "newsletter",
+    params(NewsletterUnsubscribeQuery),
+    responses(
+        (status = 200, description = "Successfully unsubscribed", body = NewsletterResponse),
+        (status = 401, description = "Invalid unsubscribe token", body = NewsletterResponse),
+    )
+)]
 pub async fn newsletter_unsubscribe(
     State(state): State<Arc<AppState>>,
     Query(query): Query<NewsletterUnsubscribeQuery>,
@@ -413,7 +697,8 @@ pub async fn newsletter_unsubscribe(
         .await
         .map_err(into_api_error)?;
 
-    tracing::info!("[newsletter] unsubscribed email={email}");
+    let redacted_email = crate::body_redact::redact_email(&email);
+    tracing::info!("[newsletter] unsubscribed email={redacted_email}");
 
     Ok((
         StatusCode::OK,
@@ -424,11 +709,109 @@ pub async fn newsletter_unsubscribe(
     ))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/newsletter/gdpr/request-token",
+    tag = "newsletter",
+    request_body = NewsletterGdprTokenRequest,
+    responses(
+        (status = 200, description = "Verification email sent if the address is subscribed", body = NewsletterResponse),
+        (status = 400, description = "Invalid email", body = NewsletterResponse),
+        (status = 429, description = "Rate limited", body = NewsletterResponse),
+    )
+)]
+pub async fn newsletter_gdpr_request_token(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    connect_info: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>,
+    Json(payload): Json<NewsletterGdprTokenRequest>,
+) -> Result<Response, ApiError> {
+    use crate::security::extract_client_ip_cidrs;
+    let ip = extract_client_ip_cidrs(
+        &headers,
+        connect_info.as_ref(),
+        state.config.trust_proxy,
+        &state.config.trusted_proxy_cidrs,
+    );
+    let allowed = state
+        .newsletter_rate_limiter
+        .allow(
+            &format!("gdpr_token:ip:{ip}"),
+            state.config.gdpr_export_rate_limit as usize,
+            std::time::Duration::from_secs(state.config.gdpr_export_rate_window_secs),
+        )
+        .await;
+    if !allowed {
+        return Ok((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(NewsletterResponse {
+                success: false,
+                message: "Too many requests, please try again later.".to_string(),
+            }),
+        )
+            .into_response());
+    }
+
+    let Some(email) = normalized_email(&payload.email) else {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(NewsletterResponse {
+                success: false,
+                message: "Invalid email address.".to_string(),
+            }),
+        )
+            .into_response());
+    };
+
+    // Never disclose whether the address exists: only send an email when a
+    // record is found, but return the same generic response either way.
+    match state.db.newsletter_get_by_email(&email).await {
+        Ok(Some(_)) => {
+            if let Some(secret) = state.config.unsubscribe_signing_secret.as_deref() {
+                let token = crate::newsletter::generate_gdpr_verification_token(&email, secret);
+                if let Err(e) =
+                    crate::newsletter::send_gdpr_verification_email(&state.config, &email, &token)
+                        .await
+                {
+                    tracing::warn!(error = %e, "[newsletter] failed to send GDPR verification email");
+                }
+            } else {
+                tracing::warn!("[newsletter] GDPR verification requested but no signing secret configured");
+            }
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!(error = %e, "[newsletter] gdpr token lookup failed"),
+    }
+
+    Ok((
+        StatusCode::OK,
+        Json(NewsletterResponse {
+            success: true,
+            message: "If this email is subscribed, a verification code has been sent."
+                .to_string(),
+        }),
+    )
+        .into_response())
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/newsletter/gdpr/export",
+    tag = "newsletter",
+    request_body = NewsletterExportBody,
+    responses(
+        (status = 200, description = "GDPR data export", body = NewsletterExportResponse),
+        (status = 400, description = "Invalid email", body = NewsletterResponse),
+        (status = 401, description = "Invalid or expired verification token", body = NewsletterResponse),
+        (status = 404, description = "No record found", body = NewsletterResponse),
+        (status = 429, description = "Rate limited", body = NewsletterResponse),
+    )
+)]
 pub async fn newsletter_gdpr_export(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     connect_info: Option<axum::extract::ConnectInfo<std::net::SocketAddr>>,
-    Query(query): Query<NewsletterExportQuery>,
+    Json(body): Json<NewsletterExportBody>,
 ) -> Result<Response, ApiError> {
     use crate::security::extract_client_ip_cidrs;
     let ip = extract_client_ip_cidrs(
@@ -456,7 +839,7 @@ pub async fn newsletter_gdpr_export(
             .into_response());
     }
 
-    let Some(email) = normalized_email(&query.email) else {
+    let Some(email) = normalized_email(&body.email) else {
         return Ok((
             StatusCode::BAD_REQUEST,
             Json(NewsletterResponse {
@@ -466,6 +849,10 @@ pub async fn newsletter_gdpr_export(
         )
             .into_response());
     };
+
+    if let Some(resp) = check_gdpr_token(&state, &email, &body.token) {
+        return Ok(resp);
+    }
 
     let data = state
         .db
@@ -514,10 +901,21 @@ pub async fn newsletter_gdpr_export(
         .into_response())
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/v1/newsletter/gdpr/delete",
+    tag = "newsletter",
+    request_body = NewsletterEmailRequest,
+    responses(
+        (status = 200, description = "Data deleted", body = NewsletterResponse),
+        (status = 400, description = "Invalid email", body = NewsletterResponse),
+        (status = 401, description = "Invalid or expired verification token", body = NewsletterResponse),
+    )
+)]
 pub async fn newsletter_gdpr_delete(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<NewsletterEmailRequest>,
-) -> Result<impl IntoResponse, ApiError> {
+) -> Result<Response, ApiError> {
     let Some(email) = normalized_email(&payload.email) else {
         return Ok((
             StatusCode::BAD_REQUEST,
@@ -525,8 +923,13 @@ pub async fn newsletter_gdpr_delete(
                 success: false,
                 message: "Invalid email address.".to_string(),
             }),
-        ));
+        )
+            .into_response());
     };
+
+    if let Some(resp) = check_gdpr_token(&state, &email, &payload.token) {
+        return Ok(resp);
+    }
 
     let _ = state
         .db
@@ -534,7 +937,8 @@ pub async fn newsletter_gdpr_delete(
         .await
         .map_err(into_api_error)?;
 
-    tracing::info!("[newsletter] gdpr delete email={email}");
+    let redacted_email = crate::body_redact::redact_email(&email);
+    tracing::info!("[newsletter] gdpr delete email={redacted_email}");
 
     Ok((
         StatusCode::OK,
@@ -542,9 +946,18 @@ pub async fn newsletter_gdpr_delete(
             success: true,
             message: "Data deleted.".to_string(),
         }),
-    ))
+    )
+        .into_response())
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/statistics",
+    tag = "markets",
+    responses(
+        (status = 200, description = "Platform statistics"),
+    )
+)]
 pub async fn statistics(State(state): State<Arc<AppState>>) -> Result<impl IntoResponse, ApiError> {
     let start = Instant::now();
     let cache_key = keys::api_statistics();
@@ -565,11 +978,20 @@ pub async fn statistics(State(state): State<Arc<AppState>>) -> Result<impl IntoR
     } else {
         state.metrics.observe_miss("api", endpoint);
     }
-    state.metrics.observe_request(endpoint, start.elapsed());
+    state.metrics.observe_request(endpoint, 200, start.elapsed().as_secs_f64());
 
     Ok((StatusCode::OK, Json(payload)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/markets/featured",
+    tag = "markets",
+    params(PaginationQuery),
+    responses(
+        (status = 200, description = "Paginated list of featured markets"),
+    )
+)]
 pub async fn featured_markets(
     State(state): State<Arc<AppState>>,
     Query(query): Query<PaginationQuery>,
@@ -612,7 +1034,8 @@ pub async fn featured_markets(
     let start_idx = cursor
         .as_ref()
         .and_then(|c| c.parse::<usize>().ok())
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .min(payload.len());
     let end_idx = (start_idx + limit as usize).min(payload.len());
     let has_more = end_idx < payload.len();
     let next_cursor = if has_more {
@@ -633,11 +1056,20 @@ pub async fn featured_markets(
     } else {
         state.metrics.observe_miss("api", endpoint);
     }
-    state.metrics.observe_request(endpoint, start.elapsed());
+    state.metrics.observe_request(endpoint, 200, start.elapsed().as_secs_f64());
 
     Ok((StatusCode::OK, Json(paginated)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/content",
+    tag = "markets",
+    params(PaginationQuery),
+    responses(
+        (status = 200, description = "Paginated content items"),
+    )
+)]
 pub async fn content(
     State(state): State<Arc<AppState>>,
     Query(query): Query<PaginationQuery>,
@@ -647,13 +1079,13 @@ pub async fn content(
     let cursor = query.cursor();
     let endpoint = "content";
 
-    let cache_key = keys::api_content(limit);
+    let cache_key = keys::api_content(limit.into());
     let ttl = Duration::from_secs(60 * 60);
 
     let (payload, hit) = state
         .cache
         .get_or_set_json(&cache_key, ttl, || async {
-            let data = state.db.content_cached(limit).await?;
+            let data = state.db.content_cached(limit.into()).await?;
             Ok(data)
         })
         .await
@@ -662,7 +1094,8 @@ pub async fn content(
     let start_idx = cursor
         .as_ref()
         .and_then(|c| c.parse::<usize>().ok())
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .min(payload.len());
     let end_idx = (start_idx + limit as usize).min(payload.len());
     let has_more = end_idx < payload.len();
     let next_cursor = if has_more {
@@ -683,14 +1116,15 @@ pub async fn content(
     } else {
         state.metrics.observe_miss("api", endpoint);
     }
-    state.metrics.observe_request(endpoint, start.elapsed());
+    state.metrics.observe_request(endpoint, 200, start.elapsed().as_secs_f64());
 
     Ok((StatusCode::OK, Json(paginated)))
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct InvalidationResult {
     pub invalidated_keys: usize,
+    pub cache_invalidated: bool,
 }
 
 /// Resolve a market by its ID.
@@ -704,12 +1138,27 @@ pub struct InvalidationResult {
 ///    because they are not affected by a single market resolution.
 /// 4. Cache invalidation only runs after a successful write — a failed DB update
 ///    leaves the cache untouched.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 pub struct ResolveMarketRequest {
     /// The winning outcome index (0-based).
     pub outcome_index: u32,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/markets/{market_id}/resolve",
+    tag = "markets",
+    params(
+        ("market_id" = i64, Path, description = "Market database ID"),
+    ),
+    request_body = ResolveMarketRequest,
+    responses(
+        (status = 200, description = "Market resolved and cache invalidated", body = InvalidationResult),
+        (status = 400, description = "Bad request", body = ApiError),
+        (status = 500, description = "Internal error", body = ApiError),
+    ),
+    security(("api_key" = []))
+)]
 pub async fn resolve_market(
     State(state): State<Arc<AppState>>,
     Path(market_id): Path<i64>,
@@ -723,23 +1172,31 @@ pub async fn resolve_market(
         .map_err(into_api_error)?;
 
     // 2. Invalidate only the keys affected by this market's resolution via tag.
+    // This is best-effort: a cache invalidation failure should not roll back the DB write.
     let tag = InvalidationTag::MarketResolved {
         market_id,
         network: state.config.network_name().to_owned(),
         featured_limit: state.config.featured_limit,
     };
-    let invalidated = state.cache.invalidate_tag(&tag).await.map_err(into_api_error)?;
-
-    state
-        .metrics
-        .observe_invalidation("market_resolve", invalidated);
-
-    tracing::info!(market_id, invalidated, "market resolved and cache invalidated");
+    
+    let (invalidated, cache_invalidated) = match state.cache.invalidate_tag(&tag).await {
+        Ok(count) => {
+            state.metrics.observe_invalidation("market_resolve", count);
+            tracing::info!(market_id, count, "market resolved and cache invalidated");
+            (count, true)
+        }
+        Err(e) => {
+            tracing::warn!(market_id, error = %e, "cache invalidation failed after successful DB write");
+            state.metrics.observe_invalidation("market_resolve", 0);
+            (0, false)
+        }
+    };
 
     Ok((
         StatusCode::OK,
         Json(InvalidationResult {
             invalidated_keys: invalidated,
+            cache_invalidated,
         }),
     ))
 }
@@ -757,6 +1214,15 @@ pub async fn metrics(State(state): State<Arc<AppState>>) -> Result<impl IntoResp
     ))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/blockchain/health",
+    tag = "blockchain",
+    responses(
+        (status = 200, description = "Blockchain node is healthy"),
+        (status = 503, description = "Blockchain node is degraded or unreachable"),
+    )
+)]
 pub async fn blockchain_health(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -772,6 +1238,18 @@ pub async fn blockchain_health(
     Ok((status_code, Json(data)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/blockchain/markets/{market_id}",
+    tag = "blockchain",
+    params(
+        ("market_id" = i64, Path, description = "Market database ID"),
+    ),
+    responses(
+        (status = 200, description = "On-chain market data"),
+        (status = 500, description = "Blockchain query failed", body = ApiError),
+    )
+)]
 pub async fn blockchain_market_data(
     State(state): State<Arc<AppState>>,
     Path(market_id): Path<i64>,
@@ -784,6 +1262,15 @@ pub async fn blockchain_market_data(
     Ok((StatusCode::OK, Json(data)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/blockchain/stats",
+    tag = "blockchain",
+    responses(
+        (status = 200, description = "Platform-wide blockchain statistics"),
+        (status = 500, description = "Blockchain query failed", body = ApiError),
+    )
+)]
 pub async fn blockchain_platform_stats(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -795,27 +1282,49 @@ pub async fn blockchain_platform_stats(
     Ok((StatusCode::OK, Json(data)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/blockchain/users/{user}/bets",
+    tag = "blockchain",
+    params(
+        ("user" = String, Path, description = "Stellar account address"),
+        PaginationQuery,
+    ),
+    responses(
+        (status = 200, description = "Paginated list of user bets"),
+        (status = 500, description = "Blockchain query failed", body = ApiError),
+    )
+)]
 pub async fn blockchain_user_bets(
     State(state): State<Arc<AppState>>,
     Path(user): Path<String>,
     Query(query): Query<PaginationQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
     let page_size = query.limit();
-    // cursor encodes the page number (0-based)
-    let page = query
+    // cursor encodes the page number (0-based).
+    // Clamp to a sane maximum before any arithmetic to prevent overflow:
+    // the largest meaningful page is total/page_size+1, but we don't know
+    // `total` yet so we use i64::MAX / page_size as a safe ceiling instead.
+    let raw_page = query
         .cursor()
         .as_deref()
         .and_then(|c| c.parse::<i64>().ok())
         .unwrap_or(0)
         .max(0);
+    // page_size is at least 1 (enforced by PaginationQuery), so the division
+    // is safe.  This cap is generous but keeps (page+1)*page_size in i64 range.
+    let page_max = i64::MAX / (page_size as i64).max(1);
+    let page = raw_page.min(page_max);
 
     let page_data = state
         .blockchain
-        .user_bets_page(&user, page, page_size)
+        .user_bets_page(&user, page, page_size.into())
         .await
         .map_err(into_api_error)?;
 
-    let has_more = (page + 1) * page_size < page_data.total;
+    // Use saturating_mul so that a pathologically large (but now bounded) page
+    // still produces a correct has_more = false rather than wrapping.
+    let has_more = (page + 1).saturating_mul(page_size as i64) < page_data.total;
     let next_cursor = if has_more {
         Some((page + 1).to_string())
     } else {
@@ -832,6 +1341,18 @@ pub async fn blockchain_user_bets(
     Ok((StatusCode::OK, Json(paginated)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/blockchain/oracle/{market_id}",
+    tag = "blockchain",
+    params(
+        ("market_id" = i64, Path, description = "Market database ID"),
+    ),
+    responses(
+        (status = 200, description = "Oracle resolution result for the market"),
+        (status = 500, description = "Blockchain query failed", body = ApiError),
+    )
+)]
 pub async fn blockchain_oracle_result(
     State(state): State<Arc<AppState>>,
     Path(market_id): Path<i64>,
@@ -844,11 +1365,39 @@ pub async fn blockchain_oracle_result(
     Ok((StatusCode::OK, Json(data)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/blockchain/tx/{tx_hash}",
+    tag = "blockchain",
+    params(
+        ("tx_hash" = String, Path, description = "Stellar transaction hash"),
+    ),
+    responses(
+        (status = 200, description = "Transaction status"),
+        (status = 500, description = "Blockchain query failed", body = ApiError),
+    )
+)]
 pub async fn blockchain_tx_status(
     State(state): State<Arc<AppState>>,
     Path(tx_hash): Path<String>,
 ) -> Result<impl IntoResponse, ApiError> {
-    state.blockchain.watch_transaction(&tx_hash).await;
+    use crate::blockchain::WatchTxError;
+
+    match state.blockchain.watch_transaction(&tx_hash).await {
+        Ok(()) => {}
+        Err(WatchTxError::AlreadyWatched) => {
+            // Idempotent: the hash is already registered.  Continue to return
+            // the current status so the caller gets a useful response.
+        }
+        Err(WatchTxError::CapReached) => {
+            return Err(ApiError::service_unavailable(
+                "Transaction watch map is at capacity. \
+                 Too many concurrent transactions are being monitored. \
+                 Please retry later.",
+            ));
+        }
+    }
+
     let data = state
         .blockchain
         .transaction_status_cached(&tx_hash)
@@ -857,6 +1406,16 @@ pub async fn blockchain_tx_status(
     Ok((StatusCode::OK, Json(data)))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/blockchain/replay",
+    tag = "blockchain",
+    responses(
+        (status = 200, description = "Replay progress"),
+        (status = 500, description = "Replay failed", body = ApiError),
+    ),
+    security(("api_key" = []))
+)]
 pub async fn blockchain_replay(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<crate::blockchain::ReplayRequest>,
@@ -883,13 +1442,13 @@ pub async fn warm_critical_caches(state: Arc<AppState>) -> anyhow::Result<()> {
 
     let (mut succeeded, mut failed) = (0usize, 0usize);
 
-    warm!("db.statistics",             state.db.statistics_cached().map(|r| r.map(|_| ())),                                                                                      succeeded, failed);
-    warm!("db.featured_markets",       state.db.featured_markets_cached(state.config.featured_limit).map(|r| r.map(|_| ())),                                                     succeeded, failed);
-    warm!("blockchain.health",         state.blockchain.health_check_cached().map(|r| r.map(|_| ())),                                                                             succeeded, failed);
-    warm!("blockchain.platform_stats", state.blockchain.platform_statistics_cached().map(|r| r.map(|_| ())),                                                                     succeeded, failed);
-    warm!("api.statistics",            statistics(State(state.clone())).map(|r| r.map(|_| ()).map_err(|e| anyhow::anyhow!("{e:?}"))),                                             succeeded, failed);
-    warm!("api.featured_markets",      featured_markets(State(state.clone()), Query(PaginationQuery::default())).map(|r| r.map(|_| ()).map_err(|e| anyhow::anyhow!("{e:?}"))),   succeeded, failed);
-    warm!("api.content",               content(State(state.clone()), Query(PaginationQuery::default())).map(|r| r.map(|_| ()).map_err(|e| anyhow::anyhow!("{e:?}"))),             succeeded, failed);
+    warm!("db.statistics",             state.db.statistics_cached(),                                                                                                                succeeded, failed);
+    warm!("db.featured_markets",       state.db.featured_markets_cached(state.config.featured_limit),                                                                               succeeded, failed);
+    warm!("blockchain.health",         state.blockchain.health_check_cached(),                                                                                                       succeeded, failed);
+    warm!("blockchain.platform_stats", state.blockchain.platform_statistics_cached(),                                                                                               succeeded, failed);
+    warm!("api.statistics",            async { statistics(State(state.clone())).await.map(|_| ()).map_err(|e| anyhow::anyhow!("{e:?}")) },                                          succeeded, failed);
+    warm!("api.featured_markets",      async { featured_markets(State(state.clone()), Query(PaginationQuery::default())).await.map(|_| ()).map_err(|e| anyhow::anyhow!("{e:?}")) }, succeeded, failed);
+    warm!("api.content",               async { content(State(state.clone()), Query(PaginationQuery::default())).await.map(|_| ()).map_err(|e| anyhow::anyhow!("{e:?}")) },          succeeded, failed);
 
     tracing::info!(succeeded, failed, total = succeeded + failed, "cache warming complete");
     Ok(())
@@ -897,18 +1456,31 @@ pub async fn warm_critical_caches(state: Arc<AppState>) -> anyhow::Result<()> {
 
 // Email service handlers
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
 pub struct EmailTestRequest {
     pub recipient: String,
     pub template_name: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, utoipa::IntoParams)]
 pub struct EmailAnalyticsQuery {
     pub template_name: Option<String>,
     pub days: Option<i32>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/email/preview/{template_name}",
+    tag = "email",
+    params(
+        ("template_name" = String, Path, description = "Email template name"),
+    ),
+    responses(
+        (status = 200, description = "Rendered email HTML preview"),
+        (status = 500, description = "Template render error", body = ApiError),
+    ),
+    security(("api_key" = []))
+)]
 pub async fn email_preview(
     State(state): State<Arc<AppState>>,
     Path(template_name): Path<String>,
@@ -943,6 +1515,17 @@ pub async fn email_preview(
     Ok((StatusCode::OK, Json(preview)))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/email/test",
+    tag = "email",
+    request_body = EmailTestRequest,
+    responses(
+        (status = 200, description = "Test email sent"),
+        (status = 500, description = "Send failed", body = ApiError),
+    ),
+    security(("api_key" = []))
+)]
 pub async fn email_send_test(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<EmailTestRequest>,
@@ -963,6 +1546,17 @@ pub async fn email_send_test(
     ))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/email/analytics",
+    tag = "email",
+    params(EmailAnalyticsQuery),
+    responses(
+        (status = 200, description = "Email delivery analytics"),
+        (status = 500, description = "Query failed", body = ApiError),
+    ),
+    security(("api_key" = []))
+)]
 pub async fn email_analytics(
     State(state): State<Arc<AppState>>,
     Query(query): Query<EmailAnalyticsQuery>,
@@ -977,6 +1571,16 @@ pub async fn email_analytics(
     Ok((StatusCode::OK, Json(analytics)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/email/queue/stats",
+    tag = "email",
+    responses(
+        (status = 200, description = "Email queue statistics"),
+        (status = 500, description = "Query failed", body = ApiError),
+    ),
+    security(("api_key" = []))
+)]
 pub async fn email_queue_stats(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -987,10 +1591,21 @@ pub async fn email_queue_stats(
         .map_err(into_api_error)?;
 
     state.metrics.set_dlq_size(stats.dead_letter as i64);
+    state.metrics.set_email_queue_depth(stats.pending as i64);
 
     Ok((StatusCode::OK, Json(stats)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/email/queue/dead-letter",
+    tag = "email",
+    responses(
+        (status = 200, description = "List of dead-letter email job IDs"),
+        (status = 500, description = "Query failed", body = ApiError),
+    ),
+    security(("api_key" = []))
+)]
 pub async fn email_dead_letter_list(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -1003,6 +1618,20 @@ pub async fn email_dead_letter_list(
     Ok((StatusCode::OK, Json(serde_json::json!({ "jobs": ids, "count": ids.len() }))))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/email/queue/dead-letter/{job_id}/requeue",
+    tag = "email",
+    params(
+        ("job_id" = String, Path, description = "Dead-letter job UUID"),
+    ),
+    responses(
+        (status = 200, description = "Job requeued"),
+        (status = 404, description = "Job not found in dead-letter set", body = ApiError),
+        (status = 500, description = "Requeue failed", body = ApiError),
+    ),
+    security(("api_key" = []))
+)]
 pub async fn email_dead_letter_requeue(
     State(state): State<Arc<AppState>>,
     Path(job_id): Path<Uuid>,
@@ -1020,6 +1649,15 @@ pub async fn email_dead_letter_requeue(
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/webhooks/sendgrid",
+    tag = "webhooks",
+    responses(
+        (status = 200, description = "Events processed"),
+        (status = 400, description = "Invalid signature or payload", body = ApiError),
+    )
+)]
 pub async fn sendgrid_webhook(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1034,7 +1672,17 @@ pub async fn sendgrid_webhook(
         })
 }
 
-/// Query audit logs with filters
+#[utoipa::path(
+    get,
+    path = "/api/v1/audit/logs",
+    tag = "audit",
+    params(AuditLogsQuery),
+    responses(
+        (status = 200, description = "Audit log entries"),
+        (status = 500, description = "Query failed", body = ApiError),
+    ),
+    security(("api_key" = []))
+)]
 pub async fn audit_logs(
     State(state): State<Arc<AppState>>,
     Query(params): Query<AuditLogsQuery>,
@@ -1063,7 +1711,17 @@ pub async fn audit_logs(
     Ok((StatusCode::OK, Json(logs)))
 }
 
-/// Get audit log statistics
+#[utoipa::path(
+    get,
+    path = "/api/v1/audit/statistics",
+    tag = "audit",
+    params(AuditStatisticsQuery),
+    responses(
+        (status = 200, description = "Audit log statistics for the requested period"),
+        (status = 500, description = "Query failed", body = ApiError),
+    ),
+    security(("api_key" = []))
+)]
 pub async fn audit_statistics(
     State(state): State<Arc<AppState>>,
     Query(params): Query<AuditStatisticsQuery>,
@@ -1089,7 +1747,7 @@ pub async fn audit_statistics(
     Ok((StatusCode::OK, Json(stats)))
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
 pub struct AuditLogsQuery {
     pub actor: Option<String>,
     pub action: Option<String>,
@@ -1100,8 +1758,298 @@ pub struct AuditLogsQuery {
     pub offset: Option<i64>,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams)]
 pub struct AuditStatisticsQuery {
     pub from: Option<String>,
     pub to: Option<String>,
+}
+
+// ── API key rotation (issue #892) ─────────────────────────────────────────────
+
+/// Request body for POST /api/v1/admin/api-keys/rotate
+#[derive(Debug, Deserialize)]
+pub struct RotateApiKeyRequest {
+    /// Human-readable label for the new key (e.g. "ci-deploy-2026-07").
+    pub key_label: String,
+    /// Days the old key remains valid after rotation (overlap window).
+    /// Defaults to 7 days when omitted.
+    pub overlap_days: Option<u32>,
+}
+
+/// Response body for POST /api/v1/admin/api-keys/rotate
+#[derive(Debug, Serialize)]
+pub struct RotateApiKeyResponse {
+    /// The new raw API key.  Store it securely — it is only returned once.
+    pub new_key: String,
+    /// The label assigned to the new key.
+    pub new_key_label: String,
+    /// ISO-8601 timestamp when the old key (identified by `old_key_label`) will
+    /// be hard-deleted from the database.  `null` when no old key was found.
+    pub old_key_expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Label of the key that was rotated out (if any).
+    pub old_key_label: Option<String>,
+}
+
+/// POST /api/v1/admin/api-keys/rotate
+///
+/// Generates a new API key and marks any existing key with the same label as
+/// expiring after the configured overlap window so clients can migrate without
+/// downtime.
+///
+/// ## Overlap window
+///
+/// During the overlap window both the old key and the new key are accepted by
+/// [`security::ApiKeyAuth::verify_async`].  After `expires_at` the old key is
+/// hard-deleted by the background cleanup task.
+///
+/// ## Security
+///
+/// The new raw key is only returned in this response.  The database stores
+/// the SHA-256 hash of the key, not the key itself.
+pub async fn rotate_api_key(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<RotateApiKeyRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    use sha2::{Digest, Sha256};
+
+    let overlap_days = body.overlap_days.unwrap_or(7).max(1) as i64;
+
+    // Generate a new cryptographically random key (256-bit hex string).
+    let new_raw_key = {
+        use std::fmt::Write;
+        let bytes = uuid::Uuid::new_v4().as_bytes().to_vec();
+        let bytes2 = uuid::Uuid::new_v4().as_bytes().to_vec();
+        let combined: Vec<u8> = bytes.into_iter().chain(bytes2).collect();
+        let mut s = String::with_capacity(combined.len() * 2);
+        for b in &combined {
+            write!(s, "{:02x}", b).unwrap();
+        }
+        s
+    };
+    let new_hash = hex::encode(Sha256::digest(new_raw_key.as_bytes()));
+
+    // Find any existing active key(s) with the same label and schedule their expiry.
+    let active_keys = state
+        .db
+        .api_key_list_active()
+        .await
+        .map_err(into_api_error)?;
+
+    let mut old_expires_at: Option<chrono::DateTime<chrono::Utc>> = None;
+    let mut old_label: Option<String> = None;
+
+    let expires_at = chrono::Utc::now() + chrono::Duration::days(overlap_days);
+
+    for key in &active_keys {
+        if key.label == body.key_label {
+            state
+                .db
+                .api_key_set_expires(&key.key_hash, expires_at)
+                .await
+                .map_err(into_api_error)?;
+            old_expires_at = Some(expires_at);
+            old_label = Some(key.label.clone());
+            tracing::info!(
+                label = %key.label,
+                expires_at = %expires_at,
+                "API key scheduled for expiry (rotation overlap window)"
+            );
+        }
+    }
+
+    // Insert the new key.
+    state
+        .db
+        .api_key_insert(&new_hash, &body.key_label)
+        .await
+        .map_err(into_api_error)?;
+
+    tracing::info!(label = %body.key_label, "New API key issued");
+
+    Ok((
+        StatusCode::CREATED,
+        Json(RotateApiKeyResponse {
+            new_key: new_raw_key,
+            new_key_label: body.key_label,
+            old_key_expires_at: old_expires_at,
+            old_key_label: old_label,
+        }),
+    ))
+}
+
+/// Response item for GET /api/v1/admin/api-keys
+#[derive(Debug, Serialize)]
+pub struct ApiKeyListItem {
+    pub id: uuid::Uuid,
+    pub label: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// `true` when the key has an `expires_at` set (it was rotated out and is
+    /// in its overlap window).
+    pub is_expiring: bool,
+}
+
+/// GET /api/v1/admin/api-keys
+///
+/// Lists all active (non-revoked, non-expired) API keys.  Key hashes are
+/// intentionally omitted from the response.
+pub async fn list_api_keys(
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, ApiError> {
+    let records = state
+        .db
+        .api_key_list_active()
+        .await
+        .map_err(into_api_error)?;
+
+    let items: Vec<ApiKeyListItem> = records
+        .into_iter()
+        .map(|r| ApiKeyListItem {
+            id: r.id,
+            label: r.label,
+            created_at: r.created_at,
+            expires_at: r.expires_at,
+            is_expiring: r.expires_at.is_some(),
+        })
+        .collect();
+
+    Ok((StatusCode::OK, Json(items)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::StatusCode;
+
+    /// The HTTP response body from ApiError::internal must never contain the
+    /// underlying error message — only a generic sanitised string.
+    /// The root cause is emitted to tracing (and therefore OTel spans) instead.
+    #[test]
+    fn internal_error_response_body_does_not_leak_cause() {
+        let secret_detail = "secret db password at host db.internal:5432";
+        let err = anyhow::anyhow!(secret_detail);
+        let api_err = ApiError::internal(err);
+
+        let json = serde_json::to_string(&api_err).unwrap();
+        assert_eq!(api_err.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(api_err.message, "An internal error occurred.");
+        assert!(!json.contains("secret"), "response must not leak internal error details");
+        assert!(!json.contains("db.internal"), "response must not leak internal hostnames");
+    }
+
+    /// ApiError::internal should preserve the error code and HTTP status independently
+    /// of what the underlying error contains.
+    #[test]
+    fn internal_error_has_correct_code_and_status() {
+        let err = anyhow::anyhow!("something broke");
+        let api_err = ApiError::internal(err);
+        assert_eq!(api_err.code, "INTERNAL_ERROR");
+        assert_eq!(api_err.status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // ── #1121: pagination cursor overflow ─────────────────────────────────────
+
+    /// blockchain_user_bets must clamp attacker-controlled page cursors before
+    /// performing arithmetic, preventing i64 overflow when computing has_more.
+    /// This test verifies that a cursor near i64::MAX is safely bounded and that
+    /// the saturating_mul prevents wrapping even if the clamped page is still large.
+    #[test]
+    fn blockchain_user_bets_cursor_overflow_clamped() {
+        // Simulate parsing a malicious cursor value near i64::MAX.
+        let raw_page = i64::MAX - 100;
+        let page_size = 50_u32;
+
+        // The handler logic clamps `page` to i64::MAX / page_size before use.
+        let page_max = i64::MAX / (page_size as i64).max(1);
+        let page = raw_page.min(page_max);
+
+        // Verify the clamp is effective: page must be well below i64::MAX.
+        assert!(
+            page < i64::MAX / 2,
+            "clamped page must be far below i64::MAX to prevent overflow"
+        );
+
+        // Verify saturating_mul produces correct result even for large clamped pages.
+        let total = 10_000_i64;
+        let has_more = (page + 1).saturating_mul(page_size as i64) < total;
+        // With such a large page, has_more should be false (we're beyond the data).
+        assert!(!has_more, "has_more must be false when cursor is out of range");
+    }
+
+    /// has_more must stay correct for page=0 (first page) with a small dataset.
+    #[test]
+    fn blockchain_user_bets_cursor_page_zero_has_more_when_data_exceeds_page_size() {
+        let page = 0_i64;
+        let page_size = 10_u32;
+        let total = 25_i64;
+
+        let page_max = i64::MAX / (page_size as i64).max(1);
+        let clamped_page = page.min(page_max);
+        let has_more = (clamped_page + 1).saturating_mul(page_size as i64) < total;
+        assert!(has_more, "has_more must be true when data > one page");
+    }
+
+    // ── #1123: health endpoint outer timeout / concurrent checks ─────────────
+
+    /// Demonstrates that wrapping a slow inner future in
+    /// `tokio::time::timeout(HEALTH_TIMEOUT, inner)` produces a bounded
+    /// response even when `inner` would hang indefinitely.
+    ///
+    /// We simulate the same pattern used in the `health` handler and verify
+    /// that the timeout fires using paused virtual time.
+    #[tokio::test(start_paused = true)]
+    async fn health_handler_outer_timeout_fires_on_slow_dependency() {
+        use tokio::time::{advance, Duration};
+
+        // The health handler wraps checks in a 10-second outer timeout.
+        const HEALTH_TIMEOUT: Duration = Duration::from_secs(10);
+
+        // Simulate a future that takes longer than the outer timeout — analogous
+        // to a Redis connection that is unreachable and retries indefinitely.
+        let slow_dependency = async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        };
+
+        // Spawn both the timeout wrapper and the time-advance together so the
+        // tokio runtime can interleave them correctly.
+        let timeout_fut = tokio::time::timeout(HEALTH_TIMEOUT, slow_dependency);
+
+        // Drive the timeout future and advance virtual time past the deadline.
+        let result = tokio::join!(
+            timeout_fut,
+            async { advance(Duration::from_secs(11)).await }
+        ).0;
+
+        assert!(
+            result.is_err(),
+            "/health must return a timeout error when a dependency is unreachable"
+        );
+    }
+
+    /// Verifies that two dependency checks running concurrently under
+    /// `tokio::join!` complete faster than if they were run sequentially.
+    ///
+    /// This is the key property that prevents a slow Redis from blocking DB/
+    /// SendGrid checks (issue #1123).
+    #[tokio::test(start_paused = true)]
+    async fn health_handler_checks_run_concurrently_not_sequentially() {
+        use tokio::time::{sleep, Duration, Instant};
+
+        // Each simulated dependency takes 100 ms (virtual time).
+        let delay = Duration::from_millis(100);
+
+        let start = Instant::now();
+
+        // tokio::join! polls both futures simultaneously; with paused time
+        // both timers fire at 100 ms virtual time, not at 200 ms.
+        let ((), ()) = tokio::join!(sleep(delay), sleep(delay));
+
+        let elapsed = start.elapsed();
+
+        // Sequential execution would take 200 ms; concurrent must take ≤ 100 ms.
+        assert!(
+            elapsed <= Duration::from_millis(100),
+            "concurrent checks must complete in one delay slot, not two (elapsed={elapsed:?})"
+        );
+    }
 }

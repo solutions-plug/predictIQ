@@ -460,6 +460,24 @@ mod tests {
         assert_eq!(DEFAULT_REQUEST_BODY_MAX_BYTES, 1_048_576);
     }
 
+    #[tokio::test]
+    async fn two_mb_body_returns_413() {
+        let two_mb = vec![b'a'; 2 * 1_048_576];
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/safe-post")
+                    .header("content-type", "application/json")
+                    .body(Body::from(two_mb))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
     // ── Admin route auth ──────────────────────────────────────────────────────
 
     #[tokio::test]

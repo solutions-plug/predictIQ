@@ -25,6 +25,7 @@ jobs:
   build-and-test:
     name: Build and Test Contracts
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     outputs:
       wasm-path: ${{ steps.build.outputs.wasm-path }}
       contract-hash: ${{ steps.build.outputs.contract-hash }}
@@ -32,12 +33,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
-          profile: minimal
-          toolchain: stable
-          override: true
-          target: wasm32-unknown-unknown
+          targets: wasm32-unknown-unknown
           components: rustfmt, clippy
 
       - name: Cache cargo registry
@@ -116,6 +114,7 @@ jobs:
     name: Deploy to Testnet
     needs: build-and-test
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     if: github.ref == 'refs/heads/develop' || github.event.inputs.environment == 'testnet'
     environment:
       name: testnet
@@ -183,6 +182,7 @@ jobs:
     name: Deploy to Mainnet
     needs: build-and-test
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     if: github.ref == 'refs/heads/main'
     environment:
       name: mainnet
@@ -236,25 +236,26 @@ jobs:
           retention-days: 90
 
       - name: Create GitHub Release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: contract-${{ needs.build-and-test.outputs.contract-hash }}
-          release_name: Contract Deployment ${{ needs.build-and-test.outputs.contract-hash }}
+          name: Contract Deployment ${{ needs.build-and-test.outputs.contract-hash }}
           body: |
             Mainnet deployment of PredictIQ contract
-            
+
             - Commit: ${{ github.sha }}
             - Contract Hash: ${{ needs.build-and-test.outputs.contract-hash }}
             - Timestamp: ${{ github.event.head_commit.timestamp }}
           draft: false
           prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   version-artifacts:
     name: Version and Archive Artifacts
     needs: build-and-test
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -291,6 +292,7 @@ jobs:
     name: Notify Deployment Status
     needs: [build-and-test, deploy-testnet]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     if: always()
     steps:
       - name: Determine deployment status
@@ -303,7 +305,7 @@ jobs:
 
       - name: Send Slack notification
         if: vars.SLACK_WEBHOOK_URL != ''
-        uses: slackapi/slack-github-action@v3.0.3
+        uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c # v3.0.3
         with:
           payload: |
             {

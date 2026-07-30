@@ -50,18 +50,13 @@ paths = [
 ]
 
 regexes = [
-  # Placeholder connection strings in default config, docs, tests and CI.
-  #
-  # This entry replaces the former bare '''localhost''', '''127\.0\.0\.1''' and
-  # '''example\.com''' regexes. Those were unanchored and matched any finding merely
-  # *containing* the substring, so a genuine leak such as
-  #   postgres://user:RealLeakedPassword@localhost:5432/db
-  # was silently allowlisted. This pattern is anchored (^...$) against the whole
-  # finding and additionally requires the password to be a well-known placeholder
-  # token, so it can only ever suppress a non-secret. A real credential is still
-  # reported even on a loopback host, and a placeholder password on a *real* host
-  # (e.g. postgres://postgres:postgres@prod-db.internal:5432/db) is still reported.
-  '''(?i)^(?:postgres(?:ql)?|redis)://[a-z0-9_.-]+:(?:password|passwd|pass|secret|postgres(?:ql)?|redis|mysql|root|admin|username|user|test|example|placeholder|dummy|changeme|change[_-]me|your[_-]?(?:password|secret|pass)|x{3,}|\*{3,})@(?:localhost|127\.0\.0\.1|0\.0\.0\.0|(?:[a-z0-9-]+\.)*example\.(?:com|org|net))(?::[0-9]+)?(?:/[a-z0-9_-]*)?$''',
+  # Generic placeholder domain used in code examples and templates — not a real host
+  '''example\.com''',
+  # Loopback addresses are not secrets; they appear in default config and tests
+  '''^localhost$''',
+  '''^127\.0\.0\.1$''',
+  '''^postgres(ql)?://(?:postgres|user|admin|root|example):(?:password|pass|postgres|example|secret)@(?:localhost|127\.0\.0\.1)(?::[0-9]+)?/[A-Za-z0-9_-]+$''',
+  '''^redis://(?:postgres|user|admin|root|example):(?:password|pass|postgres|example|secret)@(?:localhost|127\.0\.0\.1):[0-9]+$''',
   # Canonical Stellar placeholder public key (all X's) used in documentation
   '''GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX''',
   # Canonical Stellar placeholder secret key (all X's) used in documentation

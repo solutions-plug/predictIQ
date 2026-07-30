@@ -47,6 +47,14 @@ pub fn file_dispute(e: &Env, disciplinarian: Address, market_id: u64) -> Result<
 pub fn resolve_market(e: &Env, market_id: u64, winning_outcome: u32) -> Result<(), ErrorCode> {
     let mut market = markets::get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
 
+    // Issue #1186: Resolved/Cancelled are terminal states (INVARIANTS.md §3) and
+    // must never be re-entered. Without this guard an admin could call this path
+    // twice with different outcomes after bettors already claimed under the
+    // first outcome, allowing overpayment against unchanged total_staked.
+    if market.status == MarketStatus::Resolved || market.status == MarketStatus::Cancelled {
+        return Err(ErrorCode::CannotChangeOutcome);
+    }
+
     if winning_outcome >= market.options.len() {
         return Err(ErrorCode::InvalidOutcome);
     }

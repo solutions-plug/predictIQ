@@ -2,8 +2,13 @@ import React from 'react';
 import { useI18n } from '../lib/hooks/useI18n';
 import { useDarkMode } from '../lib/hooks/useDarkMode';
 import { type Locale } from '../lib/i18n';
+import { api } from '../lib/api/public-client';
 import { Statistics } from './Statistics';
 import { ErrorBoundary } from './ErrorBoundary';
+import { LoadingSpinner } from './LoadingSpinner';
+import { FeatureCard } from './landing/FeatureCard';
+import { Step } from './landing/Step';
+import { FooterColumn } from './landing/FooterColumn';
 
 interface LandingPageProps {
   className?: string;
@@ -15,12 +20,16 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
   const [email, setEmail] = React.useState('');
   const [emailError, setEmailError] = React.useState('');
   const [isSubmitted, setIsSubmitted] = React.useState(false);
-  const formStatusRef = React.useRef<HTMLDivElement>(null);
+  const [apiError, setApiError] = React.useState('');
+  const [isLoading, setIsLoading] = React.useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    // Basic email validation
+
+    if (isLoading || isSubmitted) {
+      return;
+    }
+
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!email) {
       setEmailError(t('hero.emailRequired'));
@@ -30,22 +39,50 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
       setEmailError(t('hero.emailInvalid'));
       return;
     }
-    
+
     setEmailError('');
-    setIsSubmitted(true);
-    
-    // Announce success to screen readers
-    if (formStatusRef.current) {
-      formStatusRef.current.textContent = 'Successfully subscribed to updates!';
+    setApiError('');
+    setIsLoading(true);
+
+    try {
+      const result = await api.newsletterSubscribe({ email });
+      if (result.success) {
+        setIsSubmitted(true);
+      } else {
+        setApiError(result.message || 'Subscription failed');
+      }
+    } catch (err) {
+      setApiError(err instanceof Error ? err.message : 'Network error occurred');
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    // Allow form submission with Enter key
-    if (e.key === 'Enter' && e.currentTarget.tagName === 'FORM') {
-      handleSubmit(e as unknown as React.FormEvent);
-    }
-  };
+  const features = [
+    { icon: '/icons/decentralized.svg', title: t('features.decentralized.title'), description: t('features.decentralized.description') },
+    { icon: '/icons/secure.svg', title: t('features.secure.title'), description: t('features.secure.description') },
+    { icon: '/icons/fast.svg', title: t('features.fast.title'), description: t('features.fast.description') },
+  ];
+
+  const steps = [
+    { title: t('howItWorks.step1.title'), description: t('howItWorks.step1.description') },
+    { title: t('howItWorks.step2.title'), description: t('howItWorks.step2.description') },
+    { title: t('howItWorks.step3.title'), description: t('howItWorks.step3.description') },
+    { title: t('howItWorks.step4.title'), description: t('howItWorks.step4.description') },
+  ];
+
+  const footerColumns = [
+    { heading: t('footer.title'), headingLevel: 'h2' as const, tagline: t('footer.tagline') },
+    { heading: t('footer.linksHeading'), links: [
+      { href: '/docs', label: t('footer.documentation') },
+      { href: '/github', label: t('footer.github') },
+      { href: '/discord', label: t('footer.discord') },
+    ] },
+    { heading: t('footer.legalHeading'), links: [
+      { href: '/privacy', label: t('footer.privacy') },
+      { href: '/terms', label: t('footer.terms') },
+    ] },
+  ];
 
   return (
     <div className={className}>
@@ -59,18 +96,19 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
         <nav aria-label="Main navigation">
           <div className="nav-container">
             <div className="logo">
-              <img 
-                src="/logo.svg" 
-                alt="PredictIQ Logo" 
-                width="150" 
-                height="50"
+              <img
+                src="/mark.svg"
+                alt="PredictIQ Logo"
+                width="40"
+                height="40"
               />
+              <span className="logo-text" aria-hidden="true">PredictIQ</span>
             </div>
-            <ul className="nav-menu" role="menubar">
-              <li role="none"><a href="#features" role="menuitem">Features</a></li>
-              <li role="none"><a href="#how-it-works" role="menuitem">How It Works</a></li>
-              <li role="none"><a href="#about" role="menuitem">About</a></li>
-              <li role="none"><a href="#contact" role="menuitem">Contact</a></li>
+            <ul className="nav-menu">
+              <li><a href="#features">Features</a></li>
+              <li><a href="#how-it-works">How It Works</a></li>
+              <li><a href="#about">About</a></li>
+              <li><a href="#contact">Contact</a></li>
             </ul>
             
             {/* Controls */}
@@ -112,6 +150,8 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
       <main id="main-content" role="main">
         {/* Hero Section */}
         <section aria-labelledby="hero-heading" className="hero">
+          <div className="hero-glow" aria-hidden="true" />
+          <span className="eyebrow">Live on Stellar</span>
           <h1 id="hero-heading">
             {t('hero.title')}
           </h1>
@@ -120,10 +160,10 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
           </p>
           
           {/* CTA Form */}
-          <form 
+          <form
             onSubmit={handleSubmit}
-            onKeyDown={handleKeyDown}
             aria-labelledby="signup-heading"
+            aria-busy={isLoading}
             noValidate
           >
             <h2 id="signup-heading" className="visually-hidden">
@@ -138,53 +178,80 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
               <input
                 id="email-input"
                 type="email"
+                required
                 value={email}
                 onChange={(e) => {
                   setEmail(e.target.value);
                   setEmailError('');
+                  setApiError('');
                 }}
                 aria-required="true"
                 aria-invalid={!!emailError}
-                aria-describedby={emailError ? 'email-error' : undefined}
+                aria-describedby={emailError ? 'email-error' : apiError ? 'api-error' : undefined}
                 placeholder={t('hero.emailPlaceholder')}
-                disabled={isSubmitted}
+                disabled={isSubmitted || isLoading}
               />
               {emailError && (
                 <span id="email-error" role="alert" className="error-message">
                   {emailError}
                 </span>
               )}
+              {apiError && (
+                <span id="api-error" role="alert" className="error-message">
+                  {apiError}
+                </span>
+              )}
             </div>
 
-            <button 
-              type="submit" 
-              disabled={isSubmitted}
-              aria-label={isSubmitted ? t('hero.subscribedButton') : t('hero.submitButton')}
+            <button
+              type="submit"
+              aria-disabled={isSubmitted || isLoading}
+              aria-label={
+                isLoading 
+                  ? 'Submitting...' 
+                  : isSubmitted 
+                    ? t('hero.subscribedButton') 
+                    : t('hero.submitButton')
+              }
             >
-              {isSubmitted ? t('hero.subscribedButton') : t('hero.submitButton')}
+              {isLoading ? (
+                <LoadingSpinner size="small" aria-label="Submitting" />
+              ) : isSubmitted ? (
+                t('hero.subscribedButton')
+              ) : (
+                t('hero.submitButton')
+              )}
             </button>
 
             {/* Screen reader announcement */}
             <div 
-              ref={formStatusRef}
               id="form-status" 
               role="status" 
               aria-live="polite" 
               aria-atomic="true"
               className="visually-hidden"
-            />
+            >
+              {isSubmitted && t('hero.successMessage')}
+            </div>
           </form>
         </section>
 
         {/* Statistics Section */}
-        <ErrorBoundary section="statistics" fallback={
+        <ErrorBoundary section="statistics" fallback={(reset) => (
           <section className="statistics" aria-labelledby="statistics-heading">
             <h2 id="statistics-heading">Platform Statistics</h2>
             <div className="error-message" role="alert">
               <p>Unable to load statistics at this time. Please try again later.</p>
+              <button
+                className="retry-button"
+                onClick={reset}
+                aria-label="Retry loading statistics"
+              >
+                Retry
+              </button>
             </div>
           </section>
-        }>
+        )}>
           <Statistics />
         </ErrorBoundary>
 
@@ -193,47 +260,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
           <h2 id="features-heading">{t('features.heading')}</h2>
           
           <div className="features-grid">
-            <article className="feature-card">
-              <img 
-                src="/icons/decentralized.svg" 
-                alt="" 
-                aria-hidden="true"
-                width="64"
-                height="64"
-              />
-              <h3>{t('features.decentralized.title')}</h3>
-              <p>
-                {t('features.decentralized.description')}
-              </p>
-            </article>
-
-            <article className="feature-card">
-              <img 
-                src="/icons/secure.svg" 
-                alt="" 
-                aria-hidden="true"
-                width="64"
-                height="64"
-              />
-              <h3>{t('features.secure.title')}</h3>
-              <p>
-                {t('features.secure.description')}
-              </p>
-            </article>
-
-            <article className="feature-card">
-              <img 
-                src="/icons/fast.svg" 
-                alt="" 
-                aria-hidden="true"
-                width="64"
-                height="64"
-              />
-              <h3>{t('features.fast.title')}</h3>
-              <p>
-                {t('features.fast.description')}
-              </p>
-            </article>
+            {features.map((feature) => (
+              <FeatureCard key={feature.title} {...feature} />
+            ))}
           </div>
         </section>
 
@@ -242,22 +271,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
           <h2 id="how-it-works-heading">{t('howItWorks.heading')}</h2>
           
           <ol className="steps-list">
-            <li>
-              <h3>{t('howItWorks.step1.title')}</h3>
-              <p>{t('howItWorks.step1.description')}</p>
-            </li>
-            <li>
-              <h3>{t('howItWorks.step2.title')}</h3>
-              <p>{t('howItWorks.step2.description')}</p>
-            </li>
-            <li>
-              <h3>{t('howItWorks.step3.title')}</h3>
-              <p>{t('howItWorks.step3.description')}</p>
-            </li>
-            <li>
-              <h3>{t('howItWorks.step4.title')}</h3>
-              <p>{t('howItWorks.step4.description')}</p>
-            </li>
+            {steps.map((step) => (
+              <Step key={step.title} {...step} />
+            ))}
           </ol>
         </section>
 
@@ -276,27 +292,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
       {/* Footer */}
       <footer role="contentinfo" id="contact">
         <div className="footer-content">
-          <div className="footer-section">
-            <h2>{t('footer.title')}</h2>
-            <p>{t('footer.tagline')}</p>
-          </div>
-          
-          <div className="footer-section">
-            <h3>{t('footer.linksHeading')}</h3>
-            <ul>
-              <li><a href="/docs">{t('footer.documentation')}</a></li>
-              <li><a href="/github">{t('footer.github')}</a></li>
-              <li><a href="/discord">{t('footer.discord')}</a></li>
-            </ul>
-          </div>
-          
-          <div className="footer-section">
-            <h3>{t('footer.legalHeading')}</h3>
-            <ul>
-              <li><a href="/privacy">{t('footer.privacy')}</a></li>
-              <li><a href="/terms">{t('footer.terms')}</a></li>
-            </ul>
-          </div>
+          {footerColumns.map((column) => (
+            <FooterColumn key={column.heading} {...column} />
+          ))}
         </div>
         
         <div className="footer-bottom">

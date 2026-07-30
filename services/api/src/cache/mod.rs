@@ -7,11 +7,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use redis::redis_module::RedisResult;
-
-
 use anyhow::Context;
-use deadpool_redis::{Config as PoolConfig, Pool, Runtime};
+use deadpool_redis::{Config as PoolConfig, Pool};
 use redis::AsyncCommands;
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -62,12 +59,25 @@ impl CircuitBreaker {
         }
     }
 
-    fn record_success(&self) {
+    fn record_success(&self, metrics: &Option<crate::metrics::Metrics>) {
+        let prev_state = self.state();
         self.failure_count.store(0, Ordering::Release);
         self.opened_at_ms.store(0, Ordering::Release);
+        let new_state = self.state();
+        
+        // Only update metrics if state actually changed
+        if prev_state != new_state {
+            if let Some(m) = metrics {
+                m.set_cache_circuit_breaker_state(new_state as i64);
+            }
+            if prev_state != CircuitState::Closed {
+                tracing::info!("Redis circuit breaker closed after successful operation");
+            }
+        }
     }
 
-    fn record_failure(&self) {
+    fn record_failure(&self, metrics: &Option<crate::metrics::Metrics>) {
+        let prev_state = self.state();
         let prev = self.failure_count.fetch_add(1, Ordering::AcqRel);
         if prev + 1 >= self.threshold && self.opened_at_ms.load(Ordering::Acquire) == 0 {
             let now_ms = std::time::SystemTime::now()
@@ -80,15 +90,32 @@ impl CircuitBreaker {
                 "Redis circuit breaker opened after {} failures",
                 prev + 1
             );
+            
+            // Update metrics to reflect open state
+            if let Some(m) = metrics {
+                m.set_cache_circuit_breaker_state(CircuitState::Open as i64);
+            }
         }
     }
 
     /// Returns `true` if the call is allowed (Closed or HalfOpen).
-    fn allow(&self) -> bool {
-        match self.state() {
+    fn allow(&self, metrics: &Option<crate::metrics::Metrics>) -> bool {
+        let prev_state = self.state();
+        let allowed = match prev_state {
             CircuitState::Closed | CircuitState::HalfOpen => true,
             CircuitState::Open => false,
+        };
+        
+        // Update metrics when transitioning to HalfOpen
+        let current_state = self.state();
+        if prev_state != current_state && current_state == CircuitState::HalfOpen {
+            if let Some(m) = metrics {
+                m.set_cache_circuit_breaker_state(CircuitState::HalfOpen as i64);
+            }
+            tracing::info!("Redis circuit breaker transitioned to half-open, allowing probe request");
         }
+        
+        allowed
     }
 }
 
@@ -168,6 +195,7 @@ pub struct RedisCache {
     cb: Arc<CircuitBreaker>,
     cfg: RedisCacheConfig,
     tag_cfg: TagStoreConfig,
+    metrics: Option<crate::metrics::Metrics>,
 }
 
 
@@ -245,8 +273,9 @@ impl RedisCache {
         }
 
         // Deterministically hash the tag so the metadata key is stable.
+        use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        std::hash::Hash::hash(&tag, &mut hasher);
+        tag.cache_keys().join("|").hash(&mut hasher);
         let tag_hash = format!("{:x}", hasher.finish());
 
         let zset_key = self.tag_cfg.tag_key(&tag_hash);
@@ -293,18 +322,19 @@ impl RedisCache {
             "#,
         );
 
-        let mut over_evicted: i64 = 0;
+        let script = std::sync::Arc::new(script);
         self.exec(|mut conn| {
             let zset_key = zset_key.clone();
             let seq_key = seq_key.clone();
             let keys = tag_keys.clone();
+            let script = script.clone();
             async move {
                 let mut argv: Vec<String> = Vec::with_capacity(2 + keys.len());
                 argv.push(tag_ttl_secs.to_string());
                 argv.push(cap.to_string());
                 argv.extend(keys);
 
-                over_evicted = script
+                let _: i64 = script
                     .key(&zset_key)
                     .key(&seq_key)
                     .arg(tag_ttl_secs)
@@ -316,7 +346,6 @@ impl RedisCache {
         })
         .await?;
 
-        // Note: we don't need the evicted count for correctness.
         Ok(())
     }
 
@@ -327,7 +356,19 @@ impl RedisCache {
     }
 
     pub async fn new_with_config(redis_url: &str, cfg: RedisCacheConfig) -> anyhow::Result<Self> {
+        Self::new_with_config_and_metrics(redis_url, cfg, None).await
+    }
 
+    pub async fn new_with_metrics(redis_url: &str, metrics: crate::metrics::Metrics) -> anyhow::Result<Self> {
+        let cfg = RedisCacheConfig::from_env();
+        Self::new_with_config_and_metrics(redis_url, cfg, Some(metrics)).await
+    }
+
+    pub async fn new_with_config_and_metrics(
+        redis_url: &str,
+        cfg: RedisCacheConfig,
+        metrics: Option<crate::metrics::Metrics>,
+    ) -> anyhow::Result<Self> {
         let pool_cfg = PoolConfig::from_url(redis_url);
         let pool = pool_cfg
             .builder()
@@ -339,13 +380,26 @@ impl RedisCache {
 
         let cb = Arc::new(CircuitBreaker::new(cfg.cb_threshold, cfg.cb_reset_timeout));
         let tag_cfg = TagStoreConfig::from_env();
-        Ok(Self { pool, cb, cfg, tag_cfg })
+        
+        let cache = Self { pool, cb, cfg, tag_cfg, metrics: metrics.clone() };
+        
+        // Initialize circuit breaker state metric to closed (0)
+        if let Some(ref m) = metrics {
+            m.set_cache_circuit_breaker_state(0);
+        }
+        
+        Ok(cache)
     }
 
 
     /// Returns the current circuit breaker state — useful for health checks and metrics.
     pub fn circuit_state(&self) -> CircuitState {
         self.cb.state()
+    }
+
+    /// Clone the underlying deadpool-redis pool for direct use by rate limiters.
+    pub fn redis_pool(&self) -> deadpool_redis::Pool {
+        self.pool.clone()
     }
 
     /// Pool status for metrics/health.
@@ -362,7 +416,7 @@ impl RedisCache {
         F: Fn(deadpool_redis::Connection) -> Fut,
         Fut: Future<Output = anyhow::Result<T>>,
     {
-        if !self.cb.allow() {
+        if !self.cb.allow(&self.metrics) {
             anyhow::bail!("Redis circuit breaker is open");
         }
 
@@ -375,16 +429,16 @@ impl RedisCache {
             match self.pool.get().await {
                 Err(e) => {
                     last_err = anyhow::anyhow!("pool acquire: {e}");
-                    self.cb.record_failure();
+                    self.cb.record_failure(&self.metrics);
                 }
                 Ok(conn) => match op(conn).await {
                     Ok(v) => {
-                        self.cb.record_success();
+                        self.cb.record_success(&self.metrics);
                         return Ok(v);
                     }
                     Err(e) => {
                         last_err = e;
-                        self.cb.record_failure();
+                        self.cb.record_failure(&self.metrics);
                     }
                 },
             }
@@ -399,11 +453,14 @@ impl RedisCache {
         T: DeserializeOwned,
     {
         let key = key.to_owned();
-        self.exec(|mut conn| async move {
-            let val: Option<String> = conn.get(&key).await?;
-            match val {
-                Some(raw) => Ok(Some(serde_json::from_str(&raw)?)),
-                None => Ok(None),
+        self.exec(|mut conn| {
+            let key = key.clone();
+            async move {
+                let val: Option<String> = conn.get(&key).await?;
+                match val {
+                    Some(raw) => Ok(Some(serde_json::from_str(&raw)?)),
+                    None => Ok(None),
+                }
             }
         })
         .await
@@ -429,9 +486,12 @@ impl RedisCache {
 
     pub async fn del(&self, key: &str) -> anyhow::Result<()> {
         let key = key.to_owned();
-        self.exec(|mut conn| async move {
-            let _: usize = conn.del(&key).await?;
-            Ok(())
+        self.exec(|mut conn| {
+            let key = key.clone();
+            async move {
+                let _: usize = conn.del(&key).await?;
+                Ok(())
+            }
         })
         .await
     }
@@ -444,6 +504,28 @@ impl RedisCache {
         .await
     }
 
+    /// Ping Redis directly, bypassing the circuit breaker, and return the
+    /// round-trip latency in milliseconds.  Used by health-check endpoints
+    /// that must report accurate Redis reachability regardless of circuit state.
+    pub async fn ping_direct_ms(&self) -> anyhow::Result<u128> {
+        let start = std::time::Instant::now();
+        let mut conn = tokio::time::timeout(
+            Duration::from_millis(500),
+            self.pool.get(),
+        )
+        .await
+        .context("Redis pool acquire timed out")?
+        .context("Redis pool acquire failed")?;
+        let _: String = tokio::time::timeout(
+            Duration::from_millis(500),
+            redis::cmd("PING").query_async(&mut conn),
+        )
+        .await
+        .context("Redis PING timed out")?
+        .context("Redis PING failed")?;
+        Ok(start.elapsed().as_millis())
+    }
+
     /// Delete all keys matching `pattern` using non-blocking cursor-based SCAN.
     ///
     /// Each SCAN+DEL batch acquires and releases its own pool connection so no
@@ -451,7 +533,7 @@ impl RedisCache {
     /// The circuit breaker is checked once before the loop; individual batch
     /// errors are propagated immediately.
     pub async fn del_by_pattern(&self, pattern: &str) -> anyhow::Result<usize> {
-        if !self.cb.allow() {
+        if !self.cb.allow(&self.metrics) {
             anyhow::bail!("Redis circuit breaker is open");
         }
 
@@ -460,23 +542,25 @@ impl RedisCache {
         let pattern = pattern.to_owned();
 
         loop {
-            let pattern_clone = pattern.clone();
             let (next_cursor, batch_deleted) = self
-                .exec(|mut conn| async move {
-                    let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
-                        .arg(cursor)
-                        .arg("MATCH")
-                        .arg(&pattern_clone)
-                        .arg("COUNT")
-                        .arg(100u64)
-                        .query_async(&mut conn)
-                        .await?;
-                    let deleted = if keys.is_empty() {
-                        0
-                    } else {
-                        conn.del(keys).await?
-                    };
-                    Ok((next_cursor, deleted))
+                .exec(|mut conn| {
+                    let pattern_clone = pattern.clone();
+                    async move {
+                        let (next_cursor, keys): (u64, Vec<String>) = redis::cmd("SCAN")
+                            .arg(cursor)
+                            .arg("MATCH")
+                            .arg(&pattern_clone)
+                            .arg("COUNT")
+                            .arg(100u64)
+                            .query_async(&mut conn)
+                            .await?;
+                        let deleted = if keys.is_empty() {
+                            0
+                        } else {
+                            conn.del(keys).await?
+                        };
+                        Ok((next_cursor, deleted))
+                    }
                 })
                 .await?;
 
@@ -515,18 +599,89 @@ impl RedisCache {
         Fut: Future<Output = anyhow::Result<T>>,
     {
         // If circuit is open, skip cache entirely and call fetcher directly.
-        if !self.cb.allow() {
+        if !self.cb.allow(&self.metrics) {
             tracing::warn!(key, "Redis unavailable, bypassing cache");
             let value = fetcher().await?;
             return Ok((value, false));
         }
 
-        if let Ok(Some(cached)) = self.get_json(key).await {
-            return Ok((cached, true));
+        // Try CachedEntry format (XFetch metadata).
+        if let Ok(Some(entry)) = self.get_json::<CachedEntry<T>>(key).await {
+            if !xfetch_should_refresh(&entry, StampedeConfig::default().xfetch_beta) {
+                return Ok((entry.value, true));
+            }
+        } else if let Ok(Some(value)) = self.get_json::<T>(key).await {
+            // Legacy format — plain value, no XFetch metadata.
+            return Ok((value, true));
         }
 
-        // Cache miss — call fetcher and store the result.
-        self.recompute_and_store(key, ttl, fetcher).await
+        // Cache miss or XFetch early refresh — try to acquire a mutex lock
+        // so only one request calls the fetcher.
+        let lock_key = format!("stampede_lock:{key}");
+        let lock_ttl = Duration::from_secs(10);
+
+        let lock_acquired = self
+            .exec(|mut conn| {
+                let lock_key = lock_key.clone();
+                async move {
+                    let result: Option<String> = redis::cmd("SET")
+                        .arg(&lock_key)
+                        .arg("1")
+                        .arg("NX")
+                        .arg("EX")
+                        .arg(lock_ttl.as_secs())
+                        .query_async(&mut conn)
+                        .await?;
+                    Ok(result.is_some())
+                }
+            })
+            .await
+            .unwrap_or(false);
+
+        if lock_acquired {
+            // We won the lock — recompute and store with XFetch metadata.
+            let start = std::time::Instant::now();
+            let value = fetcher().await?;
+            let delta_secs = start.elapsed().as_secs_f64();
+
+            let entry = CachedEntry {
+                expires_at: chrono::Utc::now().timestamp() + ttl.as_secs() as i64,
+                delta_secs,
+                value: value.clone(),
+            };
+
+            if let Err(e) = self.set_entry(key, &entry, ttl).await {
+                tracing::warn!(key, error = %e, "cache write failed after recompute");
+            }
+
+            // Release lock (best-effort).
+            let _ = self.del(&lock_key).await;
+
+            Ok((value, false))
+        } else {
+            // Another request is recomputing — poll briefly for the result.
+            for _ in 0..20 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+
+                if let Ok(Some(entry)) = self.get_json::<CachedEntry<T>>(key).await {
+                    return Ok((entry.value, false));
+                }
+                if let Ok(Some(value)) = self.get_json::<T>(key).await {
+                    return Ok((value, false));
+                }
+
+                if !self.cb.allow(&self.metrics) {
+                    break;
+                }
+            }
+
+            // Lock wait timeout — call fetcher directly as fallback.
+            let value = fetcher().await?;
+            if let Err(e) = self.set_json(key, &value, ttl).await {
+                tracing::warn!(key, error = %e, "cache write failed after lock timeout");
+            }
+            Ok((value, false))
+        }
     }
 
     async fn set_entry<T>(&self, key: &str, entry: &CachedEntry<T>, ttl: Duration) -> anyhow::Result<()>
@@ -621,7 +776,7 @@ impl RedisCache {
     /// Prefer `exec` for most use cases; use this only when you need to hold
     /// a connection across multiple commands (e.g. pipelined operations).
     pub async fn get_connection(&self) -> anyhow::Result<deadpool_redis::Connection> {
-        if !self.cb.allow() {
+        if !self.cb.allow(&self.metrics) {
             anyhow::bail!("Redis circuit breaker is open");
         }
         self.pool.get().await.context("failed to acquire Redis connection")
@@ -1341,5 +1496,53 @@ mod tests {
         }
 
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
+    }
+
+    // ── #1118: stampede protection in get_or_set_json ──────────────────────
+
+    /// Simulates N concurrent requests on a cold cache and asserts the fetcher
+    /// is called exactly once thanks to the Redis SET NX mutex lock.
+    #[tokio::test]
+    async fn concurrent_cache_miss_triggers_single_fetch() {
+        let (cache, _c) = start_cache().await;
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let key = "stampede:test:concurrent";
+
+        // Spawn 10 concurrent get_or_set_json calls with a slow fetcher.
+        let mut handles = Vec::new();
+        for _ in 0..10 {
+            let cache = cache.clone();
+            let count = Arc::clone(&call_count);
+            handles.push(tokio::spawn(async move {
+                let (val, hit) = cache
+                    .get_or_set_json::<u32, _, _>(key, Duration::from_secs(60), || {
+                        let count = count.clone();
+                        async move {
+                            // Simulate a slow upstream fetch.
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            count.fetch_add(1, Ordering::SeqCst);
+                            Ok(42u32)
+                        }
+                    })
+                    .await
+                    .unwrap();
+                (val, hit)
+            }));
+        }
+
+        let mut results = Vec::new();
+        for h in handles {
+            results.push(h.await.unwrap());
+        }
+
+        // All requests must return 42.
+        for (val, _) in &results {
+            assert_eq!(*val, 42, "all concurrent requests must return the correct value");
+        }
+
+        // The fetcher must have been called exactly once.
+        let total_calls = call_count.load(Ordering::SeqCst);
+        assert_eq!(total_calls, 1, "expected 1 fetcher call, got {total_calls}");
     }
 }
