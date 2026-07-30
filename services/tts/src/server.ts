@@ -483,10 +483,25 @@ app.get("/tts/voices", (req: Request, res: Response) => {
 // Error handling
 // ---------------------------------------------------------------------------
 
-app.use((err: any, req: Request, res: Response, next: any) => {
+/**
+ * Final error-handling middleware. Respects `err.statusCode`/`err.status`
+ * when present — e.g. a SyntaxError thrown inside express.json() on a
+ * malformed JSON body carries `status`/`statusCode` 400 — and defaults to 500
+ * only when neither is set. 5xx keeps a generic message to avoid leaking
+ * internals; 4xx messages describe a client mistake and are safe to surface,
+ * matching how the route-level catch blocks already handle their errors.
+ */
+export function globalErrorHandler(err: any, req: Request, res: Response, next: NextFunction): void {
   console.error("Unhandled error:", err);
-  res.status(500).json({ error: "Internal server error" });
-});
+  const statusCode =
+    typeof err?.statusCode === "number" ? err.statusCode
+    : typeof err?.status === "number" ? err.status
+    : 500;
+  const message = statusCode >= 500 ? "Internal server error" : (err?.message || "Bad request");
+  res.status(statusCode).json({ error: message });
+}
+
+app.use(globalErrorHandler);
 
 // ---------------------------------------------------------------------------
 // Server startup
