@@ -12,9 +12,17 @@ export function useI18n() {
     setLocaleState(i18n.getLocale());
   }, []);
 
+  useEffect(() => {
+    if (typeof document !== 'undefined') {
+      document.documentElement.lang = locale;
+    }
+  }, [locale]);
+
   const setLocale = (newLocale: Locale) => {
-    i18n.setLocale(newLocale);
-    setLocaleState(newLocale);
+    const applied = i18n.setLocale(newLocale);
+    if (applied) {
+      setLocaleState(newLocale);
+    }
   };
 
   const t = (key: string, defaultValue?: string) => {

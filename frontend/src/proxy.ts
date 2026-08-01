@@ -1,19 +1,35 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
-export function middleware(request: NextRequest) {
+// Allow the app to reach its configured backend API (e.g. a local http origin
+// during development) without loosening connect-src to all origins.
+function apiOrigin(): string {
+  try {
+    return new URL(process.env.NEXT_PUBLIC_API_URL ?? '').origin;
+  } catch {
+    return '';
+  }
+}
+
+export function proxy(request: NextRequest) {
   const nonce = Buffer.from(crypto.randomUUID()).toString('base64');
+  // Explicit allow-list only: 'self' plus the configured API origin. A bare
+  // https: scheme-source would let an injected script fetch()/load images
+  // from *any* HTTPS host, defeating the point of computing apiOrigin() at all.
+  const connectSrc = ["'self'", apiOrigin()].filter(Boolean).join(' ');
+  const imgSrc = ["'self'", 'data:', apiOrigin()].filter(Boolean).join(' ');
 
   const cspHeader = [
     "default-src 'self'",
     `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`,
-    "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: https:",
+    "style-src 'self'",
+    `img-src ${imgSrc}`,
     "font-src 'self' data:",
-    "connect-src 'self' https:",
+    `connect-src ${connectSrc}`,
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",
+    "object-src 'none'",
     "upgrade-insecure-requests",
   ].join('; ');
 

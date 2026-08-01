@@ -1,0 +1,18 @@
+{
+  "onlyAllow": [
+    "MIT",
+    "MIT*",
+    "ISC",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Apache-2.0",
+    "Apache*",
+    "CC0-1.0",
+    "CC-BY-3.0",
+    "CC-BY-4.0",
+    "Unlicense",
+    "0BSD",
+    "Python-2.0",
+    "BlueOak-1.0.0"
+  ]
+}

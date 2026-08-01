@@ -8,10 +8,173 @@
 //!
 //! This is a defence-in-depth layer; the frontend MUST also escape output.
 
-use axum::http::StatusCode;
+use axum::body::Body;
+use axum::extract::Request;
+use axum::http::{Method, StatusCode};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Serialize;
+
+// ── Request body size limit ──────────────────────────────────────────────────
+
+/// Default request body size limit: 1 MiB.
+pub const DEFAULT_REQUEST_BODY_MAX_BYTES: usize = 1_048_576;
+
+/// Parse `REQUEST_BODY_MAX_BYTES` from an optional env-var string.
+/// Returns the default on missing, zero, or unparseable values.
+pub fn parse_request_body_max_bytes(val: Option<&str>) -> usize {
+    val.and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_REQUEST_BODY_MAX_BYTES)
+}
+
+fn body_limit() -> usize {
+    parse_request_body_max_bytes(std::env::var("REQUEST_BODY_MAX_BYTES").ok().as_deref())
+}
+
+#[derive(Serialize)]
+struct PayloadTooLargeError {
+    error: &'static str,
+    message: String,
+    limit_bytes: usize,
+}
+
+/// Tower middleware that enforces a request body size limit.
+///
+/// Fast-path: rejects immediately when `Content-Length` exceeds the limit.
+/// Slow-path: buffers the stream and rejects once accumulated bytes exceed limit.
+pub async fn request_size_validation_middleware(
+    req: Request,
+    next: Next,
+) -> Response {
+    let limit = body_limit();
+
+    // Fast path: Content-Length header present
+    if let Some(cl) = req.headers().get("content-length") {
+        if let Ok(s) = cl.to_str() {
+            if let Ok(n) = s.parse::<usize>() {
+                if n > limit {
+                    return payload_too_large(limit);
+                }
+            }
+        }
+    }
+
+    // Slow path: buffer stream up to limit+1 bytes.
+    // axum::body::to_bytes returns Err when body exceeds the cap — treat that as 413.
+    let (parts, body) = req.into_parts();
+    let bytes = match axum::body::to_bytes(body, limit + 1).await {
+        Ok(b) => b,
+        Err(_) => return payload_too_large(limit),
+    };
+    if bytes.len() > limit {
+        return payload_too_large(limit);
+    }
+
+    let req = Request::from_parts(parts, Body::from(bytes));
+    next.run(req).await
+}
+
+fn payload_too_large(limit: usize) -> Response {
+    (
+        StatusCode::PAYLOAD_TOO_LARGE,
+        Json(PayloadTooLargeError {
+            error: "payload_too_large",
+            message: format!(
+                "Request body exceeds the maximum allowed size of {} bytes.",
+                limit
+            ),
+            limit_bytes: limit,
+        }),
+    )
+        .into_response()
+}
+
+// ── Content-Type validation ───────────────────────────────────────────────────
+
+const JSON_REQUIRED_METHODS: &[Method] = &[Method::POST, Method::PUT, Method::PATCH];
+
+#[derive(Serialize)]
+struct UnsupportedMediaTypeError {
+    error: &'static str,
+    message: String,
+    required: &'static str,
+    received: String,
+}
+
+/// Reject POST/PUT/PATCH requests whose `Content-Type` is not `application/json`.
+pub async fn content_type_validation_middleware(req: Request, next: Next) -> Response {
+    if JSON_REQUIRED_METHODS.contains(req.method()) {
+        let ct = req
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !ct.starts_with("application/json") {
+            return (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                Json(UnsupportedMediaTypeError {
+                    error: "unsupported_media_type",
+                    message: "Content-Type must be application/json for POST, PUT, and PATCH \
+                              requests."
+                        .to_string(),
+                    required: "application/json",
+                    received: if ct.is_empty() {
+                        "not set".to_string()
+                    } else {
+                        ct.to_string()
+                    },
+                }),
+            )
+                .into_response();
+        }
+    }
+    next.run(req).await
+}
+
+// ── Query / path validation ───────────────────────────────────────────────────
+
+static SUSPICIOUS_QUERY_PATTERNS: &[&str] = &[
+    "' or", "\" or", "1=1", "or 1=1", "drop table", "select ", "insert ",
+    "delete ", "update ", "union ", "--", "/*", "*/", "xp_", "exec(",
+];
+
+static SUSPICIOUS_PATH_PATTERNS: &[&str] = &["//", "../", "..\\", "%2e%2e"];
+
+/// Reject requests with SQL-injection or path-traversal patterns in query / path.
+pub async fn request_validation_middleware(req: Request, next: Next) -> Response {
+    let uri = req.uri();
+
+    if let Some(query) = uri.query() {
+        let lower = query.to_lowercase();
+        if SUSPICIOUS_QUERY_PATTERNS.iter().any(|p| lower.contains(p)) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "invalid_request",
+                    "message": "Request contains disallowed query patterns."
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    let path = uri.path();
+    let lower_path = path.to_lowercase();
+    if SUSPICIOUS_PATH_PATTERNS.iter().any(|p| lower_path.contains(p)) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid_request",
+                "message": "Request path contains disallowed patterns."
+            })),
+        )
+            .into_response();
+    }
+
+    next.run(req).await
+}
 
 #[derive(Debug, Serialize)]
 pub struct ValidationError {
@@ -206,5 +369,118 @@ mod tests {
     fn validate_rejects_encoded_script_tag() {
         let err = validate_string("desc", "&lt;script&gt;", 1, 200).unwrap_err();
         assert_eq!(err.error, "invalid_content");
+    }
+
+    // ── Property-based tests ──────────────────────────────────────────────────
+    //
+    // Run with at least 1 000 cases in CI:
+    //   PROPTEST_CASES=1000 cargo test prop_
+    #[cfg(test)]
+    mod property_tests {
+        use super::*;
+        use proptest::prelude::*;
+
+        // Maximum field length used in the property tests below.
+        const MAX_LEN: usize = 200;
+
+        proptest! {
+            // Empty string should be accepted by sanitize_string (length checks
+            // happen in validate_string) and produce an empty result.
+            #[test]
+            fn prop_sanitize_empty_string_is_ok(_ignored in Just(())) {
+                let result = sanitize_string("field", "");
+                prop_assert!(result.is_ok());
+                prop_assert_eq!(result.unwrap(), "");
+            }
+
+            // Strings longer than MAX_LEN must be rejected by validate_string.
+            #[test]
+            fn prop_validate_rejects_over_max_len(
+                extra in 1usize..=256,
+                ch in '[' ..= '~', // printable ASCII, no injection chars
+            ) {
+                let s: String = std::iter::repeat(ch).take(MAX_LEN + extra).collect();
+                // Skip if the character happens to form an injection pattern — we're
+                // testing the length gate, not the injection gate.
+                prop_assume!(!contains_injection(&s));
+                let result = validate_string("field", &s, 1, MAX_LEN);
+                prop_assert!(result.is_err());
+                prop_assert_eq!(result.unwrap_err().error, "too_long");
+            }
+
+            // Zero-length input must be rejected by validate_string when min_len > 0.
+            #[test]
+            fn prop_validate_rejects_empty_when_min_len_positive(_ignored in Just(())) {
+                let result = validate_string("field", "", 1, MAX_LEN);
+                prop_assert!(result.is_err());
+                prop_assert_eq!(result.unwrap_err().error, "too_short");
+            }
+
+            // All-whitespace strings collapse to "" after trim and should fail
+            // the min-length gate when min_len > 0.
+            #[test]
+            fn prop_all_whitespace_is_rejected(
+                spaces in 1usize..=50,
+            ) {
+                let s: String = " ".repeat(spaces);
+                let result = validate_string("field", &s, 1, MAX_LEN);
+                prop_assert!(result.is_err());
+                prop_assert_eq!(result.unwrap_err().error, "too_short");
+            }
+
+            // Null bytes must never appear in sanitized output.
+            #[test]
+            fn prop_null_bytes_stripped_from_output(
+                prefix in "[a-zA-Z0-9 ]{0,20}",
+                suffix in "[a-zA-Z0-9 ]{0,20}",
+            ) {
+                let input = format!("{prefix}\0{suffix}");
+                prop_assume!(!contains_injection(&input));
+                if let Ok(out) = sanitize_string("field", &input) {
+                    prop_assert!(!out.contains('\0'), "null byte survived sanitization");
+                }
+            }
+
+            // Control characters (except tab/newline/CR) must not appear in output.
+            #[test]
+            fn prop_control_chars_stripped(
+                ctrl in 1u8..=8u8, // \x01–\x08 are stripped
+                filler in "[a-z]{1,10}",
+            ) {
+                let input = format!("{filler}{}{filler}", ctrl as char);
+                prop_assume!(!contains_injection(&input));
+                if let Ok(out) = sanitize_string("field", &input) {
+                    prop_assert!(
+                        !out.chars().any(|c| c.is_control() && c != '\t' && c != '\n' && c != '\r'),
+                        "control character survived sanitization"
+                    );
+                }
+            }
+
+            // Known-safe strings within length bounds must always pass.
+            #[test]
+            fn prop_valid_market_titles_pass(
+                // Alphanumeric + common punctuation; deliberately no HTML/script chars
+                title in "[a-zA-Z0-9 .,!?'\\-]{5,100}",
+            ) {
+                prop_assume!(!contains_injection(&title));
+                let result = validate_string("title", &title, 1, MAX_LEN);
+                prop_assert!(result.is_ok(), "valid title was rejected: {:?}", result.err());
+            }
+
+            // Unicode non-ASCII (including homograph characters) must never panic
+            // and must not produce null bytes in output.
+            #[test]
+            fn prop_unicode_does_not_panic_or_produce_null(
+                s in "\\PC{0,50}", // any non-control Unicode up to 50 chars
+            ) {
+                // Ignore inputs that trigger the injection guard — we test that
+                // separately; here we only care that the function doesn't panic or
+                // corrupt output.
+                if let Ok(out) = sanitize_string("field", &s) {
+                    prop_assert!(!out.contains('\0'));
+                }
+            }
+        }
     }
 }

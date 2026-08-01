@@ -104,6 +104,7 @@ pub struct OracleConfig {
 // Gas optimization constants
 pub const MAX_PUSH_PAYOUT_WINNERS: u32 = 50; // Threshold for switching to pull mode
 pub const MAX_OUTCOMES_PER_MARKET: u32 = 100; // Limit to prevent excessive iteration
+pub const CANCEL_OUTCOME_INDEX: u32 = u32::MAX; // Sentinel outcome for community cancel votes
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -132,6 +133,7 @@ pub enum ConfigKey {
     MaxDisputeWindow,
     CircuitBreakerThreshold,
     PendingAdmin,
+    PendingEmergencyPause,
 }
 
 #[contracttype]
@@ -181,7 +183,12 @@ pub struct PendingGuardianRemoval {
     pub target_guardian: Address,
     pub initiated_at: u64,
     pub votes_for: Vec<Address>,
+    pub votes_against: Vec<Address>,
 }
+
+// Issue #1194: a guardian-removal proposal must not be able to sit forever
+// while only accumulating "yes" votes — it expires and must be re-initiated.
+pub const GUARDIAN_REMOVAL_VOTE_WINDOW: u64 = 7 * 24 * 3600; // 7 days
 
 // TTL Management Constants (in ledgers, ~5 seconds per ledger)
 pub const TTL_LOW_THRESHOLD: u32 = 17_280; // ~1 day (86400 seconds / 5)

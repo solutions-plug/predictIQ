@@ -55,10 +55,16 @@ variable "db_password" {
   description = "Database master password"
   type        = string
   sensitive   = true
-  
+
   validation {
-    condition     = length(var.db_password) >= 8
-    error_message = "Database password must be at least 8 characters long."
+    condition = (
+      length(var.db_password) >= 24 &&
+      can(regex("[A-Z]", var.db_password)) &&
+      can(regex("[a-z]", var.db_password)) &&
+      can(regex("[0-9]", var.db_password)) &&
+      can(regex("[^a-zA-Z0-9]", var.db_password))
+    )
+    error_message = "Database password must be at least 24 characters and contain uppercase letters, lowercase letters, numbers, and special characters."
   }
 }
 
@@ -128,6 +134,23 @@ variable "redis_engine_version" {
   }
 }
 
+variable "redis_auth_token" {
+  description = "Auth token for Redis in-transit encryption"
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition = (
+      length(var.redis_auth_token) >= 24 &&
+      can(regex("[A-Z]", var.redis_auth_token)) &&
+      can(regex("[a-z]", var.redis_auth_token)) &&
+      can(regex("[0-9]", var.redis_auth_token)) &&
+      can(regex("[^a-zA-Z0-9]", var.redis_auth_token))
+    )
+    error_message = "Redis auth token must be at least 24 characters and contain uppercase letters, lowercase letters, numbers, and special characters."
+  }
+}
+
 variable "api_image_uri" {
   description = "ECR image URI for API"
   type        = string
@@ -181,3 +204,45 @@ variable "api_memory" {
     error_message = "API memory must be one of: 512, 1024, 2048, 3072, 4096, 5120, 6144, 7168, 8192."
   }
 }
+
+variable "acm_certificate_arn" {
+  description = "ARN of the ACM certificate used by the ALB HTTPS listener."
+  type        = string
+
+  validation {
+    condition     = can(regex("^arn:aws:acm:", var.acm_certificate_arn))
+    error_message = "acm_certificate_arn must be a valid ACM certificate ARN."
+  }
+}
+
+variable "hmac_key" {
+  description = "HMAC secret key used to sign API payloads and webhook signatures. Stored in AWS Secrets Manager."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(var.hmac_key) >= 32
+    error_message = "HMAC key must be at least 32 characters for adequate security."
+  }
+}
+
+variable "sendgrid_api_key" {
+  description = "SendGrid API key for transactional email. Stored in AWS Secrets Manager."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = can(regex("^SG\\.", var.sendgrid_api_key))
+    error_message = "SendGrid API key must start with 'SG.'."
+  }
+}
+
+variable "api_signing_key" {
+  description = "Private key used to sign API responses. Stored in AWS Secrets Manager."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(var.api_signing_key) >= 32
+    error_message = "API signing key must be at least 32 characters."
+

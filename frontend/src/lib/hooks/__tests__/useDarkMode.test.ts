@@ -116,6 +116,68 @@ describe('useDarkMode', () => {
     expect(document.documentElement.classList.contains('light-mode')).toBe(true);
   });
 
+  // ------------------------------------------------------------------
+  // Bug #1159 — lazy initializer reads DOM class on first render
+  // ------------------------------------------------------------------
+
+  it('reads dark-mode class from DOM and returns isDarkMode:true on the very first render (before isLoaded)', () => {
+    // Simulate what the inline init script does before React hydrates.
+    document.documentElement.classList.add('dark-mode');
+
+    const { result } = renderHook(() => useDarkMode());
+
+    // isDarkMode must be true on the FIRST render, not only after useEffect.
+    expect(result.current.isDarkMode).toBe(true);
+  });
+
+  it('reads light-mode class from DOM and returns isDarkMode:false on the very first render', () => {
+    document.documentElement.classList.add('light-mode');
+
+    const { result } = renderHook(() => useDarkMode());
+
+    expect(result.current.isDarkMode).toBe(false);
+  });
+
+  it('no stale icon flash: isDarkMode is already correct before isLoaded becomes true', async () => {
+    // Init script applied dark-mode before React renders.
+    document.documentElement.classList.add('dark-mode');
+
+    const { result } = renderHook(() => useDarkMode());
+
+    // Before any effects run, the state should already reflect dark mode.
+    expect(result.current.isDarkMode).toBe(true);
+
+    // After effects run and isLoaded is true, it should still be dark.
+    await waitFor(() => expect(result.current.isLoaded).toBe(true));
+    expect(result.current.isDarkMode).toBe(true);
+  });
+
+  it('falls back to getDarkModePreference when no DOM class is set', async () => {
+    // Neither class present — should fall back to system/storage preference.
+    mockMatchMedia(false);
+
+    const { result } = renderHook(() => useDarkMode());
+
+    await waitFor(() => expect(result.current.isLoaded).toBe(true));
+    expect(result.current.isDarkMode).toBe(false);
+  });
+
+  it('toggleDarkMode still works correctly after lazy-init from DOM class', async () => {
+    document.documentElement.classList.add('dark-mode');
+
+    const { result } = renderHook(() => useDarkMode());
+
+    await waitFor(() => expect(result.current.isLoaded).toBe(true));
+
+    act(() => {
+      result.current.toggleDarkMode();
+    });
+
+    expect(result.current.isDarkMode).toBe(false);
+    expect(document.documentElement.classList.contains('dark-mode')).toBe(false);
+    expect(localStorage.getItem('darkMode')).toBe('false');
+  });
+
   it('should add dark-mode class to document element', async () => {
     const { result } = renderHook(() => useDarkMode());
 

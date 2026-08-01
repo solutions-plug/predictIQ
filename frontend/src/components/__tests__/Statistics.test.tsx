@@ -1,10 +1,11 @@
 import React from 'react';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { Statistics } from '../Statistics';
-import { api } from '../../lib/api/client';
+import { ErrorBoundary } from '../ErrorBoundary';
+import { api } from '../../lib/api/public-client';
 
 // Mock the API
-jest.mock('../../lib/api/client', () => ({
+jest.mock('../../lib/api/public-client', () => ({
   api: {
     getStatistics: jest.fn(),
   },
@@ -26,10 +27,14 @@ describe('Statistics', () => {
   });
 
   it('displays data when loaded successfully', async () => {
+    // Shape returned by the real /api/v1/statistics backend response
+    // (services/api/src/db.rs Statistics struct — snake_case, with an
+    // extra field the UI doesn't display, to prove unknown fields are ignored).
     const mockData = {
-      totalMarkets: 150,
-      totalVolume: 2500000,
-      activeUsers: 50000,
+      total_markets: 150,
+      total_volume: 2500000,
+      active_markets: 50000,
+      resolved_markets: 12,
     };
     mockApi.getStatistics.mockResolvedValue(mockData);
 
@@ -63,7 +68,7 @@ describe('Statistics', () => {
   it('retries on button click', async () => {
     mockApi.getStatistics
       .mockRejectedValueOnce(new Error('Network error'))
-      .mockResolvedValueOnce({ totalMarkets: 100 });
+      .mockResolvedValueOnce({ total_markets: 100 });
 
     render(<Statistics />);
 
@@ -85,5 +90,92 @@ describe('Statistics', () => {
     render(<Statistics />);
 
     expect(screen.getByRole('region', { name: /platform statistics/i })).toBeInTheDocument();
+  });
+});
+
+// Component that unconditionally throws to simulate a rendering exception in Statistics
+const ThrowingStatistics: React.FC = () => {
+  throw new Error('Statistics rendering exception');
+};
+
+describe('Statistics wrapped in ErrorBoundary', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    // Suppress console.error for expected error boundary output
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('catches a rendering exception thrown inside Statistics and renders the fallback', () => {
+    const fallback = (
+      <section className="statistics" aria-labelledby="statistics-heading">
+        <h2 id="statistics-heading">Platform Statistics</h2>
+        <div className="error-message" role="alert">
+          <p>Unable to load statistics at this time. Please try again later.</p>
+          <button className="retry-button" onClick={() => window.location.reload()} aria-label="Retry loading statistics">
+            Retry
+          </button>
+        </div>
+      </section>
+    );
+
+    render(
+      <ErrorBoundary section="statistics" fallback={fallback}>
+        <ThrowingStatistics />
+      </ErrorBoundary>
+    );
+
+    // Fallback heading and message should be visible
+    expect(screen.getByRole('heading', { name: /platform statistics/i })).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+    expect(screen.getByText(/unable to load statistics at this time/i)).toBeInTheDocument();
+  });
+
+  it('renders a retry button in the fallback when Statistics throws', () => {
+    const fallback = (
+      <section className="statistics" aria-labelledby="statistics-heading">
+        <h2 id="statistics-heading">Platform Statistics</h2>
+        <div className="error-message" role="alert">
+          <p>Unable to load statistics at this time. Please try again later.</p>
+          <button className="retry-button" onClick={() => window.location.reload()} aria-label="Retry loading statistics">
+            Retry
+          </button>
+        </div>
+      </section>
+    );
+
+    render(
+      <ErrorBoundary section="statistics" fallback={fallback}>
+        <ThrowingStatistics />
+      </ErrorBoundary>
+    );
+
+    expect(screen.getByRole('button', { name: /retry loading statistics/i })).toBeInTheDocument();
+  });
+
+  it('does not render the Statistics content when an error is thrown', () => {
+    const fallback = (
+      <div role="alert">
+        <p>Unable to load statistics at this time. Please try again later.</p>
+        <button className="retry-button" aria-label="Retry loading statistics">Retry</button>
+      </div>
+    );
+
+    render(
+      <ErrorBoundary section="statistics" fallback={fallback}>
+        <ThrowingStatistics />
+      </ErrorBoundary>
+    );
+
+    // Normal statistics content should not be present
+    expect(screen.queryByText('Total Markets')).not.toBeInTheDocument();
+    expect(screen.queryByText('Total Volume')).not.toBeInTheDocument();
+    expect(screen.queryByText('Active Markets')).not.toBeInTheDocument();
+
+    // Fallback should be visible instead
+    expect(screen.getByRole('alert')).toBeInTheDocument();
   });
 });

@@ -3,6 +3,10 @@ import { test, expect } from '@playwright/test';
 // Read visual diff threshold from environment (default: 0.1%)
 const VISUAL_DIFF_THRESHOLD = parseFloat(process.env.VISUAL_DIFF_THRESHOLD || '0.1');
 
+// Per-pixel ratio tolerance applied to every screenshot comparison to absorb
+// sub-pixel font rendering differences across OS / Docker environments.
+const MAX_DIFF_PIXEL_RATIO = 0.01;
+
 test.describe('Visual Regression - Homepage', () => {
   test('should match homepage screenshot', async ({ page }) => {
     await page.goto('/');
@@ -12,6 +16,7 @@ test.describe('Visual Regression - Homepage', () => {
       fullPage: true,
       animations: 'disabled',
       maxDiffPixels: Math.ceil((1920 * 1080 * VISUAL_DIFF_THRESHOLD) / 100),
+      maxDiffPixelRatio: MAX_DIFF_PIXEL_RATIO,
     });
   });
 
@@ -21,6 +26,7 @@ test.describe('Visual Regression - Homepage', () => {
     const heroSection = page.locator('.hero');
     await expect(heroSection).toHaveScreenshot('hero-section.png', {
       maxDiffPixels: Math.ceil((1920 * 600 * VISUAL_DIFF_THRESHOLD) / 100),
+      maxDiffPixelRatio: MAX_DIFF_PIXEL_RATIO,
     });
   });
 
@@ -28,14 +34,18 @@ test.describe('Visual Regression - Homepage', () => {
     await page.goto('/');
     
     const featuresSection = page.locator('#features');
-    await expect(featuresSection).toHaveScreenshot('features-section.png');
+    await expect(featuresSection).toHaveScreenshot('features-section.png', {
+      maxDiffPixelRatio: MAX_DIFF_PIXEL_RATIO,
+    });
   });
 
   test('should match footer', async ({ page }) => {
     await page.goto('/');
     
     const footer = page.getByRole('contentinfo');
-    await expect(footer).toHaveScreenshot('footer.png');
+    await expect(footer).toHaveScreenshot('footer.png', {
+      maxDiffPixelRatio: MAX_DIFF_PIXEL_RATIO,
+    });
   });
 });
 
@@ -44,7 +54,9 @@ test.describe('Visual Regression - Form States', () => {
     await page.goto('/');
     
     const form = page.locator('form');
-    await expect(form).toHaveScreenshot('form-initial.png');
+    await expect(form).toHaveScreenshot('form-initial.png', {
+      maxDiffPixelRatio: MAX_DIFF_PIXEL_RATIO,
+    });
   });
 
   test('should match form error state', async ({ page }) => {
@@ -53,7 +65,9 @@ test.describe('Visual Regression - Form States', () => {
     await page.getByRole('button', { name: /get early access/i }).click();
     
     const form = page.locator('form');
-    await expect(form).toHaveScreenshot('form-error.png');
+    await expect(form).toHaveScreenshot('form-error.png', {
+      maxDiffPixelRatio: MAX_DIFF_PIXEL_RATIO,
+    });
   });
 
   test('should match form success state', async ({ page }) => {
@@ -63,7 +77,9 @@ test.describe('Visual Regression - Form States', () => {
     await page.getByRole('button', { name: /get early access/i }).click();
     
     const form = page.locator('form');
-    await expect(form).toHaveScreenshot('form-success.png');
+    await expect(form).toHaveScreenshot('form-success.png', {
+      maxDiffPixelRatio: MAX_DIFF_PIXEL_RATIO,
+    });
   });
 
   test('should match form focused state', async ({ page }) => {
@@ -72,7 +88,9 @@ test.describe('Visual Regression - Form States', () => {
     await page.getByLabel(/email address/i).focus();
     
     const form = page.locator('form');
-    await expect(form).toHaveScreenshot('form-focused.png');
+    await expect(form).toHaveScreenshot('form-focused.png', {
+      maxDiffPixelRatio: MAX_DIFF_PIXEL_RATIO,
+    });
   });
 });
 
@@ -86,6 +104,7 @@ test.describe('Visual Regression - Mobile', () => {
     await expect(page).toHaveScreenshot('mobile-homepage.png', {
       fullPage: true,
       animations: 'disabled',
+      maxDiffPixelRatio: MAX_DIFF_PIXEL_RATIO,
     });
   });
 
@@ -93,14 +112,18 @@ test.describe('Visual Regression - Mobile', () => {
     await page.goto('/');
     
     const nav = page.getByRole('navigation');
-    await expect(nav).toHaveScreenshot('mobile-navigation.png');
+    await expect(nav).toHaveScreenshot('mobile-navigation.png', {
+      maxDiffPixelRatio: MAX_DIFF_PIXEL_RATIO,
+    });
   });
 
   test('should match mobile form', async ({ page }) => {
     await page.goto('/');
     
     const form = page.locator('form');
-    await expect(form).toHaveScreenshot('mobile-form.png');
+    await expect(form).toHaveScreenshot('mobile-form.png', {
+      maxDiffPixelRatio: MAX_DIFF_PIXEL_RATIO,
+    });
   });
 });
 
@@ -114,6 +137,7 @@ test.describe('Visual Regression - Tablet', () => {
     await expect(page).toHaveScreenshot('tablet-homepage.png', {
       fullPage: true,
       animations: 'disabled',
+      maxDiffPixelRatio: MAX_DIFF_PIXEL_RATIO,
     });
   });
 });
@@ -125,7 +149,9 @@ test.describe('Visual Regression - Hover States', () => {
     const button = page.getByRole('button', { name: /get early access/i });
     await button.hover();
     
-    await expect(button).toHaveScreenshot('button-hover.png');
+    await expect(button).toHaveScreenshot('button-hover.png', {
+      maxDiffPixelRatio: MAX_DIFF_PIXEL_RATIO,
+    });
   });
 
   test('should match link hover state', async ({ page }) => {
@@ -134,7 +160,9 @@ test.describe('Visual Regression - Hover States', () => {
     const link = page.getByRole('link', { name: /features/i });
     await link.hover();
     
-    await expect(link).toHaveScreenshot('link-hover.png');
+    await expect(link).toHaveScreenshot('link-hover.png', {
+      maxDiffPixelRatio: MAX_DIFF_PIXEL_RATIO,
+    });
   });
 });
 
@@ -147,6 +175,7 @@ test.describe('Visual Regression - Dark Mode', () => {
     await expect(page).toHaveScreenshot('homepage-dark.png', {
       fullPage: true,
       animations: 'disabled',
+      maxDiffPixelRatio: MAX_DIFF_PIXEL_RATIO,
     });
   });
 });
@@ -158,6 +187,7 @@ test.describe('Visual Regression - Accessibility', () => {
     
     await expect(page).toHaveScreenshot('homepage-high-contrast.png', {
       fullPage: true,
+      maxDiffPixelRatio: MAX_DIFF_PIXEL_RATIO,
     });
   });
 
@@ -168,6 +198,7 @@ test.describe('Visual Regression - Accessibility', () => {
     await expect(page).toHaveScreenshot('homepage-reduced-motion.png', {
       fullPage: true,
       animations: 'disabled',
+      maxDiffPixelRatio: MAX_DIFF_PIXEL_RATIO,
     });
   });
 });
@@ -190,6 +221,7 @@ test.describe('Visual Regression - Breakpoints', () => {
       await expect(page).toHaveScreenshot(`${breakpoint.name}.png`, {
         fullPage: true,
         animations: 'disabled',
+        maxDiffPixelRatio: MAX_DIFF_PIXEL_RATIO,
       });
     });
   }

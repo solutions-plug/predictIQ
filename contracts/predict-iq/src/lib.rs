@@ -128,22 +128,18 @@ impl PredictIQ {
         )
     }
 
-    pub fn claim_winnings(
-        e: Env,
-        bettor: Address,
-        market_id: u64,
-        token_address: Address,
-    ) -> Result<i128, ErrorCode> {
-        crate::modules::bets::claim_winnings(&e, bettor, market_id, token_address)
+    pub fn claim_winnings(e: Env, bettor: Address, market_id: u64) -> Result<i128, ErrorCode> {
+        crate::modules::bets::claim_winnings(&e, bettor, market_id)
     }
 
     pub fn withdraw_refund(
         e: Env,
         bettor: Address,
         market_id: u64,
+        outcome: u32,
         token_address: Address,
     ) -> Result<i128, ErrorCode> {
-        crate::modules::bets::withdraw_refund(&e, bettor, market_id, token_address)
+        crate::modules::bets::withdraw_refund(&e, bettor, market_id, outcome, token_address)
     }
 
     pub fn get_market(e: Env, id: u64) -> Option<crate::types::Market> {

@@ -1,14 +1,16 @@
 import React from 'react';
 import { useAsync } from '../lib/hooks/useAsync';
-import { api } from '../lib/api/client';
+import { api } from '../lib/api/public-client';
 import { LoadingSpinner } from './LoadingSpinner';
 import { Skeleton } from './Skeleton';
 import './Statistics.css';
 
+// Field names match the backend's Statistics struct (services/api/src/db.rs),
+// which serializes as snake_case like every other typed response in this client.
 interface StatisticsData {
-  totalMarkets?: number;
-  totalVolume?: number;
-  activeUsers?: number;
+  total_markets?: number;
+  total_volume?: number;
+  active_markets?: number;
   [key: string]: unknown;
 }
 
@@ -22,19 +24,19 @@ export const Statistics: React.FC = () => {
   const displayValues = React.useMemo(
     () => ({
       totalMarkets:
-        typeof data?.totalMarkets === 'number'
-          ? data.totalMarkets.toLocaleString()
+        typeof data?.total_markets === 'number'
+          ? data.total_markets.toLocaleString()
           : 'N/A',
       totalVolume:
-        typeof data?.totalVolume === 'number'
-          ? `$${data.totalVolume.toLocaleString()}`
+        typeof data?.total_volume === 'number'
+          ? `$${data.total_volume.toLocaleString()}`
           : '$N/A',
-      activeUsers:
-        typeof data?.activeUsers === 'number'
-          ? data.activeUsers.toLocaleString()
+      activeMarkets:
+        typeof data?.active_markets === 'number'
+          ? data.active_markets.toLocaleString()
           : 'N/A',
     }),
-    [data?.activeUsers, data?.totalMarkets, data?.totalVolume],
+    [data?.active_markets, data?.total_markets, data?.total_volume],
   );
 
   const handleRetry = () => {
@@ -62,7 +64,7 @@ export const Statistics: React.FC = () => {
         <div className="stat-item">
           <h3>Total Markets</h3>
           {loading ? (
-            <Skeleton width="4rem" height="2rem" aria-label="Loading total markets" />
+            <Skeleton className="stat-skeleton stat-skeleton--markets" aria-label="Loading total markets" />
           ) : (
             <p className="stat-value" aria-live="polite">
               {displayValues.totalMarkets}
@@ -72,7 +74,7 @@ export const Statistics: React.FC = () => {
         <div className="stat-item">
           <h3>Total Volume</h3>
           {loading ? (
-            <Skeleton width="6rem" height="2rem" aria-label="Loading total volume" />
+            <Skeleton className="stat-skeleton stat-skeleton--volume" aria-label="Loading total volume" />
           ) : (
             <p className="stat-value" aria-live="polite">
               {displayValues.totalVolume}
@@ -80,12 +82,12 @@ export const Statistics: React.FC = () => {
           )}
         </div>
         <div className="stat-item">
-          <h3>Active Users</h3>
+          <h3>Active Markets</h3>
           {loading ? (
-            <Skeleton width="5rem" height="2rem" aria-label="Loading active users" />
+            <Skeleton className="stat-skeleton stat-skeleton--active-markets" aria-label="Loading active markets" />
           ) : (
             <p className="stat-value" aria-live="polite">
-              {displayValues.activeUsers}
+              {displayValues.activeMarkets}
             </p>
           )}
         </div>

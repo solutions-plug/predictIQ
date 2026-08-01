@@ -123,9 +123,10 @@ mod resolve_market_tests {
     /// Verifies that `InvalidationResult` serialises correctly.
     #[test]
     fn test_invalidation_result_serialises() {
-        let result = InvalidationResult { invalidated_keys: 6 };
+        let result = InvalidationResult { invalidated_keys: 6, cache_invalidated: true };
         let json = serde_json::to_value(&result).unwrap();
         assert_eq!(json["invalidated_keys"], 6);
+        assert_eq!(json["cache_invalidated"], true);
     }
 
     // ---------------------------------------------------------------------------

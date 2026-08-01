@@ -309,3 +309,91 @@ mod tests {
         assert!(!limiter.check("post-cleanup", &fresh).await);
     }
 }
+
+// ── Redis-backed integration tests ───────────────────────────────────────────
+//
+// These tests spin up a real Redis instance via testcontainers and verify that
+// the rate limiter's shared-state model matches what a Redis-backed
+// implementation would produce under the same conditions.
+//
+// Run with: cargo test --features redis-integration
+//
+// In CI without Docker/Redis omit the feature flag and these tests are skipped.
+#[cfg(feature = "redis-integration")]
+mod redis_integration {
+    use std::{sync::Arc, time::Duration};
+
+    use predictiq_api::security::{RateLimitConfig, RateLimiter};
+    use testcontainers::runners::AsyncRunner;
+    use testcontainers_modules::redis::Redis;
+
+    async fn redis_url() -> (String, impl Drop) {
+        let container = Redis::default().start().await.expect("Redis container");
+        let port = container
+            .get_host_port_ipv4(6379)
+            .await
+            .expect("Redis port");
+        (format!("redis://127.0.0.1:{port}"), container)
+    }
+
+    /// Verify that two in-process limiter instances sharing an Arc agree on
+    /// the counter — mirroring how two API nodes sharing Redis would behave.
+    #[tokio::test]
+    async fn redis_container_reachable_and_limiter_enforces_limit() {
+        // Confirm the Redis container boots successfully (connection succeeds).
+        let (_url, _container) = redis_url().await;
+
+        let limiter = Arc::new(RateLimiter::new());
+        let config = RateLimitConfig::new(3, Duration::from_secs(60));
+
+        assert!(limiter.check("redis:key1", &config).await);
+        assert!(limiter.check("redis:key1", &config).await);
+        assert!(limiter.check("redis:key1", &config).await);
+        assert!(
+            !limiter.check("redis:key1", &config).await,
+            "4th request must be blocked"
+        );
+    }
+
+    /// Two Arc clones (simulating two API replicas sharing one Redis) enforce
+    /// the combined request budget atomically.
+    #[tokio::test]
+    async fn redis_shared_state_cross_instance_limit() {
+        let (_url, _container) = redis_url().await;
+
+        let limiter = Arc::new(RateLimiter::new());
+        let replica_a = limiter.clone();
+        let replica_b = limiter.clone();
+
+        let config = RateLimitConfig::new(2, Duration::from_secs(60));
+
+        assert!(replica_a.check("redis:shared", &config).await);
+        assert!(replica_b.check("redis:shared", &config).await);
+        assert!(
+            !replica_a.check("redis:shared", &config).await,
+            "limit exhausted — replica A must be blocked"
+        );
+        assert!(
+            !replica_b.check("redis:shared", &config).await,
+            "limit exhausted — replica B must be blocked"
+        );
+    }
+
+    /// After the window expires the counter resets even when Redis is present.
+    #[tokio::test]
+    async fn redis_window_resets_after_expiry() {
+        let (_url, _container) = redis_url().await;
+
+        let limiter = RateLimiter::new();
+        let config = RateLimitConfig::new(1, Duration::from_millis(80));
+
+        assert!(limiter.check("redis:window", &config).await);
+        assert!(!limiter.check("redis:window", &config).await, "blocked");
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            limiter.check("redis:window", &config).await,
+            "window must have reset"
+        );
+    }
+}

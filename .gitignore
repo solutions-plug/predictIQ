@@ -36,10 +36,10 @@ frontend/playwright/.cache/
 # Test snapshots
 **/__snapshots__/
 **/*.snap
+**/*.snap.new
 **/test-snapshots/
 **/testsnapshots/
 **/testSnapshots/
-**/*.snap.new
 
 # Coverage and cache output
 coverage/
@@ -58,9 +58,26 @@ contracts/**/*.d
 # Cargo lock (regenerated per environment)
 Cargo.lock
 
+# Criterion benchmark output
+**/criterion/
+services/api/benches/.benchmarks/
 
 # Performance baselines (stored per branch)
 .performance-baselines/
+performance/.performance-baselines/
 
 # Gas benchmark baselines (stored per branch)
 contracts/predict-iq/.gas-benchmarks/
+
+# Temporary and editor files
+*.tmp
+*.bak
+*~
+.vscode/*.log
+
+# Shell scripts generated during debugging
+push_and_create_pr*.sh
+verify-e2e-setup.sh
+test_shutdown.sh
+test_shutdown.ps1
+test_rate_limit.sh

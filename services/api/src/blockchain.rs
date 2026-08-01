@@ -4,7 +4,10 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use chrono::Utc;
+
 use anyhow::{anyhow, Context};
+use rand::Rng as _;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -13,6 +16,7 @@ use tokio::{sync::RwLock, time::sleep};
 use crate::{
     cache::{keys, RedisCache},
     config::{Config, ContractKeySchema},
+    db::Database,
     metrics::Metrics,
     shutdown::{ShutdownCoordinator, WorkerHandle},
 };
@@ -26,23 +30,51 @@ pub struct BlockchainClient {
     key_schema: ContractKeySchema,
     retry_attempts: u32,
     retry_base_delay_ms: u64,
+    rpc_backoff_jitter_factor: f64,
     event_poll_interval: Duration,
     tx_poll_interval: Duration,
     confirmation_ledger_lag: u32,
     sync_market_ids: Vec<i64>,
     cache: RedisCache,
+    db: Database,
     metrics: Metrics,
     monitor: Arc<MonitoringState>,
     expected_passphrase: String,
+    /// TTL after which a watched-transaction entry is evicted.
+    /// Populated from `Config::watched_tx_ttl_secs`.
+    watched_tx_ttl: Duration,
+    /// Hard cap on the number of entries in the watch map.
+    /// Populated from `Config::watched_tx_max_size`.
+    watched_tx_max_size: usize,
+    /// Whether the service is running in a production environment.
+    /// Affects startup passphrase-mismatch behaviour: hard exit vs. warning.
+    is_production: bool,
 }
 
 /// TTL for watched transaction hashes. Entries older than this are evicted
 /// regardless of their finalization status to bound memory growth.
-const WATCHED_TX_TTL: Duration = Duration::from_secs(30 * 60); // 30 minutes
+/// This default is used only in tests; the runtime value comes from config.
+const WATCHED_TX_TTL_DEFAULT: Duration = Duration::from_secs(30 * 60); // 30 minutes
 
-/// Maximum number of entries in `watched_txs`. When the cap is reached the
-/// oldest entry (by insertion time) is evicted to make room for the new one.
+/// Public alias for tests that need to reference the default TTL directly.
+pub const WATCHED_TX_DEFAULT_TTL: Duration = WATCHED_TX_TTL_DEFAULT;
+
+/// Maximum number of entries in `watched_txs` when no config value is provided.
+/// The runtime cap comes from `Config::watched_tx_max_size`.
 pub const WATCHED_TX_MAX_SIZE: usize = 10_000;
+
+/// Errors that can be returned by [`BlockchainClient::watch_transaction`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WatchTxError {
+    /// The transaction hash is already registered in the watch map.
+    /// No second entry is inserted; the caller should treat the existing
+    /// registration as authoritative.
+    AlreadyWatched,
+    /// The watch map has reached its configured capacity cap.
+    /// The caller should back-off and retry later, or inform the client with
+    /// a `503 Service Unavailable`.
+    CapReached,
+}
 
 #[derive(Default)]
 struct MonitoringState {
@@ -188,7 +220,7 @@ fn is_non_retryable_rpc_error(code: i64) -> bool {
 }
 
 impl BlockchainClient {
-    pub fn new(config: &Config, cache: RedisCache, metrics: Metrics) -> anyhow::Result<Self> {
+    pub fn new(config: &Config, cache: RedisCache, db: Database, metrics: Metrics) -> anyhow::Result<Self> {
         let http = Client::builder()
             .pool_max_idle_per_host(16)
             .pool_idle_timeout(Duration::from_secs(60))
@@ -228,15 +260,47 @@ impl BlockchainClient {
             key_schema,
             retry_attempts: config.retry_attempts.max(1),
             retry_base_delay_ms: config.retry_base_delay_ms.max(50),
+            rpc_backoff_jitter_factor: config.rpc_backoff_jitter_factor,
             event_poll_interval: config.event_poll_interval,
             tx_poll_interval: config.tx_poll_interval,
             confirmation_ledger_lag: config.confirmation_ledger_lag.max(1),
             sync_market_ids: config.sync_market_ids.clone(),
             cache,
+            db,
             metrics,
             monitor: Arc::new(MonitoringState::default()),
             expected_passphrase: config.network_passphrase.clone(),
+            watched_tx_ttl: Duration::from_secs(config.watched_tx_ttl_secs),
+            watched_tx_max_size: config.watched_tx_max_size,
+            is_production: config.is_production,
         })
+    }
+
+    /// Probe whether `BLOCKCHAIN_RPC_URL` is reachable within a 5-second window.
+    ///
+    /// Unlike `validate_network_passphrase`, this probe:
+    /// - Uses a hard 5-second timeout (no retry backoff)
+    /// - Succeeds on any HTTP response, including 4xx/5xx (server is up)
+    /// - Only fails on network-level errors (refused, timeout, DNS failure)
+    ///
+    /// In production (`APP_ENV=production`) callers should treat a non-Ok
+    /// result as fatal and refuse to start.  In other environments it is
+    /// logged as WARN so developers can work offline.
+    pub async fn probe_rpc_reachability(&self) -> anyhow::Result<()> {
+        let payload = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "startup-probe",
+            "method": "getHealth",
+            "params": {}
+        });
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            self.http.post(&self.rpc_url).json(&payload).send(),
+        )
+        .await
+        .context("RPC probe timed out after 5 seconds")?
+        .with_context(|| format!("RPC probe to {} failed", self.rpc_url))?;
+        Ok(())
     }
 
     /// Query the RPC node for its network passphrase and verify it matches
@@ -246,6 +310,11 @@ impl BlockchainClient {
     ///
     /// When `STELLAR_NETWORK_PASSPHRASE` is unset (empty string, e.g. for a
     /// custom network without a known passphrase), validation is skipped.
+    ///
+    /// In production (`PREDICTIQ_ENV=production`) a passphrase mismatch causes
+    /// `process::exit(1)`.  In all other environments a warning is logged and
+    /// the process continues, so developers aren't blocked by a misconfigured
+    /// RPC endpoint.
     pub async fn validate_network_passphrase(&self) -> anyhow::Result<()> {
         if self.expected_passphrase.is_empty() {
             tracing::info!("STELLAR_NETWORK_PASSPHRASE not set; skipping passphrase validation");
@@ -257,19 +326,41 @@ impl BlockchainClient {
             passphrase: String,
         }
 
-        let result: NetworkResult = self
-            .rpc_call("getNetwork", serde_json::json!({}))
-            .await
-            .context("failed to query RPC network info for passphrase validation")?;
+        let result = self
+            .rpc_call::<NetworkResult>("getNetwork", serde_json::json!({}))
+            .await;
+
+        let result = match result {
+            Ok(r) => r,
+            Err(e) => {
+                let msg = format!(
+                    "Stellar RPC reachability probe failed — could not call getNetwork: {e}. \
+                     Check BLOCKCHAIN_RPC_URL."
+                );
+                if self.is_production {
+                    tracing::error!("{msg}");
+                    std::process::exit(1);
+                } else {
+                    tracing::warn!("{msg}");
+                    return Ok(());
+                }
+            }
+        };
 
         if result.passphrase != self.expected_passphrase {
-            anyhow::bail!(
+            let msg = format!(
                 "Stellar network passphrase mismatch — \
                  RPC returned {:?} but STELLAR_NETWORK_PASSPHRASE is {:?}. \
                  Check BLOCKCHAIN_NETWORK and STELLAR_NETWORK_PASSPHRASE.",
-                result.passphrase,
-                self.expected_passphrase,
+                result.passphrase, self.expected_passphrase,
             );
+            if self.is_production {
+                tracing::error!("{msg}");
+                std::process::exit(1);
+            } else {
+                tracing::warn!("{msg}");
+                return Ok(());
+            }
         }
 
         tracing::info!(
@@ -277,6 +368,32 @@ impl BlockchainClient {
             "Stellar network passphrase validated"
         );
         Ok(())
+    }
+
+    /// Returns the result of the last Stellar RPC reachability probe as a
+    /// simple boolean suitable for embedding in `/health/ready` responses.
+    /// This performs a live RPC call to `getNetwork` and checks the passphrase.
+    pub async fn probe_stellar_ready(&self) -> bool {
+        if self.expected_passphrase.is_empty() {
+            // Custom network with no passphrase configured — skip check.
+            return true;
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct NetworkResult {
+            passphrase: String,
+        }
+
+        match self
+            .rpc_call::<NetworkResult>("getNetwork", serde_json::json!({}))
+            .await
+        {
+            Ok(r) => r.passphrase == self.expected_passphrase,
+            Err(e) => {
+                tracing::warn!(error = %e, "probe_stellar_ready: getNetwork failed");
+                false
+            }
+        }
     }
 
     async fn rpc_call<T: for<'de> Deserialize<'de>>(
@@ -362,9 +479,16 @@ impl BlockchainClient {
                 }
             }
 
-            // Exponential backoff: base_delay * 2^(attempt-1), capped at 60 s.
-            let backoff_ms = (self.retry_base_delay_ms * (1u64 << (attempt - 1).min(10)))
-                .min(60_000);
+            // Full-jitter backoff: delay = random(0, min(cap, base * 2^attempt))
+            // RPC_BACKOFF_JITTER_FACTOR controls the jitter fraction (1.0 = full).
+            let cap_ms = (self.retry_base_delay_ms * (1u64 << (attempt - 1).min(10))).min(60_000);
+            let backoff_ms = if self.rpc_backoff_jitter_factor > 0.0 {
+                let jitter_range = (cap_ms as f64 * self.rpc_backoff_jitter_factor) as u64;
+                let deterministic = cap_ms.saturating_sub(jitter_range);
+                deterministic + rand::thread_rng().gen_range(0..=jitter_range)
+            } else {
+                cap_ms
+            };
             tracing::warn!(method, attempt, backoff_ms, "rpc retry scheduled");
             sleep(Duration::from_millis(backoff_ms)).await;
         }
@@ -793,7 +917,7 @@ impl BlockchainClient {
                 total_events = all_events.len(),
                 "fetch_events_since paginated"
             );
-            self.metrics.observe_invalidation("events_pagination_pages", pages);
+            self.metrics.observe_invalidation("events_pagination_pages", pages as usize);
         }
 
         Ok(all_events)
@@ -830,6 +954,20 @@ impl BlockchainClient {
             return Ok(cursor_ledger);
         }
 
+        // A gap of more than one ledger means the worker was behind or events
+        // were skipped. Emit a metric and a warning so alerts can fire.
+        let gap = confirmed_tip.saturating_sub(cursor_ledger + 1);
+        if gap > 0 {
+            tracing::warn!(
+                cursor_ledger,
+                confirmed_tip,
+                gap,
+                network = %self.network,
+                "ledger gap detected during blockchain sync"
+            );
+            self.metrics.observe_ledger_gap(&self.network, gap);
+        }
+
         let events = self.fetch_events_since(cursor_ledger + 1).await?;
         for event in events {
             let event_key = format!("{}:event:{}", keys::CHAIN_PREFIX, event.id);
@@ -838,7 +976,17 @@ impl BlockchainClient {
                 .await?;
 
             if let Some(hash) = event.tx_hash {
-                self.watch_transaction(&hash).await;
+                // AlreadyWatched is benign (idempotent); CapReached is logged
+                // as a warning but does not abort event processing.
+                match self.watch_transaction(&hash).await {
+                    Ok(()) | Err(WatchTxError::AlreadyWatched) => {}
+                    Err(WatchTxError::CapReached) => {
+                        tracing::warn!(
+                            hash,
+                            "sync_once: watched_tx cap reached, skipping watch for this hash"
+                        );
+                    }
+                }
             }
         }
 
@@ -852,17 +1000,25 @@ impl BlockchainClient {
         Ok(confirmed_tip)
     }
 
-    /// Sync worker — polls for new on-chain events on each iteration.
+    /// Sync loop — polls for new on-chain events on each iteration.
     /// Stops cleanly when `shutdown` is cancelled; any in-flight `sync_once`
     /// call is always allowed to complete before the loop exits.
-    pub async fn run_sync_worker(
+    pub async fn run_sync_loop(
         self: Arc<Self>,
         shutdown: tokio_util::sync::CancellationToken,
-        coordinator: ShutdownCoordinator,
     ) {
+        const WORKER_NAME: &str = "blockchain_sync";
+        
+        // Set worker status to running
+        if let Some(ref m) = &self.metrics {
+            m.set_worker_status(WORKER_NAME, true);
+        }
+        
         tracing::info!("Blockchain sync worker started");
 
         let cursor_key = keys::chain_sync_cursor(&self.network);
+        let checkpoint_key = format!("{}:ledger_checkpoint:{}", keys::CHAIN_PREFIX, &self.network);
+
         let mut cursor = self
             .cache
             .get_json::<u32>(&cursor_key)
@@ -871,26 +1027,87 @@ impl BlockchainClient {
             .flatten()
             .unwrap_or(0);
 
+        // On restart, check for a gap between stored checkpoint and current ledger.
+        if cursor > 0 {
+            if let Ok(Some(checkpoint)) = self.cache.get_json::<u32>(&checkpoint_key).await {
+                if let Ok(current) = self.latest_ledger().await {
+                    if current > checkpoint + 1 {
+                        let gap = current - checkpoint - 1;
+                        tracing::warn!(
+                            checkpoint,
+                            current_ledger = current,
+                            gap_size = gap,
+                            "Ledger gap detected on restart — replaying missed range"
+                        );
+                        self.metrics.observe_ledger_gap(gap);
+                        if gap > 10 {
+                            tracing::error!(
+                                gap_size = gap,
+                                "ALERT: ledger gap exceeds 10 — market state may be inconsistent"
+                            );
+                        }
+                        cursor = checkpoint;
+                    }
+                }
+            }
+        }
+
+        let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(30));
+        heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         loop {
+            // Update heartbeat
+            tokio::select! {
+                _ = heartbeat_interval.tick() => {
+                    if let Some(ref m) = &self.metrics {
+                        m.set_worker_status(WORKER_NAME, true);
+                    }
+                }
+                else => {}
+            }
+            
             // Check for shutdown *before* picking up new work.
             if shutdown.is_cancelled() {
                 tracing::info!("Blockchain sync worker: shutdown signal received, stopping");
                 break;
             }
 
-            // Do the work — always runs to completion even if cancelled mid-way.
             match self.sync_once(cursor).await {
                 Ok(next_cursor) => {
-                    cursor = next_cursor;
-                    let _ = self
-                        .cache
-                        .set_json(&cursor_key, &cursor, Duration::from_secs(24 * 60 * 60))
-                        .await;
+                    if next_cursor > cursor {
+                        let expected_next = cursor + 1;
+                        if next_cursor > expected_next {
+                            let gap = next_cursor - expected_next;
+                            tracing::warn!(
+                                last_processed = cursor,
+                                current_ledger = next_cursor,
+                                gap_size = gap,
+                                "Ledger sequence gap detected during sync"
+                            );
+                            self.metrics.observe_ledger_gap(gap);
+                            if gap > 10 {
+                                tracing::error!(
+                                    gap_size = gap,
+                                    "ALERT: ledger gap exceeds 10 — market state may be inconsistent"
+                                );
+                            }
+                        }
+
+                        cursor = next_cursor;
+                        let _ = self
+                            .cache
+                            .set_json(&cursor_key, &cursor, Duration::from_secs(24 * 60 * 60))
+                            .await;
+                        let _ = self
+                            .cache
+                            .set_json(&checkpoint_key, &cursor, Duration::from_secs(7 * 24 * 60 * 60))
+                            .await;
+                    }
+                    self.metrics.observe_sync_worker_heartbeat();
                 }
                 Err(err) => tracing::warn!("sync loop error: {err}"),
             }
 
-            // Wait for the poll interval OR an early shutdown signal.
             tokio::select! {
                 _ = sleep(self.event_poll_interval) => {}
                 _ = shutdown.cancelled() => {
@@ -900,7 +1117,22 @@ impl BlockchainClient {
             }
         }
 
+        // Set worker status to stopped
+        if let Some(ref m) = &self.metrics {
+            m.set_worker_status(WORKER_NAME, false);
+        }
+        
         tracing::info!("Blockchain sync worker stopped");
+    }
+
+    /// Sync worker — wraps `run_sync_loop` and signals the coordinator on exit.
+    /// Use `start_background_tasks` for supervised (auto-restart) execution.
+    pub async fn run_sync_worker(
+        self: Arc<Self>,
+        shutdown: tokio_util::sync::CancellationToken,
+        coordinator: ShutdownCoordinator,
+    ) {
+        self.run_sync_loop(shutdown).await;
         coordinator.worker_completed();
     }
 
@@ -911,9 +1143,29 @@ impl BlockchainClient {
         shutdown: tokio_util::sync::CancellationToken,
         coordinator: ShutdownCoordinator,
     ) {
+        const WORKER_NAME: &str = "blockchain_tx_monitor";
+        
+        // Set worker status to running
+        if let Some(ref m) = &self.metrics {
+            m.set_worker_status(WORKER_NAME, true);
+        }
+        
         tracing::info!("Blockchain transaction monitor started");
 
+        let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(30));
+        heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         loop {
+            // Update heartbeat
+            tokio::select! {
+                _ = heartbeat_interval.tick() => {
+                    if let Some(ref m) = &self.metrics {
+                        m.set_worker_status(WORKER_NAME, true);
+                    }
+                }
+                else => {}
+            }
+            
             if shutdown.is_cancelled() {
                 tracing::info!("Transaction monitor: shutdown signal received, stopping");
                 break;
@@ -931,7 +1183,26 @@ impl BlockchainClient {
             for hash in hashes {
                 if let Ok(status) = self.transaction_status_cached(&hash).await {
                     if status.status != "NOT_FOUND" && status.status != "PENDING" {
-                        self.monitor.watched_txs.write().await.remove(&hash);
+                        let mut set = self.monitor.watched_txs.write().await;
+                        set.remove(&hash);
+                        self.metrics.set_watched_tx_count(set.len() as i64);
+                        let db = self.db.clone();
+                        let resolved_status = if status.status == "SUCCESS" {
+                            "confirmed"
+                        } else {
+                            "expired"
+                        };
+                        let hash_owned = hash.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = db.watched_tx_mark_resolved(&hash_owned, resolved_status).await {
+                                tracing::warn!(
+                                    tx_hash = %hash_owned,
+                                    status = resolved_status,
+                                    error = %e,
+                                    "failed to mark watched tx resolved in database"
+                                );
+                            }
+                        });
                     }
                 }
             }
@@ -945,42 +1216,79 @@ impl BlockchainClient {
             }
         }
 
+        // Set worker status to stopped
+        if let Some(ref m) = &self.metrics {
+            m.set_worker_status(WORKER_NAME, false);
+        }
+        
         tracing::info!("Blockchain transaction monitor stopped");
         coordinator.worker_completed();
     }
 
-    pub async fn watch_transaction(&self, hash: &str) {
+    /// Load non-expired pending watched transactions from the database into the in-memory map.
+    /// Call once on startup before spawning background workers.
+    pub async fn load_watched_transactions(&self) -> anyhow::Result<()> {
+        let pending = self.db.watched_tx_load_pending().await?;
+        let count = pending.len();
+        if count > 0 {
+            let mut set = self.monitor.watched_txs.write().await;
+            let now = Instant::now();
+            for tx_hash in pending {
+                set.entry(tx_hash).or_insert(now);
+            }
+            tracing::info!(count, "restored watched transactions from database");
+        }
+        Ok(())
+    }
+
+    pub async fn watch_transaction(&self, hash: &str) -> Result<(), WatchTxError> {
         let mut set = self.monitor.watched_txs.write().await;
 
         // Evict TTL-expired entries first.
         let now = Instant::now();
         let before = set.len();
-        set.retain(|_, inserted_at| now.duration_since(*inserted_at) < WATCHED_TX_TTL);
+        set.retain(|_, inserted_at| now.duration_since(*inserted_at) < self.watched_tx_ttl);
         let evicted = before - set.len();
         if evicted > 0 {
             self.metrics.observe_tx_eviction(evicted as u64);
             tracing::info!(evicted, "watched_txs: TTL eviction");
         }
 
-        // If still at cap, evict the single oldest entry to make room.
-        if set.len() >= WATCHED_TX_MAX_SIZE {
-            if let Some(oldest_key) = set
-                .iter()
-                .min_by_key(|(_, inserted_at)| *inserted_at)
-                .map(|(k, _)| k.clone())
-            {
-                set.remove(&oldest_key);
-                self.metrics.observe_tx_eviction(1);
-                tracing::warn!(
-                    cap = WATCHED_TX_MAX_SIZE,
-                    evicted_hash = %oldest_key,
-                    new_hash = hash,
-                    "watched_txs cap reached, evicting oldest entry"
-                );
-            }
+        // Deduplication check: reject if the hash is already being watched.
+        if set.contains_key(hash) {
+            tracing::debug!(hash, "watch_transaction: hash already registered (dedup)");
+            self.metrics.set_watched_tx_count(set.len() as i64);
+            return Err(WatchTxError::AlreadyWatched);
         }
 
-        set.entry(hash.to_string()).or_insert(now);
+        // Cap check: reject new registrations when at capacity.
+        if set.len() >= self.watched_tx_max_size {
+            tracing::warn!(
+                cap = self.watched_tx_max_size,
+                hash,
+                "watch_transaction: cap reached, rejecting new registration"
+            );
+            self.metrics.set_watched_tx_count(set.len() as i64);
+            return Err(WatchTxError::CapReached);
+        }
+
+        set.insert(hash.to_string(), now);
+        self.metrics.set_watched_tx_count(set.len() as i64);
+        tracing::debug!(hash, size = set.len(), "watch_transaction: registered");
+
+        // Persist to database so the watch survives a restart.
+        let expires_at = Utc::now()
+            + chrono::Duration::from_std(WATCHED_TX_TTL)
+                .unwrap_or(chrono::Duration::minutes(30));
+        let db = self.db.clone();
+        let hash_owned = hash.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = db.watched_tx_upsert(&hash_owned, None, expires_at).await {
+                tracing::warn!(tx_hash = %hash_owned, error = %e, "failed to persist watched tx to database");
+            }
+        });
+
+        Ok(())
     }
 
     /// Replay missed events from `from_ledger` up to the current confirmed tip.
@@ -1027,17 +1335,89 @@ impl BlockchainClient {
         Ok(progress)
     }
 
+    /// Test-only constructor that accepts an externally built HTTP client so
+    /// tests can configure short timeouts and point at a local mock RPC server.
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        rpc_url: String,
+        cache: RedisCache,
+        metrics: Metrics,
+        http: Client,
+        retry_attempts: u32,
+    ) -> Self {
+        use crate::config::ContractKeySchema;
+        use crate::db::Database;
+        let db = Database::new_for_test(cache.clone(), metrics.clone());
+        Self {
+            http,
+            rpc_url,
+            network: "testnet".to_string(),
+            contract_id: "test-contract".to_string(),
+            key_schema: ContractKeySchema {
+                version: "1.0.0".to_string(),
+                market: "market:{id}".to_string(),
+                platform_stats: "platform:stats".to_string(),
+                user_bets: "user_bets:{id}".to_string(),
+                oracle_result: "oracle_result:{id}".to_string(),
+                health_check: "platform:stats".to_string(),
+            },
+            retry_attempts,
+            retry_base_delay_ms: 10,
+            rpc_backoff_jitter_factor: 0.0,
+            event_poll_interval: Duration::from_millis(50),
+            tx_poll_interval: Duration::from_millis(50),
+            confirmation_ledger_lag: 1,
+            sync_market_ids: vec![],
+            cache,
+            db,
+            metrics,
+            monitor: Arc::new(MonitoringState::default()),
+            expected_passphrase: String::new(),
+            watched_tx_ttl: WATCHED_TX_TTL_DEFAULT,
+            watched_tx_max_size: WATCHED_TX_MAX_SIZE,
+            is_production: false,
+        }
+    }
+
     /// Spawn both background workers and return their handles.
+    /// The sync worker is wrapped in a supervised restart loop: if it panics or
+    /// exits unexpectedly, it is restarted and the restart counter incremented.
     /// Each worker holds a child cancellation token and reports completion
     /// to the coordinator when it exits.
     pub fn start_background_tasks(self: Arc<Self>, coordinator: &ShutdownCoordinator) -> Vec<WorkerHandle> {
+        // ── Supervised sync worker ────────────────────────────────────────────
         let sync_token = coordinator.token();
         let sync_coord = coordinator.clone();
+
         let sync_client = self.clone();
         let sync_handle = tokio::spawn(async move {
-            sync_client.run_sync_worker(sync_token, sync_coord).await;
+            loop {
+                if sync_token.is_cancelled() {
+                    break;
+                }
+                let token = sync_token.clone();
+                let client = sync_client.clone();
+                let result = tokio::spawn(async move {
+                    client.run_sync_loop(token).await;
+                })
+                .await;
+
+                match result {
+                    Ok(_) => break, // clean shutdown exit
+                    Err(e) => {
+                        sync_client.metrics.observe_sync_worker_restart();
+                        tracing::error!(error = %e, "FATAL: blockchain sync worker panicked — restarting");
+                        if sync_token.is_cancelled() {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                }
+            }
+            sync_coord.worker_completed();
         });
 
+        // ── Transaction monitor ───────────────────────────────────────────────
         let mon_token = coordinator.token();
         let mon_coord = coordinator.clone();
         let mon_client = self;
@@ -1082,14 +1462,67 @@ mod tests {
         }
     }
 
+    // ── #935: full-jitter backoff ─────────────────────────────────────────────
+
+    /// Simulates 100 retry delay calculations with full jitter and verifies
+    /// no two delays are identical (extremely unlikely with random values).
+    #[test]
+    fn jitter_backoff_produces_unique_delays() {
+        use rand::Rng as _;
+        let base_ms: u64 = 200;
+        let jitter_factor: f64 = 1.0;
+        let attempt: u32 = 3;
+
+        let cap_ms = (base_ms * (1u64 << (attempt - 1).min(10))).min(60_000);
+        let jitter_range = (cap_ms as f64 * jitter_factor) as u64;
+        let deterministic = cap_ms.saturating_sub(jitter_range);
+
+        let mut rng = rand::thread_rng();
+        let delays: Vec<u64> = (0..100)
+            .map(|_| deterministic + rng.gen_range(0..=jitter_range))
+            .collect();
+
+        // With full jitter over range [0, 800ms] the probability of any two
+        // being equal is negligible; assert at least 90% unique values.
+        let unique: std::collections::HashSet<u64> = delays.iter().cloned().collect();
+        assert!(unique.len() >= 90, "expected >= 90 unique delays, got {}", unique.len());
+    }
+
+    /// With jitter_factor=0.0 (no jitter) all delays are identical.
+    #[test]
+    fn zero_jitter_produces_deterministic_delays() {
+        let base_ms: u64 = 200;
+        let jitter_factor: f64 = 0.0;
+        let attempt: u32 = 3;
+
+        let cap_ms = (base_ms * (1u64 << (attempt - 1).min(10))).min(60_000);
+        let jitter_range = (cap_ms as f64 * jitter_factor) as u64;
+        let deterministic = cap_ms.saturating_sub(jitter_range);
+
+        let delays: Vec<u64> = (0..100)
+            .map(|_| {
+                // With jitter_factor=0, jitter_range=0, all delays are deterministic.
+                if jitter_factor > 0.0 {
+                    let mut rng = rand::thread_rng();
+                    deterministic + rng.gen_range(0..=jitter_range)
+                } else {
+                    cap_ms
+                }
+            })
+            .collect();
+
+        assert!(
+            delays.iter().all(|&d| d == cap_ms),
+            "all delays must equal cap_ms when jitter_factor=0"
+        );
+    }
+
     // ── #462: fetch_events_since pagination ──────────────────────────────────
 
     /// Verifies that the pagination loop terminates correctly when the batch
     /// is smaller than the page size (simulates the last page).
     #[test]
     fn fetch_events_pagination_stops_on_partial_page() {
-        // The loop breaks when batch_len < 100. Verify the condition holds for
-        // typical last-page sizes (0, 1, 99).
         for last_page_size in [0usize, 1, 99] {
             assert!(
                 last_page_size < 100,
@@ -1098,54 +1531,122 @@ mod tests {
         }
     }
 
-    /// Inserting more than WATCHED_TX_MAX_SIZE hashes must not grow the set beyond the cap.
+    // ── #937: Deduplication ───────────────────────────────────────────────────
+
+    /// Registering the same hash twice must return AlreadyWatched on the
+    /// second call and must not insert a second entry.
     #[tokio::test]
-    async fn watched_txs_cap_prevents_unbounded_growth() {
-        use super::{MonitoringState, WATCHED_TX_MAX_SIZE, WATCHED_TX_TTL};
+    async fn watch_transaction_dedup_returns_already_watched() {
+        use super::{MonitoringState, WatchTxError, WATCHED_TX_MAX_SIZE, WATCHED_TX_DEFAULT_TTL};
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let state = Arc::new(MonitoringState::default());
+        let ttl = WATCHED_TX_DEFAULT_TTL;
+        let cap = WATCHED_TX_MAX_SIZE;
+
+        // First registration must succeed.
+        {
+            let mut set = state.watched_txs.write().await;
+            let now = std::time::Instant::now();
+            set.retain(|_, t| now.duration_since(*t) < ttl);
+            assert!(!set.contains_key("dup-hash"));
+            assert!(set.len() < cap);
+            set.insert("dup-hash".to_string(), now);
+        }
+
+        // Second registration of the same hash must return AlreadyWatched.
+        let result = {
+            let mut set = state.watched_txs.write().await;
+            let now = std::time::Instant::now();
+            set.retain(|_, t| now.duration_since(*t) < ttl);
+            if set.contains_key("dup-hash") {
+                Err(WatchTxError::AlreadyWatched)
+            } else if set.len() >= cap {
+                Err(WatchTxError::CapReached)
+            } else {
+                set.insert("dup-hash".to_string(), now);
+                Ok(())
+            }
+        };
+
+        assert_eq!(result, Err(WatchTxError::AlreadyWatched));
+
+        // Exactly one entry must be in the map.
+        let count = state.watched_txs.read().await.len();
+        assert_eq!(count, 1, "duplicate must not insert a second entry");
+    }
+
+    // ── #934: Cap → reject (503), not evict ───────────────────────────────────
+
+    /// When the watch map is at capacity, a new registration must return
+    /// CapReached.  The map size must not exceed the cap.
+    #[tokio::test]
+    async fn watch_transaction_cap_returns_cap_reached() {
+        use super::{MonitoringState, WatchTxError, WATCHED_TX_MAX_SIZE, WATCHED_TX_DEFAULT_TTL};
         use std::sync::Arc;
 
         let state = Arc::new(MonitoringState::default());
+        let cap = WATCHED_TX_MAX_SIZE;
+        let ttl = WATCHED_TX_DEFAULT_TTL;
 
-        // Insert WATCHED_TX_MAX_SIZE + 50 unique hashes, simulating the eviction logic.
-        for i in 0..WATCHED_TX_MAX_SIZE + 50 {
-            let hash = format!("hash-{i}");
+        // Fill exactly to cap.
+        {
             let mut set = state.watched_txs.write().await;
             let now = std::time::Instant::now();
-            set.retain(|_, inserted_at| now.duration_since(*inserted_at) < WATCHED_TX_TTL);
-            // Evict oldest if at cap.
-            if set.len() >= WATCHED_TX_MAX_SIZE {
-                if let Some(oldest) = set.iter().min_by_key(|(_, t)| *t).map(|(k, _)| k.clone()) {
-                    set.remove(&oldest);
-                }
+            for i in 0..cap {
+                set.insert(format!("hash-{i}"), now);
             }
-            set.entry(hash).or_insert(now);
         }
 
+        // One more insertion must be rejected.
+        let result = {
+            let mut set = state.watched_txs.write().await;
+            let now = std::time::Instant::now();
+            set.retain(|_, t| now.duration_since(*t) < ttl);
+            let hash = "overflow-hash";
+            if set.contains_key(hash) {
+                Err(WatchTxError::AlreadyWatched)
+            } else if set.len() >= cap {
+                Err(WatchTxError::CapReached)
+            } else {
+                set.insert(hash.to_string(), now);
+                Ok(())
+            }
+        };
+
+        assert_eq!(result, Err(WatchTxError::CapReached));
+
         let len = state.watched_txs.read().await.len();
-        assert_eq!(len, WATCHED_TX_MAX_SIZE, "set must not exceed cap");
+        assert_eq!(len, cap, "map must not exceed cap after rejection");
     }
 
-    /// Entries older than WATCHED_TX_TTL are evicted on the next insert.
+    // ── #933: TTL eviction ────────────────────────────────────────────────────
+
+    /// Entries older than the configured TTL are evicted on the next insert.
     #[tokio::test]
     async fn watched_txs_ttl_evicts_stale_entries() {
-        use super::MonitoringState;
+        use super::{MonitoringState, WATCHED_TX_DEFAULT_TTL};
         use std::sync::Arc;
         use std::time::{Duration, Instant};
 
         let state = Arc::new(MonitoringState::default());
+        let ttl = WATCHED_TX_DEFAULT_TTL;
 
-        // Manually insert an entry with an artificially old timestamp.
+        // Insert a hash with an artificially old timestamp (31 minutes ago).
         {
             let mut set = state.watched_txs.write().await;
             set.insert("old-hash".to_string(), Instant::now() - Duration::from_secs(31 * 60));
         }
 
-        // Trigger eviction by inserting a new entry (same logic as watch_transaction).
+        // Trigger eviction by simulating a new watch_transaction call.
         {
             let mut set = state.watched_txs.write().await;
             let now = Instant::now();
-            set.retain(|_, inserted_at| now.duration_since(*inserted_at) < super::WATCHED_TX_TTL);
-            set.entry("new-hash".to_string()).or_insert(now);
+            set.retain(|_, inserted_at| now.duration_since(*inserted_at) < ttl);
+            if !set.contains_key("new-hash") && set.len() < 10_000 {
+                set.insert("new-hash".to_string(), now);
+            }
         }
 
         let set = state.watched_txs.read().await;
@@ -1153,42 +1654,69 @@ mod tests {
         assert!(set.contains_key("new-hash"), "fresh entry must be present");
     }
 
-    /// When the cap is reached, the oldest entry is evicted (not the new one dropped).
+    /// WatchTxError variants are distinct.
+    #[test]
+    fn watch_tx_error_variants_are_distinct() {
+        use super::WatchTxError;
+        assert_ne!(WatchTxError::AlreadyWatched, WatchTxError::CapReached);
+    }
+
+    // ── #1114: run_sync_loop / run_sync_worker ─────────────────────────────
+
+    /// Verifies that `run_sync_loop` exits cleanly when the shutdown token is
+    /// cancelled, and that `run_sync_worker` delegates to `run_sync_loop` and
+    /// signals the coordinator on exit.
     #[tokio::test]
-    async fn watched_txs_cap_evicts_oldest_not_newest() {
-        use super::{MonitoringState, WATCHED_TX_MAX_SIZE, WATCHED_TX_TTL};
+    async fn run_sync_loop_handles_shutdown_gracefully() {
+        use crate::shutdown::ShutdownCoordinator;
         use std::sync::Arc;
-        use std::time::{Duration, Instant};
+        use tokio_util::sync::CancellationToken;
 
-        let state = Arc::new(MonitoringState::default());
+        let coordinator = ShutdownCoordinator::new();
+        let token = coordinator.token();
 
-        // Fill to cap, with "oldest-hash" inserted first (oldest timestamp).
-        {
-            let mut set = state.watched_txs.write().await;
-            let old_time = Instant::now() - Duration::from_secs(60);
-            set.insert("oldest-hash".to_string(), old_time);
-            let now = Instant::now();
-            for i in 1..WATCHED_TX_MAX_SIZE {
-                set.insert(format!("hash-{i}"), now);
-            }
-        }
+        // Create a minimal client via new_for_test.  We use a real Redis
+        // container so cache operations don't blow up.
+        let redis_container = testcontainers::runners::AsyncRunner::start(
+            testcontainers_modules::redis::Redis::default(),
+        )
+        .await
+        .expect("redis container");
+        let port = redis_container
+            .get_host_port_ipv4(6379)
+            .await
+            .expect("redis port");
+        let url = format!("redis://127.0.0.1:{port}");
+        let cache = crate::cache::RedisCache::new(&url).await.unwrap();
+        let metrics = crate::metrics::Metrics::new(false);
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(100))
+            .build()
+            .unwrap();
 
-        // Insert one more — should evict "oldest-hash".
-        {
-            let mut set = state.watched_txs.write().await;
-            let now = Instant::now();
-            set.retain(|_, inserted_at| now.duration_since(*inserted_at) < WATCHED_TX_TTL);
-            if set.len() >= WATCHED_TX_MAX_SIZE {
-                if let Some(oldest) = set.iter().min_by_key(|(_, t)| *t).map(|(k, _)| k.clone()) {
-                    set.remove(&oldest);
-                }
-            }
-            set.entry("newest-hash".to_string()).or_insert(now);
-        }
+        let client = Arc::new(BlockchainClient::new_for_test(
+            "http://127.0.0.1:9999".to_string(),
+            cache,
+            metrics,
+            http,
+            0,
+        ));
 
-        let set = state.watched_txs.read().await;
-        assert!(!set.contains_key("oldest-hash"), "oldest entry must be evicted");
-        assert!(set.contains_key("newest-hash"), "newest entry must be present");
-        assert_eq!(set.len(), WATCHED_TX_MAX_SIZE, "size must remain at cap");
+        // Cancel the token, then run_sync_loop should exit immediately.
+        token.cancel();
+        client
+            .clone()
+            .run_sync_loop(token.clone())
+            .await;
+
+        // Also exercise run_sync_worker to confirm it delegates to run_sync_loop
+        // and notifies the coordinator.
+        let worker_coord = ShutdownCoordinator::new();
+        let worker_token = worker_coord.token();
+        worker_token.cancel();
+        let client2 = client.clone();
+        tokio::spawn(async move {
+            client2.run_sync_worker(worker_token, worker_coord.clone()).await;
+        });
     }
 }

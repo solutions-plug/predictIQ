@@ -67,3 +67,54 @@ The following are **out of scope**:
 - Follow the principle of least privilege when adding new permissions.
 - Validate and sanitise all external input.
 - Keep dependencies up to date; dependency-scan CI runs on every PR.
+
+## CSRF Protection
+
+Cross-Site Request Forgery (CSRF) exploits the browser's automatic inclusion of
+cookies in cross-origin requests.  It is only relevant when an endpoint mutates
+state **and** authentication is carried by a cookie that the browser attaches
+automatically.
+
+### Assessment
+
+The PredictIQ API uses **stateless authentication** — API keys (`X-Api-Key`
+header) and URL-embedded tokens — not cookies.  This eliminates the primary CSRF
+attack vector for all current endpoints.
+
+| Endpoint | Auth method | CSRF risk | Mitigation |
+|---|---|---|---|
+| `POST /api/v1/newsletter/subscribe` | None (public) | Low | JSON Content-Type blocks HTML-form CSRF; Origin validation middleware |
+| `GET /api/v1/newsletter/unsubscribe` | URL token (`?token=`) | None | Tokens are per-user secrets; GET does not mutate via form attack |
+| `GET /api/v1/newsletter/confirm` | URL token | None | Same as above |
+| `GET /api/v1/newsletter/gdpr/export` | URL token | None | Same as above |
+| `DELETE /api/v1/newsletter/gdpr/delete` | URL token | None | Same as above |
+| `POST /api/v1/markets/*/resolve` | `X-Api-Key` header | None | Custom headers cannot be forged by cross-site forms |
+| All other admin routes | `X-Api-Key` header | None | Custom headers cannot be forged by cross-site forms |
+
+### Defense-in-depth layers
+
+Even though no cookie auth exists, the following defenses are active:
+
+1. **JSON Content-Type requirement** — `content_type_validation_middleware`
+   enforces `Content-Type: application/json` on all state-changing endpoints.
+   HTML `<form>` elements can only submit `application/x-www-form-urlencoded`
+   or `multipart/form-data`, so a forged form POST is rejected before reaching
+   any handler.
+
+2. **Origin / Referer validation** — `csrf_protection_middleware` (in
+   `src/csrf.rs`) is applied to the newsletter route group.  For any
+   state-changing request (POST / PUT / PATCH / DELETE) that carries an
+   `Origin` header, the middleware rejects the request with **403 Forbidden**
+   if the origin is not in the `CORS_ALLOWED_ORIGINS` list.  When a `Cookie`
+   header is present but `Origin` is absent, the `Referer` header is checked
+   as a fallback.  Non-browser clients (no `Origin`, no `Cookie`) are passed
+   through unchanged.
+
+3. **API-key exclusion** — requests carrying an `X-Api-Key` header skip the
+   Origin/Referer check entirely, as API-key auth is inherently CSRF-safe.
+
+### Future considerations
+
+If cookie-based session authentication is introduced, a
+**Synchronizer Token** or **Double-Submit Cookie** pattern must be added for
+all state-changing endpoints accessible via browser sessions.

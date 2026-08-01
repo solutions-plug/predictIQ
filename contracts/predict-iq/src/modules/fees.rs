@@ -94,25 +94,28 @@ pub fn calculate_tiered_fee(e: &Env, amount: i128, tier: &MarketTier) -> Result<
     calculate_tiered_fee_with_base(amount, base_fee, tier)
 }
 
-pub fn collect_fee(e: &Env, token: Address, amount: i128) {
+pub fn collect_fee(e: &Env, token: Address, amount: i128) -> Result<(), ErrorCode> {
     let key = DataKey::FeeRevenue(token.clone());
-    let mut total: i128 = e.storage().persistent().get(&key).unwrap_or(0);
-    total += amount;
-    e.storage().persistent().set(&key, &total);
+    let total: i128 = e.storage().persistent().get(&key).unwrap_or(0);
+    let new_total = total.checked_add(amount).ok_or(ErrorCode::ArithmeticOverflow)?;
+    e.storage().persistent().set(&key, &new_total);
 
-    let mut overall: i128 = e
+    let overall: i128 = e
         .storage()
         .persistent()
         .get(&DataKey::TotalFeesCollected)
         .unwrap_or(0);
-    overall += amount;
+    let new_overall = overall.checked_add(amount).ok_or(ErrorCode::ArithmeticOverflow)?;
     e.storage()
         .persistent()
-        .set(&DataKey::TotalFeesCollected, &overall);
+        .set(&DataKey::TotalFeesCollected, &new_overall);
 
-    // Emit standardized fee collection event using centralized emitter
+    // Emit standardized fee collection event using centralized emitter.
+    // Fees are held by this contract until withdrawn, so the contract itself
+    // is the actual recipient; the token identifies which asset was collected.
     let contract_addr = e.current_contract_address();
-    crate::modules::events::emit_fee_collected(e, 0, contract_addr, amount);
+    crate::modules::events::emit_fee_collected(e, 0, token, contract_addr, amount);
+    Ok(())
 }
 
 pub fn get_revenue(e: &Env, token: Address) -> i128 {
@@ -292,6 +295,35 @@ mod tests {
             result.is_err(),
             "i128::MAX * 10_000 must overflow and return Err"
         );
+    }
+}
+
+#[cfg(test)]
+mod collect_fee_events_tests {
+    use crate::modules::fees;
+    use crate::PredictIQ;
+    use soroban_sdk::testutils::{Address as _, Events as _};
+    use soroban_sdk::{Address, Env};
+
+    #[test]
+    fn collect_fee_emits_fee_collected_event_with_token_address() {
+        let env = Env::default();
+        let contract_id = env.register(PredictIQ, ());
+        let token = Address::generate(&env);
+
+        env.as_contract(&contract_id, || {
+            fees::collect_fee(&env, token.clone(), 1_000).unwrap();
+        });
+
+        let events = env.events().all();
+        assert!(!events.is_empty());
+
+        // Issue: the per-bet fee event must identify which token the fee was
+        // collected in, even though it never transfers funds itself.
+        let events_debug = format!("{:?}", events);
+        assert!(events_debug.contains("fee_colct"));
+        let token_debug = format!("{:?}", token);
+        assert!(events_debug.contains(&token_debug));
     }
 }
 

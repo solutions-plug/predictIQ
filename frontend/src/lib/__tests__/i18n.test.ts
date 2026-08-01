@@ -22,6 +22,23 @@ describe('i18n', () => {
       i18n.setLocale('invalid' as any);
       expect(i18n.getLocale()).toBe('en');
     });
+
+    it('should return true when setting an implemented locale', () => {
+      const result = i18n.setLocale('en');
+      expect(result).toBe(true);
+    });
+
+    it('should return false for unimplemented locales (es, fr, de)', () => {
+      expect(i18n.setLocale('es')).toBe(false);
+      expect(i18n.setLocale('fr')).toBe(false);
+      expect(i18n.setLocale('de')).toBe(false);
+    });
+
+    it('should not change internal locale when an unimplemented locale is requested', () => {
+      i18n.setLocale('en');
+      i18n.setLocale('es');
+      expect(i18n.getLocale()).toBe('en');
+    });
   });
 
   describe('t (translation)', () => {
@@ -43,6 +60,16 @@ describe('i18n', () => {
     it('should handle nested keys', () => {
       const result = i18n.t('features.decentralized.title');
       expect(result).toBe('Fully Decentralized');
+    });
+
+    it('should return default value when a key resolves to a nested object rather than a string', () => {
+      const result = i18n.t('features', 'default');
+      expect(result).toBe('default');
+    });
+
+    it('should return the key when a key resolves to a nested object and no default is provided', () => {
+      const result = i18n.t('features');
+      expect(result).toBe('features');
     });
   });
 

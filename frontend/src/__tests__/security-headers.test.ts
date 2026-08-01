@@ -36,13 +36,13 @@ describe('Security Headers', () => {
     expect(header.value).toContain('camera=()');
   });
 
-  it('should have Content-Security-Policy header configured', () => {
+  // Content-Security-Policy is deliberately NOT asserted here: it is computed
+  // per-request in src/proxy.ts (nonce + runtime API origin), not by
+  // next.config.js's static headers(). See src/__tests__/proxy.test.ts for
+  // the CSP that actually reaches the browser.
+  it('should not define a static Content-Security-Policy here (owned by proxy.ts)', () => {
     const header = headers.find((h: any) => h.key === 'Content-Security-Policy');
-    expect(header).toBeDefined();
-    expect(header.value).toContain("default-src 'self'");
-    expect(header.value).toContain("script-src 'self'");
-    expect(header.value).toContain("style-src 'self'");
-    expect(header.value).toContain("frame-ancestors 'none'");
+    expect(header).toBeUndefined();
   });
 
   it('should have all required security headers', () => {
@@ -51,7 +51,6 @@ describe('Security Headers', () => {
       'X-Frame-Options',
       'Referrer-Policy',
       'Permissions-Policy',
-      'Content-Security-Policy',
     ];
 
     const headerKeys = headers.map((h: any) => h.key);

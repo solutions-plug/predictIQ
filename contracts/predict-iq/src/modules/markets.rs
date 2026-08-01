@@ -117,29 +117,12 @@ pub fn create_market_with_dispute_window(
 
     // Validate parent market if this is a conditional market
     if parent_id > 0 {
-        let parent_market = get_market(e, parent_id).ok_or(ErrorCode::MarketNotFound)?;
-
-        // Parent must be resolved
-        if parent_market.status != MarketStatus::Resolved {
-            return Err(ErrorCode::ParentMarketNotResolved);
-        }
-
-        // Parent must have resolved to the required outcome
-        let parent_winning_outcome = parent_market
-            .winning_outcome
-            .ok_or(ErrorCode::ParentMarketNotResolved)?;
-        if parent_winning_outcome != parent_outcome_idx {
-            return Err(ErrorCode::ParentMarketInvalidOutcome);
-        }
-
-        // Validate parent_outcome_idx is within parent's options range
-        if parent_outcome_idx >= parent_market.options.len() {
-            return Err(ErrorCode::InvalidOutcome);
-        }
+        validate_parent_market(e, parent_id, parent_outcome_idx)?;
 
         // Issue #069: Conditional market inherits parent constraints.
         // The conditional market's deadline must not exceed the parent's resolution_deadline
         // to ensure the conditional market cannot outlive its parent context.
+        let parent_market = get_market(e, parent_id).ok_or(ErrorCode::MarketNotFound)?;
         if deadline > parent_market.resolution_deadline {
             return Err(ErrorCode::DeadlinePassed);
         }
@@ -196,8 +179,8 @@ pub fn create_market_with_dispute_window(
         let treasury = get_protocol_treasury(e);
         token_client.transfer(&creator, &treasury, &creation_fee);
 
-        // Emit fee collection event
-        crate::modules::events::emit_fee_collected(e, 0, treasury, creation_fee);
+        // Emit fee collection event, identifying both the token and the actual recipient
+        crate::modules::events::emit_fee_collected(e, 0, native_token.clone(), treasury, creation_fee);
     }
 
     // Lock deposit if required
@@ -241,6 +224,9 @@ pub fn create_market_with_dispute_window(
         outcome_stakes: soroban_sdk::Map::new(e),
         pending_resolution_timestamp: None,
         dispute_snapshot_ledger: None,
+        dispute_timestamp: None,
+        winner_counts: soroban_sdk::Map::new(e),
+        total_claimed: 0,
     };
 
     e.storage()
@@ -281,6 +267,57 @@ pub fn create_market_with_dispute_window(
     );
 
     Ok(count)
+}
+
+/// Validates that a conditional market's parent has resolved to the outcome
+/// the conditional market depends on. Used both at market-creation time and
+/// again at bet-placement time (bets::place_bet), since a parent's resolution
+/// can only be checked, never assumed, once set at creation.
+pub fn validate_parent_market(
+    e: &Env,
+    parent_id: u64,
+    parent_outcome_idx: u32,
+) -> Result<(), ErrorCode> {
+    let parent_market = get_market(e, parent_id).ok_or(ErrorCode::MarketNotFound)?;
+
+    // Parent must be resolved
+    if parent_market.status != MarketStatus::Resolved {
+        return Err(ErrorCode::ParentMarketNotResolved);
+    }
+
+    // Parent must have resolved to the required outcome
+    let parent_winning_outcome = parent_market
+        .winning_outcome
+        .ok_or(ErrorCode::ParentMarketNotResolved)?;
+    if parent_winning_outcome != parent_outcome_idx {
+        return Err(ErrorCode::ParentMarketInvalidOutcome);
+    }
+
+    // Validate parent_outcome_idx is within parent's options range
+    if parent_outcome_idx >= parent_market.options.len() {
+        return Err(ErrorCode::InvalidOutcome);
+    }
+
+    Ok(())
+}
+
+/// Returns the amount currently staked on `outcome`.
+pub fn get_outcome_stake(market: &Market, outcome: u32) -> i128 {
+    market.outcome_stakes.get(outcome).unwrap_or(0)
+}
+
+/// Sets the amount staked on `outcome` to `amount`.
+pub fn set_outcome_stake(market: &mut Market, outcome: u32, amount: i128) {
+    market.outcome_stakes.set(outcome, amount);
+}
+
+/// Increments the unique-bettor count for `outcome` by one. Callers are
+/// responsible for only invoking this on a bettor's first bet on that
+/// outcome (see bets::place_bet), since winner_counts tracks unique
+/// bettors per outcome, not total bet transactions.
+pub fn increment_outcome_bet_count(market: &mut Market, outcome: u32) {
+    let current_count = market.winner_counts.get(outcome).unwrap_or(0);
+    market.winner_counts.set(outcome, current_count + 1);
 }
 
 pub fn get_market_dispute_window(e: &Env, market_id: u64) -> u64 {
@@ -407,19 +444,24 @@ pub fn release_creation_deposit(
     market_id: u64,
     native_token: Address,
 ) -> Result<(), ErrorCode> {
-    let market = get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
+    let mut market = get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
+
+    // Only the market creator may reclaim their own deposit
+    market.creator.require_auth();
 
     if market.status != MarketStatus::Resolved {
         return Err(ErrorCode::MarketNotActive);
     }
 
-    if market.creation_deposit > 0 {
+    let deposit = market.creation_deposit;
+    if deposit > 0 {
+        // Checks-effects-interactions: zero and persist before transferring so
+        // repeat calls cannot re-drain the deposit.
+        market.creation_deposit = 0;
+        update_market(e, market.clone());
+
         let token_client = token::Client::new(e, &native_token);
-        token_client.transfer(
-            &e.current_contract_address(),
-            &market.creator,
-            &market.creation_deposit,
-        );
+        token_client.transfer(&e.current_contract_address(), &market.creator, &deposit);
     }
 
     Ok(())
@@ -464,6 +506,11 @@ pub fn prune_market(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
     // Archive the market ID for off-chain indexers
     crate::modules::event_archive::archive_market(e, market_id);
 
+    // Clear all voting-state storage (votes, tallies, locked tokens/balances,
+    // dispute voter registry) so disputed-and-resolved markets don't leave an
+    // unbounded storage footprint behind after pruning.
+    crate::modules::voting::prune_market_voting_state(e, market_id, market.options.len());
+
     // Remove status index entry before dropping the market record.
     e.storage()
         .persistent()
@@ -479,4 +526,126 @@ pub fn prune_market(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
     crate::modules::events::emit_market_pruned(e, market_id, current_time);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod markets_prune_tests {
+    use super::*;
+    use crate::modules::voting;
+    use crate::types::{LockedTokens, Vote};
+    use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, Map};
+
+    /// Builds and stores a disputed-then-resolved market directly (bypassing the
+    /// public create/dispute/resolve flow) with a voter's full voting-state
+    /// footprint (Vote, VoteTally, LockedTokens, LockedBalance, DisputeVoters).
+    fn seed_resolved_market_with_voting_state(e: &Env, market_id: u64, voter: &Address) {
+        let market = Market {
+            id: market_id,
+            creator: Address::generate(e),
+            description: String::from_str(e, "test market"),
+            options: Vec::from_array(
+                e,
+                [String::from_str(e, "Yes"), String::from_str(e, "No")],
+            ),
+            status: MarketStatus::Resolved,
+            deadline: 100,
+            resolution_deadline: 200,
+            winning_outcome: Some(0),
+            oracle_config: OracleConfig {
+                oracle_address: Address::generate(e),
+                feed_id: String::from_str(e, "test"),
+                min_responses: Some(1),
+                max_staleness_seconds: 3600,
+                max_confidence_bps: 100,
+                strike_price: None,
+            },
+            total_staked: 0,
+            payout_mode: crate::types::PayoutMode::Pull,
+            tier: MarketTier::Basic,
+            creation_deposit: 0,
+            parent_id: 0,
+            parent_outcome_idx: 0,
+            resolved_at: Some(0),
+            token_address: Address::generate(e),
+            outcome_stakes: Map::new(e),
+            pending_resolution_timestamp: None,
+            dispute_snapshot_ledger: None,
+            dispute_timestamp: Some(0),
+            winner_counts: Map::new(e),
+            total_claimed: 0,
+        };
+        e.storage().persistent().set(&DataKey::Market(market_id), &market);
+        e.storage()
+            .persistent()
+            .set(&DataKey::StatusIndex(market_id, MarketStatus::Resolved), &true);
+
+        // Seed the full voting-state footprint that `prune_market_voting_state`
+        // is responsible for clearing.
+        let voters = Vec::from_array(e, [voter.clone()]);
+        e.storage()
+            .persistent()
+            .set(&voting::DataKey::DisputeVoters(market_id), &voters);
+        e.storage().persistent().set(
+            &voting::DataKey::Vote(market_id, voter.clone()),
+            &Vote {
+                market_id,
+                voter: voter.clone(),
+                outcome: 0,
+                weight: 500,
+            },
+        );
+        e.storage().persistent().set(
+            &voting::DataKey::LockedTokens(market_id, voter.clone()),
+            &LockedTokens {
+                voter: voter.clone(),
+                market_id,
+                amount: 500,
+                unlock_time: 0,
+            },
+        );
+        e.storage()
+            .persistent()
+            .set(&voting::DataKey::LockedBalance(market_id, voter.clone()), &500i128);
+        e.storage()
+            .persistent()
+            .set(&voting::DataKey::VoteTally(market_id, 0), &500i128);
+    }
+
+    #[test]
+    fn prune_market_clears_voting_state() {
+        let e = Env::default();
+        let market_id = 1u64;
+        let voter = Address::generate(&e);
+
+        seed_resolved_market_with_voting_state(&e, market_id, &voter);
+
+        // Advance past the prune grace period.
+        e.ledger().set_timestamp(PRUNE_GRACE_PERIOD + 1);
+
+        prune_market(&e, market_id).unwrap();
+
+        assert!(!e
+            .storage()
+            .persistent()
+            .has(&voting::DataKey::DisputeVoters(market_id)));
+        assert!(!e
+            .storage()
+            .persistent()
+            .has(&voting::DataKey::Vote(market_id, voter.clone())));
+        assert!(!e
+            .storage()
+            .persistent()
+            .has(&voting::DataKey::LockedTokens(market_id, voter.clone())));
+        assert!(!e
+            .storage()
+            .persistent()
+            .has(&voting::DataKey::LockedBalance(market_id, voter.clone())));
+        assert!(!e
+            .storage()
+            .persistent()
+            .has(&voting::DataKey::VoteTally(market_id, 0)));
+
+        // The market record itself is gone too, as before this fix.
+        assert!(get_market(&e, market_id).is_none());
+    }
 }

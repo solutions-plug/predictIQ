@@ -1,0 +1,45 @@
+# cargo-deny configuration for services/api.
+# Run locally: cargo deny check licenses
+# CI: .github/workflows/license-check.yml
+
+[licenses]
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-DFS-2016",
+  "CC0-1.0",
+  "Zlib",
+  "0BSD",
+  "OpenSSL",
+]
+
+deny = [
+  "GPL-2.0",
+  "GPL-3.0",
+  "LGPL-2.0",
+  "LGPL-2.1",
+  "LGPL-3.0",
+  "AGPL-3.0",
+  "OSL-3.0",
+  "EUPL-1.1",
+  "EUPL-1.2",
+]
+
+confidence-threshold = 0.8
+
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+ignore = []
+
+[bans]
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

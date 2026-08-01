@@ -167,13 +167,16 @@ pub fn finalize_resolution(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
             Ok(())
         }
         MarketStatus::Disputed => {
-            // Check if 72h voting period has passed since dispute was filed
-            // dispute sets resolution_deadline += 3 days; use pending_resolution_timestamp as base
+            // Check if 72h voting period has passed since the dispute was actually
+            // filed. Must use dispute_timestamp (set in file_dispute), not
+            // pending_resolution_timestamp (set earlier at oracle resolution) —
+            // otherwise a late-filed dispute inherits a stale deadline and the
+            // voting window can be bypassed.
             let dispute_ts = market
-                .pending_resolution_timestamp
+                .dispute_timestamp
                 .ok_or(ErrorCode::MarketNotDisputed)?;
             if e.ledger().timestamp() < dispute_ts + VOTING_PERIOD_SECONDS {
-                return Err(ErrorCode::VotingNotStarted);
+                return Err(ErrorCode::TimelockActive);
             }
 
             // Calculate voting outcome

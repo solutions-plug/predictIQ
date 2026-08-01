@@ -5,7 +5,7 @@
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-grpc";
 import { resourceFromAttributes } from "@opentelemetry/resources";
-import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from "@opentelemetry/semantic-conventions";
+import { SemanticResourceAttributes } from "@opentelemetry/semantic-conventions";
 import { HttpInstrumentation } from "@opentelemetry/instrumentation-http";
 
 export function initTracing() {
@@ -19,11 +19,15 @@ export function initTracing() {
 
   const sdk = new NodeSDK({
     resource: resourceFromAttributes({
-      [ATTR_SERVICE_NAME]: serviceName,
-      [ATTR_SERVICE_VERSION]: "1.0.0",
+      [SemanticResourceAttributes.SERVICE_NAME]: serviceName,
+      [SemanticResourceAttributes.SERVICE_VERSION]: "1.0.0",
     }),
     traceExporter,
-    instrumentations: [new HttpInstrumentation()],
+    instrumentations: [
+      new HttpInstrumentation({
+        ignoreIncomingRequestHook: (req) => req.url === "/health",
+      }),
+    ],
   });
 
   sdk.start();

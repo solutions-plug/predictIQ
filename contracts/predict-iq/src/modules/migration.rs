@@ -1,6 +1,6 @@
 use crate::errors::ErrorCode;
-use crate::types::ConfigKey;
-use soroban_sdk::{contracttype, Env, Vec};
+use crate::types::{ConfigKey, Guardian};
+use soroban_sdk::{contracttype, Address, Env, Vec};
 
 /// Storage migration context for tracking version changes
 #[contracttype]
@@ -10,8 +10,24 @@ pub struct MigrationContext {
     pub to_version: u32,
 }
 
-/// Execute a storage migration with rollback capability
-/// Post-migration validation checks key invariants. If validation fails, migration fails atomically.
+/// Snapshot of the storage this module guarantees to restore on rollback.
+/// Scope is intentionally limited to the keys `verify_migration_integrity` checks
+/// (`ConfigKey::Admin`, `ConfigKey::GuardianSet`).
+#[contracttype]
+#[derive(Clone)]
+struct MigrationBackup {
+    admin: Option<Address>,
+    guardian_set: Option<Vec<Guardian>>,
+}
+
+/// Execute a storage migration with rollback capability.
+///
+/// Rollback scope: only `ConfigKey::Admin` and `ConfigKey::GuardianSet` -- the keys
+/// `verify_migration_integrity` validates -- are snapshotted before `migration_fn`
+/// runs and are genuinely restored to their prior values if `migration_fn` errors or
+/// post-migration validation fails. Any other storage mutated by `migration_fn` is
+/// NOT automatically reverted; migrations that touch state outside these two keys
+/// must be manually reversible or safely re-driveable.
 pub fn execute_migration(
     e: &Env,
     from_version: u32,
@@ -48,22 +64,42 @@ pub fn execute_migration(
     }
 }
 
-/// Backup current storage state before migration
+/// Snapshot the actual pre-migration values of `ConfigKey::Admin` and
+/// `ConfigKey::GuardianSet` (the keys `verify_migration_integrity` checks).
 fn backup_storage_state(e: &Env, version: u32) -> Result<(), ErrorCode> {
     let backup_key = format!("migration:backup:v{}", version);
-    let timestamp = e.ledger().timestamp();
+    let backup = MigrationBackup {
+        admin: e.storage().persistent().get(&ConfigKey::Admin),
+        guardian_set: e.storage().persistent().get(&ConfigKey::GuardianSet),
+    };
 
-    e.storage().persistent().set(&backup_key, &timestamp);
+    e.storage().persistent().set(&backup_key, &backup);
 
     Ok(())
 }
 
-/// Restore storage state from backup
+/// Restore `ConfigKey::Admin` and `ConfigKey::GuardianSet` to the values captured
+/// by `backup_storage_state`, genuinely reverting them rather than just clearing
+/// a marker.
 fn restore_storage_state(e: &Env, version: u32) -> Result<(), ErrorCode> {
     let backup_key = format!("migration:backup:v{}", version);
 
-    if !e.storage().persistent().has(&backup_key) {
-        return Err(ErrorCode::NotAuthorized);
+    let backup: MigrationBackup = e
+        .storage()
+        .persistent()
+        .get(&backup_key)
+        .ok_or(ErrorCode::NotAuthorized)?;
+
+    match backup.admin {
+        Some(admin) => e.storage().persistent().set(&ConfigKey::Admin, &admin),
+        None => e.storage().persistent().remove(&ConfigKey::Admin),
+    }
+    match backup.guardian_set {
+        Some(guardians) => e
+            .storage()
+            .persistent()
+            .set(&ConfigKey::GuardianSet, &guardians),
+        None => e.storage().persistent().remove(&ConfigKey::GuardianSet),
     }
 
     e.storage().persistent().remove(&backup_key);
@@ -136,24 +172,21 @@ pub fn validate_all_markets_stake_invariant(e: &Env, market_count: u64) -> Resul
     Ok(true)
 }
 
-/// Reverse a migration to previous version
+/// Reverse a migration to previous version.
+///
+/// Same rollback scope as `execute_migration`: genuinely restores
+/// `ConfigKey::Admin` and `ConfigKey::GuardianSet` from the snapshot taken
+/// before the migration ran.
 pub fn reverse_migration(e: &Env, from_version: u32, to_version: u32) -> Result<(), ErrorCode> {
     if from_version >= to_version {
         return Err(ErrorCode::NotAuthorized);
     }
 
-    // Verify backup exists
-    let backup_key = format!("migration:backup:v{}", from_version);
-    if !e.storage().persistent().has(&backup_key) {
-        return Err(ErrorCode::NotAuthorized);
-    }
+    restore_storage_state(e, from_version)?;
 
     // Clear migration log entry
     let migration_log_key = "migration:log";
     e.storage().persistent().remove(&migration_log_key);
-
-    // Remove backup after successful reversal
-    e.storage().persistent().remove(&backup_key);
 
     Ok(())
 }
@@ -184,20 +217,42 @@ mod tests {
 
         let env = soroban_sdk::Env::default();
         let admin = Address::generate(&env);
+        let original_guardians = Vec::from_array(
+            &env,
+            [Guardian {
+                address: Address::generate(&env),
+                voting_power: 1,
+            }],
+        );
 
         env.storage().persistent().set(&ConfigKey::Admin, &admin);
         env.storage()
             .persistent()
-            .set(&ConfigKey::GuardianSet, &admin);
+            .set(&ConfigKey::GuardianSet, &original_guardians);
 
-        // Migration that removes admin key (invalidates state)
+        // Migration that removes Admin and overwrites GuardianSet. Removing Admin
+        // invalidates state (verify_migration_integrity fails), which must trigger
+        // a genuine rollback of both snapshotted keys -- not just marker cleanup.
+        let tampered_guardians: Vec<Guardian> = Vec::new(&env);
         let result = execute_migration(&env, 1, 2, |_e| {
             _e.storage().persistent().remove(&ConfigKey::Admin);
+            _e.storage()
+                .persistent()
+                .set(&ConfigKey::GuardianSet, &tampered_guardians);
             Ok(())
         });
 
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), ErrorCode::MigrationValidationError);
-        assert!(env.storage().persistent().has(&ConfigKey::Admin));
+
+        let restored_admin: Address = env.storage().persistent().get(&ConfigKey::Admin).unwrap();
+        assert_eq!(restored_admin, admin);
+
+        let restored_guardians: Vec<Guardian> = env
+            .storage()
+            .persistent()
+            .get(&ConfigKey::GuardianSet)
+            .unwrap();
+        assert_eq!(restored_guardians, original_guardians);
     }
 }

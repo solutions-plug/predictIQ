@@ -19,6 +19,7 @@ const SENSITIVE_FIELDS: &[&str] = &[
     "credit_card",
     "cvv",
     "ssn",
+    "email",
 ];
 
 /// Whether body logging is enabled. Reads AUDIT_BODY_LOGGING env var.
@@ -51,6 +52,87 @@ pub fn redact_sensitive(body: &str) -> String {
             })
         }
         _ => body.to_owned(),
+    }
+}
+
+/// Redact an email address for logging purposes.
+/// Returns a hashed version of the email that preserves privacy while
+/// remaining useful for debugging (e.g., "user@example.com" -> "u***@e***.com").
+pub fn redact_email(email: &str) -> String {
+    if email.is_empty() {
+        return String::new();
+    }
+    
+    // Simple redaction: show first character, last domain, and TLD
+    if let Some(at_pos) = email.find('@') {
+        let local_part = &email[..at_pos];
+        let domain_part = &email[at_pos + 1..];
+        
+        let redacted_local = if local_part.len() > 1 {
+            format!("{}***", &local_part[0..1])
+        } else {
+            local_part.to_string()
+        };
+        
+        // Keep the domain but obscure most of it
+        let redacted_domain = if let Some(dot_pos) = domain_part.rfind('.') {
+            let name_part = &domain_part[..dot_pos];
+            let tld = &domain_part[dot_pos..];
+            
+            if name_part.len() > 1 {
+                format!("{}***{}", &name_part[0..1], tld)
+            } else {
+                format!("{}{}", name_part, tld)
+            }
+        } else {
+            // No dot in domain - obscure it completely
+            "***".to_string()
+        };
+        
+        format!("{}@{}", redacted_local, redacted_domain)
+    } else {
+        // Not a valid email format - obscure it completely
+        "***@***".to_string()
+    }
+}
+    /// Redact an email address for logging purposes.
+/// Returns a hashed version of the email that preserves privacy while
+/// remaining useful for debugging (e.g., "user@example.com" -> "u***@e***.com").
+pub fn redact_email(email: &str) -> String {
+    if email.is_empty() {
+        return String::new();
+    }
+    
+    // Simple redaction: show first character, last domain, and TLD
+    if let Some(at_pos) = email.find('@') {
+        let local_part = &email[..at_pos];
+        let domain_part = &email[at_pos + 1..];
+        
+        let redacted_local = if local_part.len() > 1 {
+            format!("{}***", &local_part[0..1])
+        } else {
+            local_part.to_string()
+        };
+        
+        // Keep the domain but obscure most of it
+        let redacted_domain = if let Some(dot_pos) = domain_part.rfind('.') {
+            let name_part = &domain_part[..dot_pos];
+            let tld = &domain_part[dot_pos..];
+            
+            if name_part.len() > 1 {
+                format!("{}***{}", &name_part[0..1], tld)
+            } else {
+                format!("{}{}", name_part, tld)
+            }
+        } else {
+            // No dot in domain - obscure it completely
+            "***".to_string()
+        };
+        
+        format!("{}@{}", redacted_local, redacted_domain)
+    } else {
+        // Not a valid email format - obscure it completely
+        "***@***".to_string()
     }
 }
 
@@ -88,7 +170,16 @@ mod tests {
         let redacted = redact_sensitive(body);
         let v: serde_json::Value = serde_json::from_str(&redacted).unwrap();
         assert_eq!(v["password"], "[REDACTED]");
-        assert_eq!(v["email"], "user@example.com");
+        assert_eq!(v["email"], "[REDACTED]");
+    }
+
+    #[test]
+    fn email_redaction_function_works() {
+        assert_eq!(redact_email("user@example.com"), "u***@e***.com");
+        assert_eq!(redact_email("a@b.com"), "a@b***.com");
+        assert_eq!(redact_email("test@domain.co.uk"), "t***@d***.co.uk");
+        assert_eq!(redact_email(""), "");
+        assert_eq!(redact_email("not-an-email"), "***@***");
     }
 
     #[test]

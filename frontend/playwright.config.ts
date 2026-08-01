@@ -4,6 +4,24 @@ import { defineConfig, devices } from '@playwright/test';
 // A test is considered flaky if it passes on some runs and fails on others.
 const flakyDetectionRuns = process.env.FLAKY_DETECTION ? 3 : 1;
 
+// Specs that use page.route() mocks and need no live backend.
+// These run on every PR in CI.
+const MOCKED_SPECS = [
+  'e2e/user-journeys.spec.ts',
+  'e2e/market-creation.spec.ts',
+  'e2e/accessibility.spec.ts',
+  'e2e/interactions.spec.ts',
+  'e2e/mobile.spec.ts',
+  'e2e/performance.spec.ts',
+  'e2e/visual-regression.spec.ts',
+];
+
+// Specs that require a real backend. Only run on merge to main via the
+// e2e-staging workflow.
+const INTEGRATION_SPECS = 'e2e/integration/**/*.spec.ts';
+
+const isStaging = !!process.env.STAGING_URL;
+
 export default defineConfig({
   testDir: './e2e',
   fullyParallel: true,
@@ -26,37 +44,53 @@ export default defineConfig({
   },
   projects: [
     // ------------------------------------------------------------------
-    // Local / PR projects (default)
+    // Mocked E2E — no live backend required. Runs on every PR.
     // ------------------------------------------------------------------
     {
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },
+      testMatch: MOCKED_SPECS,
       testIgnore: isStaging ? '**' : undefined,
     },
     {
       name: 'firefox',
       use: { ...devices['Desktop Firefox'] },
+      testMatch: MOCKED_SPECS,
       testIgnore: isStaging ? '**' : undefined,
     },
     {
       name: 'webkit',
       use: { ...devices['Desktop Safari'] },
+      testMatch: MOCKED_SPECS,
       testIgnore: isStaging ? '**' : undefined,
     },
     {
       name: 'mobile-chrome',
       use: { ...devices['Pixel 5'] },
+      testMatch: MOCKED_SPECS,
       testIgnore: isStaging ? '**' : undefined,
     },
     {
       name: 'mobile-safari',
       use: { ...devices['iPhone 12'] },
+      testMatch: MOCKED_SPECS,
       testIgnore: isStaging ? '**' : undefined,
     },
     {
       name: 'tablet',
       use: { ...devices['iPad Pro'] },
+      testMatch: MOCKED_SPECS,
       testIgnore: isStaging ? '**' : undefined,
+    },
+
+    // ------------------------------------------------------------------
+    // Integration E2E — requires a real backend. Runs on merge to main.
+    // ------------------------------------------------------------------
+    {
+      name: 'integration-e2e',
+      use: { ...devices['Desktop Chrome'] },
+      testMatch: INTEGRATION_SPECS,
+      testIgnore: isStaging ? undefined : '**',
     },
 
     // ------------------------------------------------------------------
@@ -70,16 +104,6 @@ export default defineConfig({
         baseURL: process.env.STAGING_URL,
       },
       testIgnore: isStaging ? undefined : '**',
-    },
-    // Staging project: runs only the market-creation spec against the staging URL.
-    // Activated when BASE_URL points to staging (or STAGING=true).
-    {
-      name: 'staging',
-      testMatch: '**/market-creation.spec.ts',
-      use: {
-        ...devices['Desktop Chrome'],
-        baseURL: process.env.STAGING_URL || process.env.BASE_URL || 'http://localhost:3000',
-      },
     },
   ],
   webServer: process.env.BASE_URL

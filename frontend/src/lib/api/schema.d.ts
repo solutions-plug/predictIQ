@@ -21,7 +21,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/statistics": {
+    "/api/v1/statistics": {
         parameters: {
             query?: never;
             header?: never;
@@ -38,7 +38,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/markets/featured": {
+    "/api/v1/markets/featured": {
         parameters: {
             query?: never;
             header?: never;
@@ -55,7 +55,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/content": {
+    "/api/v1/content": {
         parameters: {
             query?: never;
             header?: never;
@@ -72,7 +72,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/markets/{market_id}/resolve": {
+    "/api/v1/markets/{market_id}/resolve": {
         parameters: {
             query?: never;
             header?: never;
@@ -89,7 +89,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/blockchain/health": {
+    "/api/v1/blockchain/health": {
         parameters: {
             query?: never;
             header?: never;
@@ -116,7 +116,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/blockchain/markets/{market_id}": {
+    "/api/v1/blockchain/markets/{market_id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -133,7 +133,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/blockchain/stats": {
+    "/api/v1/blockchain/stats": {
         parameters: {
             query?: never;
             header?: never;
@@ -150,7 +150,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/blockchain/users/{user}/bets": {
+    "/api/v1/blockchain/users/{user}/bets": {
         parameters: {
             query?: never;
             header?: never;
@@ -167,7 +167,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/blockchain/oracle/{market_id}": {
+    "/api/v1/blockchain/oracle/{market_id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -184,7 +184,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/blockchain/tx/{tx_hash}": {
+    "/api/v1/blockchain/tx/{tx_hash}": {
         parameters: {
             query?: never;
             header?: never;
@@ -354,6 +354,91 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/blockchain/replay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Replay blockchain events (admin) */
+        post: operations["blockchainReplay"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/email/queue/dead-letter": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List dead-letter email jobs (admin) */
+        get: operations["getEmailDeadLetterList"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/email/queue/dead-letter/{job_id}/requeue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Requeue a dead-letter email job (admin) */
+        post: operations["requeueEmailDeadLetterJob"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/audit/logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Retrieve audit log entries (admin) */
+        get: operations["getAuditLogs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/audit/statistics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Retrieve audit event statistics (admin) */
+        get: operations["getAuditStatistics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/webhooks/sendgrid": {
         parameters: {
             query?: never;
@@ -363,7 +448,24 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** SendGrid event webhook receiver */
+        /**
+         * SendGrid event webhook receiver (provider-signed)
+         * @description Receives webhook events from SendGrid for email delivery, bounce, complaint,
+         *     and engagement tracking (opens, clicks, unsubscribes).
+         *
+         *     ## Security Model
+         *
+         *     This endpoint uses **provider signature verification** (not API key authentication).
+         *
+         *     - **Authentication**: HMAC-SHA256 signature in `X-Twilio-Email-Event-Webhook-Signature` header
+         *     - **Timestamp verification**: `X-Twilio-Email-Event-Webhook-Timestamp` must be within 300 seconds
+         *     - **Replay protection**: Checked per (message_id, event_type, recipient, timestamp)
+         *
+         *     This security model is appropriate for webhooks because:
+         *     1. SendGrid is the only caller (not user-initiated)
+         *     2. Signature proves the provider encrypted the request
+         *     3. No need for per-user API keys on public-facing webhook endpoints
+         */
         post: operations["sendgridWebhook"];
         delete?: never;
         options?: never;
@@ -402,6 +504,10 @@ export interface components {
             code: string;
             /** @description Human-readable error description */
             message: string;
+            /** @description Optional additional context about the error */
+            details?: {
+                [key: string]: unknown;
+            } | null;
         };
         FeaturedMarketView: {
             /** Format: int64 */
@@ -447,7 +553,7 @@ export interface components {
         };
     };
     responses: {
-        /** @description Internal server error */
+        /** @description Error response with machine-readable code */
         ApiError: {
             headers: {
                 [name: string]: unknown;
@@ -467,6 +573,17 @@ export interface components {
         };
     };
     parameters: {
+        /**
+         * @description Target API version. Defaults to the current stable version (`v1`).
+         *     Responses for deprecated versions include `Deprecation`, `Sunset`, and `Link` headers.
+         */
+        apiVersion: "v1";
+        /**
+         * @description Client-generated unique key (e.g. UUID v4) to deduplicate mutating requests.
+         *     If a request with the same key was processed within the idempotency window,
+         *     the cached response is returned immediately without re-executing the operation.
+         */
+        idempotencyKey: string;
         marketId: number;
         page: number;
         pageSize: number;
@@ -495,12 +612,19 @@ export interface operations {
                     "text/plain": string;
                 };
             };
+            500: components["responses"]["ApiError"];
         };
     };
     getStatistics: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /**
+                 * @description Target API version. Defaults to the current stable version (`v1`).
+                 *     Responses for deprecated versions include `Deprecation`, `Sunset`, and `Link` headers.
+                 */
+                "API-Version"?: components["parameters"]["apiVersion"];
+            };
             path?: never;
             cookie?: never;
         };
@@ -515,13 +639,22 @@ export interface operations {
                     "application/json": components["schemas"]["AnyObject"];
                 };
             };
+            400: components["responses"]["ApiError"];
+            401: components["responses"]["ApiError"];
+            429: components["responses"]["ApiError"];
             500: components["responses"]["ApiError"];
         };
     };
     getFeaturedMarkets: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /**
+                 * @description Target API version. Defaults to the current stable version (`v1`).
+                 *     Responses for deprecated versions include `Deprecation`, `Sunset`, and `Link` headers.
+                 */
+                "API-Version"?: components["parameters"]["apiVersion"];
+            };
             path?: never;
             cookie?: never;
         };
@@ -536,6 +669,8 @@ export interface operations {
                     "application/json": components["schemas"]["FeaturedMarketView"][];
                 };
             };
+            400: components["responses"]["ApiError"];
+            429: components["responses"]["ApiError"];
             500: components["responses"]["ApiError"];
         };
     };
@@ -545,7 +680,13 @@ export interface operations {
                 page?: components["parameters"]["page"];
                 page_size?: components["parameters"]["pageSize"];
             };
-            header?: never;
+            header?: {
+                /**
+                 * @description Target API version. Defaults to the current stable version (`v1`).
+                 *     Responses for deprecated versions include `Deprecation`, `Sunset`, and `Link` headers.
+                 */
+                "API-Version"?: components["parameters"]["apiVersion"];
+            };
             path?: never;
             cookie?: never;
         };
@@ -560,13 +701,21 @@ export interface operations {
                     "application/json": components["schemas"]["AnyObject"];
                 };
             };
+            400: components["responses"]["ApiError"];
+            429: components["responses"]["ApiError"];
             500: components["responses"]["ApiError"];
         };
     };
     resolveMarket: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /**
+                 * @description Target API version. Defaults to the current stable version (`v1`).
+                 *     Responses for deprecated versions include `Deprecation`, `Sunset`, and `Link` headers.
+                 */
+                "API-Version"?: components["parameters"]["apiVersion"];
+            };
             path: {
                 market_id: components["parameters"]["marketId"];
             };
@@ -583,15 +732,24 @@ export interface operations {
                     "application/json": components["schemas"]["InvalidationResult"];
                 };
             };
+            400: components["responses"]["ApiError"];
             401: components["responses"]["ApiError"];
             403: components["responses"]["ApiError"];
+            404: components["responses"]["ApiError"];
+            429: components["responses"]["ApiError"];
             500: components["responses"]["ApiError"];
         };
     };
     getBlockchainHealth: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /**
+                 * @description Target API version. Defaults to the current stable version (`v1`).
+                 *     Responses for deprecated versions include `Deprecation`, `Sunset`, and `Link` headers.
+                 */
+                "API-Version"?: components["parameters"]["apiVersion"];
+            };
             path?: never;
             cookie?: never;
         };
@@ -606,6 +764,8 @@ export interface operations {
                     "application/json": components["schemas"]["BlockchainHealth"];
                 };
             };
+            400: components["responses"]["ApiError"];
+            429: components["responses"]["ApiError"];
             500: components["responses"]["ApiError"];
             /** @description Degraded (node up, contract unreachable) or unhealthy (node down) */
             503: {
@@ -621,7 +781,13 @@ export interface operations {
     getBlockchainMarket: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /**
+                 * @description Target API version. Defaults to the current stable version (`v1`).
+                 *     Responses for deprecated versions include `Deprecation`, `Sunset`, and `Link` headers.
+                 */
+                "API-Version"?: components["parameters"]["apiVersion"];
+            };
             path: {
                 market_id: components["parameters"]["marketId"];
             };
@@ -638,13 +804,22 @@ export interface operations {
                     "application/json": components["schemas"]["AnyObject"];
                 };
             };
+            400: components["responses"]["ApiError"];
+            404: components["responses"]["ApiError"];
+            429: components["responses"]["ApiError"];
             500: components["responses"]["ApiError"];
         };
     };
     getBlockchainStats: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /**
+                 * @description Target API version. Defaults to the current stable version (`v1`).
+                 *     Responses for deprecated versions include `Deprecation`, `Sunset`, and `Link` headers.
+                 */
+                "API-Version"?: components["parameters"]["apiVersion"];
+            };
             path?: never;
             cookie?: never;
         };
@@ -659,6 +834,8 @@ export interface operations {
                     "application/json": components["schemas"]["AnyObject"];
                 };
             };
+            400: components["responses"]["ApiError"];
+            429: components["responses"]["ApiError"];
             500: components["responses"]["ApiError"];
         };
     };
@@ -668,7 +845,13 @@ export interface operations {
                 page?: components["parameters"]["page"];
                 page_size?: components["parameters"]["pageSize"];
             };
-            header?: never;
+            header?: {
+                /**
+                 * @description Target API version. Defaults to the current stable version (`v1`).
+                 *     Responses for deprecated versions include `Deprecation`, `Sunset`, and `Link` headers.
+                 */
+                "API-Version"?: components["parameters"]["apiVersion"];
+            };
             path: {
                 /** @description Stellar address of the user */
                 user: string;
@@ -686,13 +869,22 @@ export interface operations {
                     "application/json": components["schemas"]["AnyObject"];
                 };
             };
+            400: components["responses"]["ApiError"];
+            404: components["responses"]["ApiError"];
+            429: components["responses"]["ApiError"];
             500: components["responses"]["ApiError"];
         };
     };
     getOracleResult: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /**
+                 * @description Target API version. Defaults to the current stable version (`v1`).
+                 *     Responses for deprecated versions include `Deprecation`, `Sunset`, and `Link` headers.
+                 */
+                "API-Version"?: components["parameters"]["apiVersion"];
+            };
             path: {
                 market_id: components["parameters"]["marketId"];
             };
@@ -709,13 +901,22 @@ export interface operations {
                     "application/json": components["schemas"]["AnyObject"];
                 };
             };
+            400: components["responses"]["ApiError"];
+            404: components["responses"]["ApiError"];
+            429: components["responses"]["ApiError"];
             500: components["responses"]["ApiError"];
         };
     };
     getTransactionStatus: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /**
+                 * @description Target API version. Defaults to the current stable version (`v1`).
+                 *     Responses for deprecated versions include `Deprecation`, `Sunset`, and `Link` headers.
+                 */
+                "API-Version"?: components["parameters"]["apiVersion"];
+            };
             path: {
                 tx_hash: string;
             };
@@ -732,13 +933,28 @@ export interface operations {
                     "application/json": components["schemas"]["AnyObject"];
                 };
             };
+            400: components["responses"]["ApiError"];
+            404: components["responses"]["ApiError"];
+            429: components["responses"]["ApiError"];
             500: components["responses"]["ApiError"];
         };
     };
     newsletterSubscribe: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /**
+                 * @description Target API version. Defaults to the current stable version (`v1`).
+                 *     Responses for deprecated versions include `Deprecation`, `Sunset`, and `Link` headers.
+                 */
+                "API-Version"?: components["parameters"]["apiVersion"];
+                /**
+                 * @description Client-generated unique key (e.g. UUID v4) to deduplicate mutating requests.
+                 *     If a request with the same key was processed within the idempotency window,
+                 *     the cached response is returned immediately without re-executing the operation.
+                 */
+                "Idempotency-Key"?: components["parameters"]["idempotencyKey"];
+            };
             path?: never;
             cookie?: never;
         };
@@ -752,6 +968,7 @@ export interface operations {
             400: components["responses"]["NewsletterResponse"];
             409: components["responses"]["NewsletterResponse"];
             429: components["responses"]["NewsletterResponse"];
+            500: components["responses"]["ApiError"];
         };
     };
     newsletterConfirm: {
@@ -768,6 +985,7 @@ export interface operations {
             200: components["responses"]["NewsletterResponse"];
             400: components["responses"]["NewsletterResponse"];
             404: components["responses"]["NewsletterResponse"];
+            500: components["responses"]["ApiError"];
         };
     };
     newsletterUnsubscribe: {
@@ -785,6 +1003,8 @@ export interface operations {
         responses: {
             200: components["responses"]["NewsletterResponse"];
             400: components["responses"]["NewsletterResponse"];
+            404: components["responses"]["NewsletterResponse"];
+            500: components["responses"]["ApiError"];
         };
     };
     newsletterGdprExport: {
@@ -809,6 +1029,7 @@ export interface operations {
             };
             400: components["responses"]["NewsletterResponse"];
             404: components["responses"]["NewsletterResponse"];
+            500: components["responses"]["ApiError"];
         };
     };
     newsletterGdprDelete: {
@@ -826,6 +1047,8 @@ export interface operations {
         responses: {
             200: components["responses"]["NewsletterResponse"];
             400: components["responses"]["NewsletterResponse"];
+            404: components["responses"]["NewsletterResponse"];
+            500: components["responses"]["ApiError"];
         };
     };
     emailPreview: {
@@ -848,6 +1071,11 @@ export interface operations {
                     "application/json": components["schemas"]["AnyObject"];
                 };
             };
+            400: components["responses"]["ApiError"];
+            401: components["responses"]["ApiError"];
+            403: components["responses"]["ApiError"];
+            404: components["responses"]["ApiError"];
+            429: components["responses"]["ApiError"];
             500: components["responses"]["ApiError"];
         };
     };
@@ -873,6 +1101,10 @@ export interface operations {
                     "application/json": components["schemas"]["EmailTestResponse"];
                 };
             };
+            400: components["responses"]["ApiError"];
+            401: components["responses"]["ApiError"];
+            403: components["responses"]["ApiError"];
+            429: components["responses"]["ApiError"];
             500: components["responses"]["ApiError"];
         };
     };
@@ -897,6 +1129,10 @@ export interface operations {
                     "application/json": components["schemas"]["AnyObject"];
                 };
             };
+            400: components["responses"]["ApiError"];
+            401: components["responses"]["ApiError"];
+            403: components["responses"]["ApiError"];
+            429: components["responses"]["ApiError"];
             500: components["responses"]["ApiError"];
         };
     };
@@ -918,13 +1154,151 @@ export interface operations {
                     "application/json": components["schemas"]["AnyObject"];
                 };
             };
+            400: components["responses"]["ApiError"];
+            401: components["responses"]["ApiError"];
+            403: components["responses"]["ApiError"];
+            429: components["responses"]["ApiError"];
+            500: components["responses"]["ApiError"];
+        };
+    };
+    blockchainReplay: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Replay result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnyObject"];
+                };
+            };
+            400: components["responses"]["ApiError"];
+            401: components["responses"]["ApiError"];
+            403: components["responses"]["ApiError"];
+            429: components["responses"]["ApiError"];
+            500: components["responses"]["ApiError"];
+        };
+    };
+    getEmailDeadLetterList: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Dead-letter job list */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnyObject"];
+                };
+            };
+            400: components["responses"]["ApiError"];
+            401: components["responses"]["ApiError"];
+            403: components["responses"]["ApiError"];
+            429: components["responses"]["ApiError"];
+            500: components["responses"]["ApiError"];
+        };
+    };
+    requeueEmailDeadLetterJob: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Dead-letter job identifier */
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Requeue result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnyObject"];
+                };
+            };
+            400: components["responses"]["ApiError"];
+            401: components["responses"]["ApiError"];
+            403: components["responses"]["ApiError"];
+            404: components["responses"]["ApiError"];
+            429: components["responses"]["ApiError"];
+            500: components["responses"]["ApiError"];
+        };
+    };
+    getAuditLogs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Audit log entries */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnyObject"];
+                };
+            };
+            400: components["responses"]["ApiError"];
+            401: components["responses"]["ApiError"];
+            403: components["responses"]["ApiError"];
+            429: components["responses"]["ApiError"];
+            500: components["responses"]["ApiError"];
+        };
+    };
+    getAuditStatistics: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Audit statistics */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnyObject"];
+                };
+            };
+            400: components["responses"]["ApiError"];
+            401: components["responses"]["ApiError"];
+            403: components["responses"]["ApiError"];
+            429: components["responses"]["ApiError"];
             500: components["responses"]["ApiError"];
         };
     };
     sendgridWebhook: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description HMAC-SHA256 signature of timestamp+body, base64-encoded. Signature is computed as Base64(HMAC-SHA256(secret, timestamp+body)) */
+                "X-Twilio-Email-Event-Webhook-Signature": string;
+                /** @description Unix timestamp of the request (replay protection window is 300 seconds) */
+                "X-Twilio-Email-Event-Webhook-Timestamp": string;
+            };
             path?: never;
             cookie?: never;
         };
@@ -934,13 +1308,26 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Webhook processed */
+            /** @description Webhook processed successfully */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        /** @description Number of events processed */
+                        processed?: number;
+                        /** @description List of processing errors, if any */
+                        errors?: string[] | null;
+                    };
+                };
             };
+            /** @description Invalid request or signature */
+            400: components["responses"]["ApiError"];
+            /** @description Signature verification failed (not authorized as SendGrid) */
+            401: components["responses"]["ApiError"];
+            429: components["responses"]["ApiError"];
+            500: components["responses"]["ApiError"];
         };
     };
 }

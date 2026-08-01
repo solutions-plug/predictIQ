@@ -9,6 +9,7 @@ interface CacheEntry<T> {
   timestamp: number;
   ttl: number;
   stale: boolean;
+  tags?: readonly string[];
 }
 
 export interface CacheResult<T> {
@@ -52,15 +53,31 @@ class ApiCache {
   }
 
   /**
-   * Set cache entry with TTL in milliseconds
+   * Set cache entry with TTL in milliseconds and optional resource tags.
+   * Tags enable targeted invalidation: use the same tag on related GET entries
+   * so a single mutation can invalidate exactly the affected resources.
    */
-  set<T>(key: string, data: T, ttlMs: number): void {
+  set<T>(key: string, data: T, ttlMs: number, tags?: string[]): void {
     this.cache.set(key, {
       data,
       timestamp: Date.now(),
       ttl: ttlMs,
       stale: false,
+      tags,
     });
+  }
+
+  /**
+   * Invalidate all cache entries that carry at least one of the given tags.
+   * Call this after a mutation to drop only the affected resource namespaces
+   * rather than clearing the entire cache.
+   */
+  invalidateByTags(tags: string[]): void {
+    for (const [key, entry] of this.cache.entries()) {
+      if (entry.tags?.some(tag => tags.includes(tag))) {
+        this.cache.delete(key);
+      }
+    }
   }
 
   /**

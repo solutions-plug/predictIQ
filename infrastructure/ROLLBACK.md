@@ -34,24 +34,34 @@ git push origin main
 
 ### 2. Rollback via Terraform State
 
-For emergency rollbacks without code changes:
+For emergency rollbacks without code changes. Bucket and key names must match
+the backend config for the target environment
+(`infrastructure/terraform/environments/<env>/backend.hcl`):
+
+| Environment | Bucket                                   | Key                            |
+|-------------|-------------------------------------------|---------------------------------|
+| Staging     | `predictiq-terraform-state-staging`       | `staging/terraform.tfstate`     |
+| Production  | `predictiq-terraform-state-production`    | `production/terraform.tfstate`  |
+
+The commands below use the **production** values; swap in the staging
+bucket/key for a staging rollback.
 
 ```bash
 # Navigate to infrastructure directory
 cd infrastructure/terraform
 
 # Initialize Terraform
-terraform init
+terraform init -backend-config=environments/production/backend.hcl
 
 # List available state versions
 aws s3api list-object-versions \
-  --bucket predictiq-terraform-state \
-  --prefix prod/terraform.tfstate
+  --bucket predictiq-terraform-state-production \
+  --prefix production/terraform.tfstate
 
 # Restore previous state version
 aws s3api get-object \
-  --bucket predictiq-terraform-state \
-  --key prod/terraform.tfstate \
+  --bucket predictiq-terraform-state-production \
+  --key production/terraform.tfstate \
   --version-id <VERSION_ID> \
   terraform.tfstate.backup
 
@@ -62,10 +72,10 @@ cp terraform.tfstate terraform.tfstate.current
 cp terraform.tfstate.backup terraform.tfstate
 
 # Plan the rollback
-terraform plan -var-file="environments/prod.tfvars"
+terraform plan -var-file="environments/production/terraform.tfvars"
 
 # Apply the rollback
-terraform apply -var-file="environments/prod.tfvars"
+terraform apply -var-file="environments/production/terraform.tfvars"
 ```
 
 ### 3. Rollback Specific Resources
@@ -77,8 +87,8 @@ To rollback only specific resources:
 terraform taint module.ecs.aws_ecs_service.api
 
 # Plan and apply
-terraform plan -var-file="environments/prod.tfvars"
-terraform apply -var-file="environments/prod.tfvars"
+terraform plan -var-file="environments/production/terraform.tfvars"
+terraform apply -var-file="environments/production/terraform.tfvars"
 ```
 
 ## Rollback Verification
@@ -90,9 +100,9 @@ After rollback, verify the infrastructure:
 terraform show
 
 # Verify AWS resources
-aws ec2 describe-instances --filters "Name=tag:Environment,Values=prod"
-aws rds describe-db-instances --filters "Name=db-instance-id,Values=predictiq-prod"
-aws elasticache describe-cache-clusters --cache-cluster-id predictiq-prod
+aws ec2 describe-instances --filters "Name=tag:Environment,Values=production"
+aws rds describe-db-instances --filters "Name=db-instance-id,Values=predictiq-production"
+aws elasticache describe-cache-clusters --cache-cluster-id predictiq-production
 
 # Test API connectivity
 curl https://api.predictiq.example.com/health

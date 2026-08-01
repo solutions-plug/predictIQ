@@ -24,13 +24,19 @@ tags = ["key", "api"]
 [[rules]]
 id = "database-url"
 description = "Database connection string"
-regex = '''postgres(ql)?://[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+@[a-zA-Z0-9.-]+:[0-9]+/[a-zA-Z0-9_-]+'''
+# The (?:ql) group is deliberately non-capturing: gitleaks reports capture group 1
+# as the finding's "secret", and the allowlist regexes below are matched against that
+# secret. A capturing group here would make the secret "ql" instead of the full
+# connection string, so allowlisting could neither match nor be reasoned about.
+# The password class accepts punctuation (real passwords contain it) but excludes
+# ${...}/<...> so shell and Terraform interpolations are not reported as leaks.
+regex = '''postgres(?:ql)?://[a-zA-Z0-9_.-]+:[^\s:@/'"$<>{}`]+@[a-zA-Z0-9.-]+:[0-9]+/[a-zA-Z0-9_-]+'''
 tags = ["database", "connection"]
 
 [[rules]]
 id = "redis-url"
 description = "Redis connection string"
-regex = '''redis://[a-zA-Z0-9_-]+:[a-zA-Z0-9_-]+@[a-zA-Z0-9.-]+:[0-9]+'''
+regex = '''redis://[a-zA-Z0-9_.-]+:[^\s:@/'"$<>{}`]+@[a-zA-Z0-9.-]+:[0-9]+'''
 tags = ["redis", "connection"]
 
 [allowlist]
@@ -47,8 +53,10 @@ regexes = [
   # Generic placeholder domain used in code examples and templates — not a real host
   '''example\.com''',
   # Loopback addresses are not secrets; they appear in default config and tests
-  '''localhost''',
-  '''127\.0\.0\.1''',
+  '''^localhost$''',
+  '''^127\.0\.0\.1$''',
+  '''^postgres(ql)?://(?:postgres|user|admin|root|example):(?:password|pass|postgres|example|secret)@(?:localhost|127\.0\.0\.1)(?::[0-9]+)?/[A-Za-z0-9_-]+$''',
+  '''^redis://(?:postgres|user|admin|root|example):(?:password|pass|postgres|example|secret)@(?:localhost|127\.0\.0\.1):[0-9]+$''',
   # Canonical Stellar placeholder public key (all X's) used in documentation
   '''GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX''',
   # Canonical Stellar placeholder secret key (all X's) used in documentation

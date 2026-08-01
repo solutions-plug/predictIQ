@@ -17,6 +17,7 @@ jobs:
   jest-axe-tests:
     name: Jest-Axe Accessibility Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: frontend
@@ -47,6 +48,7 @@ jobs:
   lighthouse-audit:
     name: Lighthouse Accessibility Audit
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: frontend
@@ -100,6 +102,7 @@ jobs:
   axe-core-audit:
     name: Axe-Core Full Page Audit
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: frontend
@@ -143,6 +146,7 @@ jobs:
   pa11y-audit:
     name: Pa11y Accessibility Audit
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: frontend
@@ -200,6 +204,7 @@ jobs:
   keyboard-navigation-tests:
     name: Keyboard Navigation Tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: frontend
@@ -223,6 +228,7 @@ jobs:
   color-contrast-check:
     name: Color Contrast Validation
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: frontend
@@ -269,6 +275,7 @@ jobs:
       - keyboard-navigation-tests
       - color-contrast-check
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     
     steps:
       - name: Success

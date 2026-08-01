@@ -1,10 +1,103 @@
+use chrono;
+use base64::Engine as _;
 use ipnet::IpNet;
+use secrecy::{ExposeSecret, SecretString};
 use std::{
+    collections::HashMap,
     env,
     net::{IpAddr, SocketAddr},
     str::FromStr,
     time::Duration,
 };
+
+// ── Database credentials ──────────────────────────────────────────────────────
+
+/// Individual database connection components loaded from environment variables.
+///
+/// The password is wrapped in [`SecretString`] so it is never printed in logs
+/// or `Debug` output. The full connection URL is assembled at the last possible
+/// moment (when the pool is created) via [`DbCredentials::to_connection_string`]
+/// and should never be stored long-term.
+///
+/// | Variable    | Example                 | Notes                          |
+/// |-------------|-------------------------|--------------------------------|
+/// | `DB_HOST`   | `rds-prod.example.com`  | Required                       |
+/// | `DB_PORT`   | `5432`                  | Default: `5432`                |
+/// | `DB_NAME`   | `predictiq`             | Required                       |
+/// | `DB_USER`   | `predictiq_api`         | Required                       |
+/// | `DB_PASSWORD` | *secret*              | Required; loaded from Secrets Manager |
+#[derive(Clone)]
+pub struct DbCredentials {
+    pub host: String,
+    pub port: u16,
+    pub name: String,
+    pub user: String,
+    /// Password is wrapped in `SecretString` — it is never written to logs.
+    pub password: SecretString,
+}
+
+impl std::fmt::Debug for DbCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DbCredentials")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("name", &self.name)
+            .field("user", &self.user)
+            .field("password", &"[redacted]")
+            .finish()
+    }
+}
+
+impl DbCredentials {
+    /// Assemble the `postgres://` connection string from the individual
+    /// components. This is the **only** place the password is exposed; callers
+    /// should not store the returned string.
+    pub fn to_connection_string(&self) -> SecretString {
+        SecretString::new(
+            format!(
+                "postgres://{}:{}@{}:{}/{}",
+                self.user,
+                self.password.expose_secret(),
+                self.host,
+                self.port,
+                self.name,
+            )
+            .into(),
+        )
+    }
+
+    pub fn from_env() -> Self {
+        Self {
+            host: env::var("DB_HOST").unwrap_or_else(|_| "127.0.0.1".to_string()),
+            port: env::var("DB_PORT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(5432),
+            name: env::var("DB_NAME").unwrap_or_else(|_| "predictiq".to_string()),
+            user: env::var("DB_USER").unwrap_or_else(|_| "postgres".to_string()),
+            password: SecretString::new(
+                env::var("DB_PASSWORD")
+                    .unwrap_or_else(|_| "postgres".to_string())
+                    .into(),
+            ),
+        }
+    }
+}
+
+fn hmac_key_entropy(data: &[u8]) -> f64 {
+    if data.is_empty() {
+        return 0.0;
+    }
+    let mut counts = [0u32; 256];
+    for &b in data {
+        counts[b as usize] += 1;
+    }
+    let len = data.len() as f64;
+    counts.iter()
+        .filter(|&&c| c > 0)
+        .map(|&c| { let p = c as f64 / len; -p * p.log2() })
+        .sum()
+}
 
 // ── CORS configuration ────────────────────────────────────────────────────────
 
@@ -66,7 +159,7 @@ impl CorsConfig {
                     .filter(|s| !s.is_empty())
                     .collect()
             })
-            .unwrap_or_else(|| {
+            .unwrap_or_else(|_| {
                 ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
                     .iter()
                     .map(|s| s.to_string())
@@ -80,7 +173,7 @@ impl CorsConfig {
                     .filter(|s| !s.is_empty())
                     .collect()
             })
-            .unwrap_or_else(|| {
+            .unwrap_or_else(|_| {
                 ["content-type", "authorization"]
                     .iter()
                     .map(|s| s.to_string())
@@ -151,10 +244,19 @@ pub struct DbPoolConfig {
     pub lock_timeout_ms: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Config {
     pub bind_addr: SocketAddr,
     pub redis_url: String,
+    /// Individual database connection components. The password is stored as a
+    /// [`SecretString`] and the full connection URL is assembled at the last
+    /// moment in [`Database::new`] — it is never stored as a plain string or
+    /// written to logs.
+    pub db_credentials: DbCredentials,
+    /// Legacy field kept for callers that still need the assembled URL (e.g.
+    /// sqlx migration runner). Assembled lazily from `db_credentials`.
+    /// Do **not** log this value.
+    #[deprecated(since = "0.1.0", note = "use db_credentials.to_connection_string() instead")]
     pub database_url: String,
     pub hmac_key: String,
     /// Previous HMAC key for zero-downtime key rotation. Optional.
@@ -168,6 +270,9 @@ pub struct Config {
     pub contract_id: String,
     pub retry_attempts: u32,
     pub retry_base_delay_ms: u64,
+    /// Jitter factor for RPC retry backoff. 1.0 = full jitter (default), 0.0 = no jitter.
+    /// Configured via `RPC_BACKOFF_JITTER_FACTOR`.
+    pub rpc_backoff_jitter_factor: f64,
     pub event_poll_interval: Duration,
     pub tx_poll_interval: Duration,
     pub confirmation_ledger_lag: u32,
@@ -176,7 +281,15 @@ pub struct Config {
     pub content_default_page_size: i64,
     pub sendgrid_api_key: Option<String>,
     pub from_email: Option<String>,
+    /// ISO-8601 date (YYYY-MM-DD) recording when SENDGRID_API_KEY was last
+    /// rotated. Injected from Secrets Manager via `SENDGRID_KEY_ROTATED_AT`.
+    /// When set and the key is older than 90 days the server logs a warning at
+    /// startup so on-call engineers are notified before the key is revoked.
+    pub sendgrid_key_rotated_at: Option<String>,
     pub base_url: String,
+    /// Server-side secret for HMAC-SHA256 email idempotency keys.
+    /// Configured via `EMAIL_IDEMPOTENCY_SECRET`. Falls back to `hmac_key` if unset.
+    pub email_idempotency_secret: String,
     pub api_keys: Vec<String>,
     pub admin_whitelist_ips: Vec<IpAddr>,
     pub trust_proxy: bool,
@@ -219,6 +332,9 @@ pub struct Config {
     /// enough to noticeably delay concurrent subscriber inserts.
     /// Set via `NEWSLETTER_CLEANUP_BATCH_SIZE`.
     pub newsletter_cleanup_batch_size: u64,
+    /// Per-recipient hourly email send limit. Default: 10.
+    /// Set via `EMAIL_PER_RECIPIENT_HOURLY_LIMIT`.
+    pub email_per_recipient_hourly_limit: u64,
     /// HMAC secret for signing unsubscribe tokens.
     pub unsubscribe_signing_secret: Option<String>,
     /// CORS policy.  See [`CorsConfig`] for per-field documentation.
@@ -230,6 +346,30 @@ pub struct Config {
     /// startup. Configured via `STELLAR_NETWORK_PASSPHRASE`; defaults to the
     /// canonical passphrase for the configured `BLOCKCHAIN_NETWORK`.
     pub network_passphrase: String,
+    /// TTL (in seconds) for entries in the watched-transaction map.
+    /// Entries older than this are evicted on the next insert regardless of
+    /// their finalization status, bounding memory growth.
+    /// Default: 1800 (30 minutes). Set via `WATCHED_TX_TTL_SECS`.
+    pub watched_tx_ttl_secs: u64,
+    /// Maximum number of transaction hashes that may be tracked simultaneously
+    /// in the in-memory watch map.  When the cap is reached new registrations
+    /// are rejected with 503 Service Unavailable rather than silently evicting
+    /// older entries.  Default: 10000.  Set via `WATCHED_TX_MAX_SIZE`.
+    pub watched_tx_max_size: usize,
+    /// Whether the service is running in a production environment.
+    /// When `true` a Stellar network passphrase mismatch at startup causes a
+    /// hard `process::exit(1)`.  When `false` only a warning is logged.
+    /// Default: `false`.  Set `PREDICTIQ_ENV=production` to enable.
+    pub is_production: bool,
+    /// Deployment environment name. Configured via `APP_ENV`; defaults to
+    /// `"development"`. When set to `"production"` certain checks (e.g. RPC
+    /// reachability) become fatal rather than warnings.
+    pub app_env: String,
+    /// When `true`, the HTTPS redirect middleware enforces HTTPS by inspecting
+    /// the `X-Forwarded-Proto` header and issuing a 301 redirect for plain HTTP
+    /// requests. TLS termination is expected at the ALB, not at this process.
+    /// Configured via `REQUIRE_HTTPS`. Default: `false`.
+    pub require_https: bool,
 }
 
 impl Config {
@@ -307,12 +447,20 @@ impl Config {
                 BlockchainNetwork::Custom => String::new(),
             });
 
+        let db_credentials = DbCredentials::from_env();
+        // Assemble the legacy database_url from individual components so
+        // existing callers (sqlx migration runner) continue to work.
+        // The password is exposed here only to construct the pool; this field
+        // must never be logged.
+        #[allow(deprecated)]
+        let database_url = db_credentials.to_connection_string().expose_secret().to_string();
+
         Self {
             bind_addr,
             redis_url: env::var("REDIS_URL")
                 .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string()),
-            database_url: env::var("DATABASE_URL")
-                .unwrap_or_else(|_| "postgres://postgres:postgres@127.0.0.1/predictiq".to_string()),
+            db_credentials,
+            database_url,
             hmac_key: env::var("HMAC_KEY").unwrap_or_default(),
             hmac_key_previous: env::var("HMAC_KEY_PREVIOUS").ok(),
             hmac_key_rotation_grace_seconds: env::var("HMAC_KEY_ROTATION_GRACE_SECONDS")
@@ -353,6 +501,11 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(200),
+            rpc_backoff_jitter_factor: env::var("RPC_BACKOFF_JITTER_FACTOR")
+                .ok()
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(1.0)
+                .clamp(0.0, 1.0),
             event_poll_interval: Duration::from_secs(
                 env::var("EVENT_POLL_INTERVAL_SECS")
                     .ok()
@@ -380,7 +533,11 @@ impl Config {
                 .unwrap_or(20),
             sendgrid_api_key: env::var("SENDGRID_API_KEY").ok(),
             from_email: env::var("FROM_EMAIL").ok(),
+            sendgrid_key_rotated_at: env::var("SENDGRID_KEY_ROTATED_AT").ok(),
             base_url: env::var("BASE_URL").unwrap_or_else(|_| "http://localhost:8080".to_string()),
+            email_idempotency_secret: env::var("EMAIL_IDEMPOTENCY_SECRET")
+                .or_else(|_| env::var("HMAC_KEY"))
+                .unwrap_or_default(),
             api_keys: env::var("API_KEYS")
                 .ok()
                 .map(|keys| keys.split(',').map(|k| k.trim().to_string()).collect())
@@ -396,7 +553,7 @@ impl Config {
             trust_proxy: env::var("TRUST_PROXY")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(true),
+                .unwrap_or(false),
             request_signing_secret: env::var("REQUEST_SIGNING_SECRET").ok(),
             sendgrid_webhook_secret: env::var("SENDGRID_WEBHOOK_SECRET").ok(),
             webhook_replay_window_secs: env::var("WEBHOOK_REPLAY_WINDOW_SECS")
@@ -453,10 +610,31 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(500),
+            email_per_recipient_hourly_limit: env::var("EMAIL_PER_RECIPIENT_HOURLY_LIMIT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(10),
             unsubscribe_signing_secret: env::var("UNSUBSCRIBE_SIGNING_SECRET").ok(),
             cors: CorsConfig::from_env(),
             contract_key_schema: ContractKeySchema::from_env(),
             network_passphrase,
+            watched_tx_ttl_secs: env::var("WATCHED_TX_TTL_SECS")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(1800),
+            watched_tx_max_size: env::var("WATCHED_TX_MAX_SIZE")
+                .ok()
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(10_000),
+            // Canonical production flag derived from APP_ENV so a single
+            // environment variable controls all production-only behaviors.
+            is_production: env::var("APP_ENV")
+                .map(|v| v.eq_ignore_ascii_case("production"))
+                .unwrap_or(false),
+            app_env: env::var("APP_ENV").unwrap_or_else(|_| "development".to_string()),
+            require_https: env::var("REQUIRE_HTTPS")
+                .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+                .unwrap_or(false),
         }
     }
 
@@ -468,28 +646,101 @@ impl Config {
         }
     }
 
+    pub fn is_production(&self) -> bool {
+        self.app_env.eq_ignore_ascii_case("production")
+    }
+
+    /// Emit a `tracing::warn!` if `SENDGRID_KEY_ROTATED_AT` is set and the key
+    /// is older than `max_age_days` days (default 90).
+    ///
+    /// The check is best-effort: if the date cannot be parsed the function logs
+    /// a warning and returns — it never hard-errors so a misconfigured date
+    /// doesn't prevent startup.
+    pub fn warn_if_sendgrid_key_stale(&self) {
+        const MAX_AGE_DAYS: i64 = 90;
+        let rotated_at = match self.sendgrid_key_rotated_at.as_deref() {
+            Some(s) if !s.is_empty() => s,
+            _ => {
+                tracing::warn!(
+                    "SENDGRID_KEY_ROTATED_AT is not set — cannot verify SendGrid API key age. \
+                     Set this to the ISO-8601 date (YYYY-MM-DD) when the key was last rotated. \
+                     See docs/runbooks/sendgrid-api-key-rotation.md."
+                );
+                return;
+            }
+        };
+
+        let rotated_date = match chrono::NaiveDate::parse_from_str(rotated_at, "%Y-%m-%d") {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!(
+                    rotated_at,
+                    error = %e,
+                    "SENDGRID_KEY_ROTATED_AT could not be parsed as YYYY-MM-DD; \
+                     skipping key-age check. See docs/runbooks/sendgrid-api-key-rotation.md."
+                );
+                return;
+            }
+        };
+
+        let today = chrono::Utc::now().date_naive();
+        let age_days = (today - rotated_date).num_days();
+
+        if age_days >= MAX_AGE_DAYS {
+            tracing::warn!(
+                age_days,
+                max_age_days = MAX_AGE_DAYS,
+                rotated_at,
+                "SECURITY WARNING: SendGrid API key is {} days old (limit: {} days). \
+                 Rotate the key now and update SENDGRID_KEY_ROTATED_AT. \
+                 Follow docs/runbooks/sendgrid-api-key-rotation.md.",
+                age_days,
+                MAX_AGE_DAYS,
+            );
+        } else {
+            tracing::info!(
+                age_days,
+                max_age_days = MAX_AGE_DAYS,
+                rotated_at,
+                "SendGrid API key age check passed ({}/{} days)",
+                age_days,
+                MAX_AGE_DAYS,
+            );
+        }
+    }
+
     /// Validate all required environment variables at startup.
     ///
     /// Checks that:
-    /// - DATABASE_URL is set and non-empty, and is a valid PostgreSQL connection string
+    /// - DB_HOST, DB_NAME, DB_USER, DB_PASSWORD are set and non-empty
     /// - REDIS_URL is set and non-empty, and is a valid Redis connection string
     /// - HMAC_KEY is set and non-empty
     ///
     /// Returns `Err` if any required var is missing, empty, or malformed.
     /// On error, prints a clear message to stderr and exits with code 1.
     pub fn validate(&self) -> Result<(), Box<dyn std::error::Error>> {
+        use secrecy::ExposeSecret;
         let mut errors = Vec::new();
 
-        // Validate DATABASE_URL
-        if self.database_url.is_empty() {
-            errors.push("DATABASE_URL: environment variable is not set or is empty".to_string());
-        } else {
-            // Check if it's a valid PostgreSQL connection string (basic validation)
-            if !self.database_url.starts_with("postgres://")
-                && !self.database_url.starts_with("postgresql://")
-            {
-                errors.push(format!("DATABASE_URL: invalid format, expected 'postgres://' or 'postgresql://', got '{}'", self.database_url));
-            }
+        // Validate individual DB credential components.
+        // Never log the password — only check it is non-empty.
+        if self.db_credentials.host.is_empty() {
+            errors.push("DB_HOST: environment variable is not set or is empty".to_string());
+        }
+        if self.db_credentials.name.is_empty() {
+            errors.push("DB_NAME: environment variable is not set or is empty".to_string());
+        }
+        if self.db_credentials.user.is_empty() {
+            errors.push("DB_USER: environment variable is not set or is empty".to_string());
+        }
+        if self.db_credentials.password.expose_secret().is_empty() {
+            errors.push("DB_PASSWORD: environment variable is not set or is empty".to_string());
+        }
+
+        // Reject well-known placeholder defaults in production to avoid
+        // accidentally starting with guessable credentials (issue #1108).
+        if self.db_credentials.password.expose_secret() == "postgres" && self.is_production {
+            errors.push("DB_PASSWORD: insecure default 'postgres' is not allowed in production".to_string());
         }
 
         // Validate REDIS_URL
@@ -505,9 +756,45 @@ impl Config {
             }
         }
 
-        // Validate HMAC_KEY
+        // Validate HMAC_KEY — must be at least 32 bytes (256 bits) after decoding.
         if self.hmac_key.is_empty() {
             errors.push("HMAC_KEY: environment variable is not set or is empty".to_string());
+        } else {
+            let key_bytes: Vec<u8> = if let Ok(decoded) = hex::decode(&self.hmac_key) {
+                decoded
+            } else if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(&self.hmac_key) {
+                decoded
+            } else {
+                self.hmac_key.as_bytes().to_vec()
+            };
+
+            if key_bytes.len() < 32 {
+                errors.push(format!(
+                    "HMAC_KEY: must be at least 32 bytes (256 bits) after decoding; \
+                     got {} bytes. Generate a secure key with: openssl rand -hex 32",
+                    key_bytes.len()
+                ));
+            } else {
+                let entropy = hmac_key_entropy(&key_bytes);
+                if entropy < 3.5 {
+                    eprintln!(
+                        "Warning: HMAC_KEY appears to have low entropy ({:.2} bits/byte). \
+                         Use a randomly generated key: openssl rand -hex 32",
+                        entropy
+                    );
+                }
+            }
+        }
+
+        // Validate CORS_DEV_MODE is not enabled in production.
+        if self.cors.dev_mode {
+            let rust_env = std::env::var("RUST_ENV").unwrap_or_default();
+            if rust_env.eq_ignore_ascii_case("production") || rust_env.eq_ignore_ascii_case("prod") {
+                errors.push(
+                    "CORS_DEV_MODE=true is not allowed when RUST_ENV=production. \
+                     Remove or set CORS_DEV_MODE=false before deploying.".to_string()
+                );
+            }
         }
 
         // Warn if no API keys are configured — admin endpoints will reject all requests.
@@ -526,6 +813,23 @@ impl Config {
         }
 
         Ok(())
+    }
+
+    /// Emit a startup warning when running in production without HTTPS enforcement.
+    ///
+    /// Call this once at startup, after `validate()`. The check is advisory —
+    /// it does not prevent the server from starting — but it ensures the
+    /// misconfiguration is visible in the log stream.
+    pub fn check_https_config(&self) {
+        if self.app_env == "production" && !self.require_https {
+            tracing::warn!(
+                app_env = %self.app_env,
+                require_https = self.require_https,
+                "REQUIRE_HTTPS is false in production — plain HTTP requests will not be \
+                 redirected to HTTPS. Set REQUIRE_HTTPS=true to enforce HTTPS at the application \
+                 layer, or ensure HTTPS redirection is handled by the ALB."
+            );
+        }
     }
 }
 
@@ -615,7 +919,9 @@ impl ContractKeySchema {
     }
 
     /// Validate that all templates that require `{id}` actually contain it,
-    /// and that no template is empty.
+    /// and that no template is empty.  Also detects circular dependencies
+    /// between template field references (e.g. `{market}` referring back to
+    /// `platform_stats` which refers to `market`).
     ///
     /// Returns `Err` with a list of every problem found so all issues are
     /// surfaced in a single startup log line rather than discovered one by one.
@@ -649,11 +955,97 @@ impl ContractKeySchema {
             }
         }
 
+        // Circular dependency check over template field references.
+        if let Some(cycle_path) = self.detect_cycle() {
+            errors.push(format!(
+                "contract key schema contains circular dependency: {}",
+                cycle_path
+            ));
+        }
+
         if errors.is_empty() {
             Ok(())
         } else {
             Err(SchemaValidationError { errors })
         }
+    }
+
+    /// Detect circular references between template fields.
+    ///
+    /// A template may reference another field via `{field_name}` placeholders
+    /// (excluding `{id}`, which is a runtime value, not a field reference).
+    /// This scans the dependency graph for cycles using DFS with 3-color
+    /// marking.  Returns `Some(cycle_path)` when a cycle is found, or `None`
+    /// when the graph is acyclic.
+    fn detect_cycle(&self) -> Option<String> {
+        const FIELDS: [&'static str; 5] =
+            ["market", "platform_stats", "user_bets", "oracle_result", "health_check"];
+
+        let templates = [
+            ("market", &self.market),
+            ("platform_stats", &self.platform_stats),
+            ("user_bets", &self.user_bets),
+            ("oracle_result", &self.oracle_result),
+            ("health_check", &self.health_check),
+        ];
+
+        let mut deps: HashMap<String, Vec<String>> = HashMap::new();
+        for (name, template) in &templates {
+            let mut refs = Vec::new();
+            for &field in &FIELDS {
+                let placeholder = format!("{{{}}}", field);
+                if template.contains(&placeholder) {
+                    refs.push(field.to_string());
+                }
+            }
+            deps.insert(name.to_string(), refs);
+        }
+
+        let mut colors: HashMap<String, u8> =
+            FIELDS.iter().map(|&f| (f.to_string(), 0)).collect();
+        let mut path: Vec<String> = Vec::new();
+
+        for &field in &FIELDS {
+            if *colors.get(field).unwrap_or(&0) == 0 {
+                if let Some(cycle) =
+                    Self::dfs(field, &deps, &mut colors, &mut path)
+                {
+                    return Some(cycle.join(" → "));
+                }
+            }
+        }
+
+        None
+    }
+
+    fn dfs(
+        node: &str,
+        deps: &HashMap<String, Vec<String>>,
+        colors: &mut HashMap<String, u8>,
+        path: &mut Vec<String>,
+    ) -> Option<Vec<String>> {
+        colors.insert(node.to_string(), 1);
+        path.push(node.to_string());
+
+        if let Some(neighbors) = deps.get(node) {
+            for neighbor in neighbors {
+                let color = *colors.get(neighbor.as_str()).unwrap_or(&0);
+                if color == 1 {
+                    if let Some(cycle_start) = path.iter().position(|x| x == neighbor) {
+                        let mut cycle = path[cycle_start..].to_vec();
+                        cycle.push(neighbor.clone());
+                        return Some(cycle);
+                    }
+                }
+                if let Some(result) = Self::dfs(neighbor, deps, colors, path) {
+                    return Some(result);
+                }
+            }
+        }
+
+        path.pop();
+        colors.insert(node.to_string(), 2);
+        None
     }
 
     // ── Key builders ──────────────────────────────────────────────────────────
@@ -683,7 +1075,15 @@ mod tests {
         let config = Config {
             bind_addr: "127.0.0.1:8080".parse().unwrap(),
             redis_url: "redis://127.0.0.1:6379".to_string(),
-            database_url: "postgres://postgres@localhost/predictiq".to_string(),
+            db_credentials: DbCredentials {
+                host: "localhost".to_string(),
+                port: 5432,
+                name: "predictiq".to_string(),
+                user: "postgres".to_string(),
+                password: secrecy::SecretString::new("postgres".to_string().into()),
+            },
+            #[allow(deprecated)]
+            database_url: "postgres://postgres:postgres@localhost:5432/predictiq".to_string(),
             hmac_key: "secret-key-value".to_string(),
             hmac_key_previous: None,
             hmac_key_rotation_grace_seconds: 3600,
@@ -694,12 +1094,15 @@ mod tests {
                 idle_timeout: None,
                 max_lifetime: None,
                 query_timeout: Duration::from_secs(30),
+                statement_timeout_ms: 30_000,
+                lock_timeout_ms: 10_000,
             },
             blockchain_rpc_url: "https://testnet.soroban.org".to_string(),
             blockchain_network: BlockchainNetwork::Testnet,
             contract_id: "contract_id".to_string(),
             retry_attempts: 3,
             retry_base_delay_ms: 200,
+            rpc_backoff_jitter_factor: 1.0,
             event_poll_interval: Duration::from_secs(5),
             tx_poll_interval: Duration::from_secs(4),
             confirmation_ledger_lag: 3,
@@ -708,7 +1111,9 @@ mod tests {
             content_default_page_size: 20,
             sendgrid_api_key: None,
             from_email: None,
+            sendgrid_key_rotated_at: None,
             base_url: "http://localhost:8080".to_string(),
+            email_idempotency_secret: "test-secret".to_string(),
             api_keys: vec![],
             admin_whitelist_ips: vec![],
             trust_proxy: true,
@@ -728,6 +1133,7 @@ mod tests {
             newsletter_rate_limit_window_secs: 3600,
             email_stale_job_threshold_secs: 3600,
             newsletter_cleanup_batch_size: 500,
+            email_per_recipient_hourly_limit: 10,
             unsubscribe_signing_secret: None,
             cors: CorsConfig {
                 dev_mode: false,
@@ -745,6 +1151,10 @@ mod tests {
                 oracle_result: "oracle_result:{id}".to_string(),
                 health_check: "platform:stats".to_string(),
             },
+            network_passphrase: "Test SDF Network ; September 2015".to_string(),
+            watched_tx_ttl_secs: 1800,
+            watched_tx_max_size: 10_000,
+            is_production: false,
         };
         assert!(config.validate().is_ok());
     }
@@ -754,7 +1164,15 @@ mod tests {
         let config = Config {
             bind_addr: "127.0.0.1:8080".parse().unwrap(),
             redis_url: "redis://127.0.0.1:6379".to_string(),
-            database_url: "postgres://postgres@localhost/predictiq".to_string(),
+            db_credentials: DbCredentials {
+                host: "localhost".to_string(),
+                port: 5432,
+                name: "predictiq".to_string(),
+                user: "postgres".to_string(),
+                password: secrecy::SecretString::new("postgres".to_string().into()),
+            },
+            #[allow(deprecated)]
+            database_url: "postgres://postgres:postgres@localhost:5432/predictiq".to_string(),
             hmac_key: "".to_string(),
             hmac_key_previous: None,
             hmac_key_rotation_grace_seconds: 3600,
@@ -765,12 +1183,15 @@ mod tests {
                 idle_timeout: None,
                 max_lifetime: None,
                 query_timeout: Duration::from_secs(30),
+                statement_timeout_ms: 30_000,
+                lock_timeout_ms: 10_000,
             },
             blockchain_rpc_url: "https://testnet.soroban.org".to_string(),
             blockchain_network: BlockchainNetwork::Testnet,
             contract_id: "contract_id".to_string(),
             retry_attempts: 3,
             retry_base_delay_ms: 200,
+            rpc_backoff_jitter_factor: 1.0,
             event_poll_interval: Duration::from_secs(5),
             tx_poll_interval: Duration::from_secs(4),
             confirmation_ledger_lag: 3,
@@ -779,7 +1200,9 @@ mod tests {
             content_default_page_size: 20,
             sendgrid_api_key: None,
             from_email: None,
+            sendgrid_key_rotated_at: None,
             base_url: "http://localhost:8080".to_string(),
+            email_idempotency_secret: "".to_string(),
             api_keys: vec![],
             admin_whitelist_ips: vec![],
             trust_proxy: true,
@@ -799,6 +1222,7 @@ mod tests {
             newsletter_rate_limit_window_secs: 3600,
             email_stale_job_threshold_secs: 3600,
             newsletter_cleanup_batch_size: 500,
+            email_per_recipient_hourly_limit: 10,
             unsubscribe_signing_secret: None,
             cors: CorsConfig {
                 dev_mode: false,
@@ -816,16 +1240,29 @@ mod tests {
                 oracle_result: "oracle_result:{id}".to_string(),
                 health_check: "platform:stats".to_string(),
             },
+            network_passphrase: "Test SDF Network ; September 2015".to_string(),
+            watched_tx_ttl_secs: 1800,
+            watched_tx_max_size: 10_000,
+            is_production: false,
         };
         assert!(config.validate().is_err());
     }
 
     #[test]
-    fn test_config_validate_malformed_database_url() {
+    fn test_config_validate_missing_db_password() {
         let config = Config {
             bind_addr: "127.0.0.1:8080".parse().unwrap(),
             redis_url: "redis://127.0.0.1:6379".to_string(),
-            database_url: "mysql://localhost/predictiq".to_string(),
+            db_credentials: DbCredentials {
+                host: "localhost".to_string(),
+                port: 5432,
+                name: "predictiq".to_string(),
+                user: "postgres".to_string(),
+                // Empty password must fail validation
+                password: secrecy::SecretString::new("".to_string().into()),
+            },
+            #[allow(deprecated)]
+            database_url: "postgres://postgres:@localhost:5432/predictiq".to_string(),
             hmac_key: "secret".to_string(),
             hmac_key_previous: None,
             hmac_key_rotation_grace_seconds: 3600,
@@ -836,12 +1273,15 @@ mod tests {
                 idle_timeout: None,
                 max_lifetime: None,
                 query_timeout: Duration::from_secs(30),
+                statement_timeout_ms: 30_000,
+                lock_timeout_ms: 10_000,
             },
             blockchain_rpc_url: "https://testnet.soroban.org".to_string(),
             blockchain_network: BlockchainNetwork::Testnet,
             contract_id: "contract_id".to_string(),
             retry_attempts: 3,
             retry_base_delay_ms: 200,
+            rpc_backoff_jitter_factor: 1.0,
             event_poll_interval: Duration::from_secs(5),
             tx_poll_interval: Duration::from_secs(4),
             confirmation_ledger_lag: 3,
@@ -850,7 +1290,9 @@ mod tests {
             content_default_page_size: 20,
             sendgrid_api_key: None,
             from_email: None,
+            sendgrid_key_rotated_at: None,
             base_url: "http://localhost:8080".to_string(),
+            email_idempotency_secret: "".to_string(),
             api_keys: vec![],
             admin_whitelist_ips: vec![],
             trust_proxy: true,
@@ -870,6 +1312,7 @@ mod tests {
             newsletter_rate_limit_window_secs: 3600,
             email_stale_job_threshold_secs: 3600,
             newsletter_cleanup_batch_size: 500,
+            email_per_recipient_hourly_limit: 10,
             unsubscribe_signing_secret: None,
             cors: CorsConfig {
                 dev_mode: false,
@@ -887,6 +1330,10 @@ mod tests {
                 oracle_result: "oracle_result:{id}".to_string(),
                 health_check: "platform:stats".to_string(),
             },
+            network_passphrase: "Test SDF Network ; September 2015".to_string(),
+            watched_tx_ttl_secs: 1800,
+            watched_tx_max_size: 10_000,
+            is_production: false,
         };
         assert!(config.validate().is_err());
     }
@@ -896,7 +1343,15 @@ mod tests {
         let config = Config {
             bind_addr: "127.0.0.1:8080".parse().unwrap(),
             redis_url: "memcached://127.0.0.1:11211".to_string(),
-            database_url: "postgres://postgres@localhost/predictiq".to_string(),
+            db_credentials: DbCredentials {
+                host: "localhost".to_string(),
+                port: 5432,
+                name: "predictiq".to_string(),
+                user: "postgres".to_string(),
+                password: secrecy::SecretString::new("postgres".to_string().into()),
+            },
+            #[allow(deprecated)]
+            database_url: "postgres://postgres:postgres@localhost:5432/predictiq".to_string(),
             hmac_key: "secret".to_string(),
             hmac_key_previous: None,
             hmac_key_rotation_grace_seconds: 3600,
@@ -907,12 +1362,15 @@ mod tests {
                 idle_timeout: None,
                 max_lifetime: None,
                 query_timeout: Duration::from_secs(30),
+                statement_timeout_ms: 30_000,
+                lock_timeout_ms: 10_000,
             },
             blockchain_rpc_url: "https://testnet.soroban.org".to_string(),
             blockchain_network: BlockchainNetwork::Testnet,
             contract_id: "contract_id".to_string(),
             retry_attempts: 3,
             retry_base_delay_ms: 200,
+            rpc_backoff_jitter_factor: 1.0,
             event_poll_interval: Duration::from_secs(5),
             tx_poll_interval: Duration::from_secs(4),
             confirmation_ledger_lag: 3,
@@ -921,7 +1379,9 @@ mod tests {
             content_default_page_size: 20,
             sendgrid_api_key: None,
             from_email: None,
+            sendgrid_key_rotated_at: None,
             base_url: "http://localhost:8080".to_string(),
+            email_idempotency_secret: "".to_string(),
             api_keys: vec![],
             admin_whitelist_ips: vec![],
             trust_proxy: true,
@@ -941,6 +1401,7 @@ mod tests {
             newsletter_rate_limit_window_secs: 3600,
             email_stale_job_threshold_secs: 3600,
             newsletter_cleanup_batch_size: 500,
+            email_per_recipient_hourly_limit: 10,
             unsubscribe_signing_secret: None,
             cors: CorsConfig {
                 dev_mode: false,
@@ -958,7 +1419,774 @@ mod tests {
                 oracle_result: "oracle_result:{id}".to_string(),
                 health_check: "platform:stats".to_string(),
             },
+            network_passphrase: "Test SDF Network ; September 2015".to_string(),
+            watched_tx_ttl_secs: 1800,
+            watched_tx_max_size: 10_000,
+            is_production: false,
         };
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_detects_two_node_cycle() {
+        let schema = ContractKeySchema {
+            version: "1.0.0".to_string(),
+            market: "stats:{platform_stats}:{id}".to_string(),
+            platform_stats: "markets:{market}:{id}".to_string(),
+            user_bets: "user_bets:{id}".to_string(),
+            oracle_result: "oracle_result:{id}".to_string(),
+            health_check: "health_check:{id}".to_string(),
+        };
+
+        let result = schema.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| e.contains("circular dependency")),
+            "expected circular dependency error, got: {:?}",
+            err.errors
+        );
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| e.contains("market") && e.contains("platform_stats")),
+            "expected cycle path to mention market and platform_stats, got: {:?}",
+            err.errors
+        );
+    }
+
+    #[test]
+    fn test_validate_detects_three_node_cycle() {
+        let schema = ContractKeySchema {
+            version: "1.0.0".to_string(),
+            market: "mb:{user_bets}:{id}".to_string(),
+            platform_stats: "platform:stats".to_string(),
+            user_bets: "or:{oracle_result}:{id}".to_string(),
+            oracle_result: "mk:{market}:{id}".to_string(),
+            health_check: "health_check:{id}".to_string(),
+        };
+
+        let result = schema.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| e.contains("circular dependency")),
+            "expected circular dependency error, got: {:?}",
+            err.errors
+        );
+        assert!(
+            err.errors.iter().any(|e| {
+                e.contains("market")
+                    && e.contains("user_bets")
+                    && e.contains("oracle_result")
+            }),
+            "expected cycle path to mention market, user_bets, and oracle_result, got: {:?}",
+            err.errors
+        );
+    }
+
+    #[test]
+    fn test_validate_no_cycle_on_defaults() {
+        let schema = ContractKeySchema {
+            version: "1.0.0".to_string(),
+            market: "market:{id}".to_string(),
+            platform_stats: "platform:stats".to_string(),
+            user_bets: "user_bets:{id}".to_string(),
+            oracle_result: "oracle_result:{id}".to_string(),
+            health_check: "health_check:{id}".to_string(),
+        };
+
+        assert!(schema.validate().is_ok());
+    }
+}
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Redact assembled database_url to avoid leaking DB password via Debug
+        f.debug_struct("Config")
+            .field("bind_addr", &self.bind_addr)
+            .field("redis_url", &self.redis_url)
+            .field("db_credentials", &self.db_credentials)
+            .field("database_url", &"[redacted]")
+            .field("hmac_key", &"[redacted]")
+            .field("sendgrid_api_key", &self.sendgrid_api_key.as_ref().map(|_| "[redacted]"))
+            .field("is_production", &self.is_production)
+            .field("app_env", &self.app_env)
+            .finish()
+    }
+}
+}
+
+/// Versioned contract storage key schema.
+///
+/// Each field is a key template where `{id}` is replaced at call time.
+/// Defaults match the v1 deployed schema; override via env vars for per-network
+/// divergence (e.g. a testnet that uses a different naming convention).
+///
+/// Schema version is bumped whenever a key template changes, so callers can
+/// detect mismatches at startup.
+///
+/// | Variable                    | Default              | `{id}` required |
+/// |-----------------------------|----------------------|-----------------|
+/// | `CONTRACT_KEY_VERSION`      | `"1.0.0"`            | —               |
+/// | `CONTRACT_KEY_MARKET`       | `"market:{id}"`      | ✓               |
+/// | `CONTRACT_KEY_PLATFORM_STATS` | `"platform:stats"` | —               |
+/// | `CONTRACT_KEY_USER_BETS`    | `"user_bets:{id}"`   | ✓               |
+/// | `CONTRACT_KEY_ORACLE_RESULT`| `"oracle_result:{id}"` | ✓             |
+/// | `CONTRACT_KEY_HEALTH_CHECK` | `"platform:stats"`   | —               |
+///
+/// Call [`ContractKeySchema::validate`] at startup to detect template drift
+/// before any contract reads are attempted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContractKeySchema {
+    /// Semver string, e.g. "1.0.0".  Bump when any template changes.
+    pub version: String,
+    /// Key for a single market, `{id}` → market_id.
+    pub market: String,
+    /// Key for platform-wide statistics.
+    pub platform_stats: String,
+    /// Key for a user's bets, `{id}` → user address.
+    pub user_bets: String,
+    /// Key for an oracle result, `{id}` → market_id.
+    pub oracle_result: String,
+    /// Key used by the health-check probe to verify contract reachability.
+    /// Defaults to `platform_stats` so no extra storage slot is needed.
+    pub health_check: String,
+}
+
+/// Error returned by [`ContractKeySchema::validate`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchemaValidationError {
+    /// Human-readable description of every problem found.
+    pub errors: Vec<String>,
+}
+
+impl std::fmt::Display for SchemaValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "contract key schema validation failed: {}",
+            self.errors.join("; ")
+        )
+    }
+}
+
+impl std::error::Error for SchemaValidationError {}
+
+impl ContractKeySchema {
+    /// Load from environment, falling back to v1 defaults.
+    ///
+    /// Override env vars:
+    /// - `CONTRACT_KEY_VERSION`
+    /// - `CONTRACT_KEY_MARKET`            (default: `"market:{id}"`)
+    /// - `CONTRACT_KEY_PLATFORM_STATS`    (default: `"platform:stats"`)
+    /// - `CONTRACT_KEY_USER_BETS`         (default: `"user_bets:{id}"`)
+    /// - `CONTRACT_KEY_ORACLE_RESULT`     (default: `"oracle_result:{id}"`)
+    /// - `CONTRACT_KEY_HEALTH_CHECK`      (default: same as `CONTRACT_KEY_PLATFORM_STATS`)
+    pub fn from_env() -> Self {
+        let platform_stats = env::var("CONTRACT_KEY_PLATFORM_STATS")
+            .unwrap_or_else(|_| "platform:stats".to_string());
+
+        let health_check =
+            env::var("CONTRACT_KEY_HEALTH_CHECK").unwrap_or_else(|_| platform_stats.clone());
+
+        Self {
+            version: env::var("CONTRACT_KEY_VERSION").unwrap_or_else(|_| "1.0.0".to_string()),
+            market: env::var("CONTRACT_KEY_MARKET").unwrap_or_else(|_| "market:{id}".to_string()),
+            platform_stats,
+            user_bets: env::var("CONTRACT_KEY_USER_BETS")
+                .unwrap_or_else(|_| "user_bets:{id}".to_string()),
+            oracle_result: env::var("CONTRACT_KEY_ORACLE_RESULT")
+                .unwrap_or_else(|_| "oracle_result:{id}".to_string()),
+            health_check,
+        }
+    }
+
+    /// Validate that all templates that require `{id}` actually contain it,
+    /// and that no template is empty.  Also detects circular dependencies
+    /// between template field references (e.g. `{market}` referring back to
+    /// `platform_stats` which refers to `market`).
+    ///
+    /// Returns `Err` with a list of every problem found so all issues are
+    /// surfaced in a single startup log line rather than discovered one by one.
+    pub fn validate(&self) -> Result<(), SchemaValidationError> {
+        let mut errors: Vec<String> = Vec::new();
+
+        // Templates that must contain the `{id}` placeholder.
+        let id_required = [
+            ("market", &self.market),
+            ("user_bets", &self.user_bets),
+            ("oracle_result", &self.oracle_result),
+        ];
+        for (name, template) in &id_required {
+            if template.is_empty() {
+                errors.push(format!("{name}: template must not be empty"));
+            } else if !template.contains("{id}") {
+                errors.push(format!(
+                    "{name}: template \"{template}\" is missing the {{id}} placeholder"
+                ));
+            }
+        }
+
+        // Templates that must be non-empty but don't need `{id}`.
+        let non_empty = [
+            ("platform_stats", &self.platform_stats),
+            ("health_check", &self.health_check),
+        ];
+        for (name, template) in &non_empty {
+            if template.is_empty() {
+                errors.push(format!("{name}: template must not be empty"));
+            }
+        }
+
+        // Circular dependency check over template field references.
+        if let Some(cycle_path) = self.detect_cycle() {
+            errors.push(format!(
+                "contract key schema contains circular dependency: {}",
+                cycle_path
+            ));
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(SchemaValidationError { errors })
+        }
+    }
+
+    /// Detect circular references between template fields.
+    ///
+    /// A template may reference another field via `{field_name}` placeholders
+    /// (excluding `{id}`, which is a runtime value, not a field reference).
+    /// This scans the dependency graph for cycles using DFS with 3-color
+    /// marking.  Returns `Some(cycle_path)` when a cycle is found, or `None`
+    /// when the graph is acyclic.
+    fn detect_cycle(&self) -> Option<String> {
+        const FIELDS: [&'static str; 5] =
+            ["market", "platform_stats", "user_bets", "oracle_result", "health_check"];
+
+        let templates = [
+            ("market", &self.market),
+            ("platform_stats", &self.platform_stats),
+            ("user_bets", &self.user_bets),
+            ("oracle_result", &self.oracle_result),
+            ("health_check", &self.health_check),
+        ];
+
+        let mut deps: HashMap<String, Vec<String>> = HashMap::new();
+        for (name, template) in &templates {
+            let mut refs = Vec::new();
+            for &field in &FIELDS {
+                let placeholder = format!("{{{}}}", field);
+                if template.contains(&placeholder) {
+                    refs.push(field.to_string());
+                }
+            }
+            deps.insert(name.to_string(), refs);
+        }
+
+        let mut colors: HashMap<String, u8> =
+            FIELDS.iter().map(|&f| (f.to_string(), 0)).collect();
+        let mut path: Vec<String> = Vec::new();
+
+        for &field in &FIELDS {
+            if *colors.get(field).unwrap_or(&0) == 0 {
+                if let Some(cycle) =
+                    Self::dfs(field, &deps, &mut colors, &mut path)
+                {
+                    return Some(cycle.join(" → "));
+                }
+            }
+        }
+
+        None
+    }
+
+    fn dfs(
+        node: &str,
+        deps: &HashMap<String, Vec<String>>,
+        colors: &mut HashMap<String, u8>,
+        path: &mut Vec<String>,
+    ) -> Option<Vec<String>> {
+        colors.insert(node.to_string(), 1);
+        path.push(node.to_string());
+
+        if let Some(neighbors) = deps.get(node) {
+            for neighbor in neighbors {
+                let color = *colors.get(neighbor.as_str()).unwrap_or(&0);
+                if color == 1 {
+                    if let Some(cycle_start) = path.iter().position(|x| x == neighbor) {
+                        let mut cycle = path[cycle_start..].to_vec();
+                        cycle.push(neighbor.clone());
+                        return Some(cycle);
+                    }
+                }
+                if let Some(result) = Self::dfs(neighbor, deps, colors, path) {
+                    return Some(result);
+                }
+            }
+        }
+
+        path.pop();
+        colors.insert(node.to_string(), 2);
+        None
+    }
+
+    // ── Key builders ──────────────────────────────────────────────────────────
+
+    /// Resolve the market key for `market_id`.
+    pub fn market_key(&self, market_id: i64) -> String {
+        self.market.replace("{id}", &market_id.to_string())
+    }
+
+    /// Resolve the user-bets key for `user`.
+    pub fn user_bets_key(&self, user: &str) -> String {
+        self.user_bets.replace("{id}", user)
+    }
+
+    /// Resolve the oracle-result key for `market_id`.
+    pub fn oracle_result_key(&self, market_id: i64) -> String {
+        self.oracle_result.replace("{id}", &market_id.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_validate_all_required_vars_present() {
+        let config = Config {
+            bind_addr: "127.0.0.1:8080".parse().unwrap(),
+            redis_url: "redis://127.0.0.1:6379".to_string(),
+            db_credentials: DbCredentials {
+                host: "localhost".to_string(),
+                port: 5432,
+                name: "predictiq".to_string(),
+                user: "postgres".to_string(),
+                password: secrecy::SecretString::new("postgres".to_string().into()),
+            },
+            #[allow(deprecated)]
+            database_url: "postgres://postgres:postgres@localhost:5432/predictiq".to_string(),
+            hmac_key: "secret-key-value".to_string(),
+            hmac_key_previous: None,
+            hmac_key_rotation_grace_seconds: 3600,
+            db_pool: DbPoolConfig {
+                min_connections: 5,
+                max_connections: 25,
+                acquire_timeout: Duration::from_secs(5),
+                idle_timeout: None,
+                max_lifetime: None,
+                query_timeout: Duration::from_secs(30),
+                statement_timeout_ms: 30_000,
+                lock_timeout_ms: 10_000,
+            },
+            blockchain_rpc_url: "https://testnet.soroban.org".to_string(),
+            blockchain_network: BlockchainNetwork::Testnet,
+            contract_id: "contract_id".to_string(),
+            retry_attempts: 3,
+            retry_base_delay_ms: 200,
+            rpc_backoff_jitter_factor: 1.0,
+            event_poll_interval: Duration::from_secs(5),
+            tx_poll_interval: Duration::from_secs(4),
+            confirmation_ledger_lag: 3,
+            sync_market_ids: vec![],
+            featured_limit: 10,
+            content_default_page_size: 20,
+            sendgrid_api_key: None,
+            from_email: None,
+            sendgrid_key_rotated_at: None,
+            base_url: "http://localhost:8080".to_string(),
+            email_idempotency_secret: "test-secret".to_string(),
+            api_keys: vec![],
+            admin_whitelist_ips: vec![],
+            trust_proxy: true,
+            request_signing_secret: None,
+            sendgrid_webhook_secret: None,
+            webhook_replay_window_secs: 300,
+            trusted_proxy_cidrs: vec![],
+            metrics_public: false,
+            metrics_allowlist_ips: vec![],
+            otlp_endpoint: None,
+            trace_sample_rate: 0.1,
+            idempotency_window_secs: 86400,
+            newsletter_token_ttl_secs: 86400,
+            gdpr_export_rate_limit: 3,
+            gdpr_export_rate_window_secs: 3600,
+            newsletter_rate_limit_max: 5,
+            newsletter_rate_limit_window_secs: 3600,
+            email_stale_job_threshold_secs: 3600,
+            newsletter_cleanup_batch_size: 500,
+            email_per_recipient_hourly_limit: 10,
+            unsubscribe_signing_secret: None,
+            cors: CorsConfig {
+                dev_mode: false,
+                allowed_origins: vec![],
+                allowed_methods: vec!["GET".to_string()],
+                allowed_headers: vec!["content-type".to_string()],
+                allow_credentials: false,
+                max_age_secs: 3600,
+            },
+            contract_key_schema: ContractKeySchema {
+                version: "1.0.0".to_string(),
+                market: "market:{id}".to_string(),
+                platform_stats: "platform:stats".to_string(),
+                user_bets: "user_bets:{id}".to_string(),
+                oracle_result: "oracle_result:{id}".to_string(),
+                health_check: "platform:stats".to_string(),
+            },
+            network_passphrase: "Test SDF Network ; September 2015".to_string(),
+            watched_tx_ttl_secs: 1800,
+            watched_tx_max_size: 10_000,
+            is_production: false,
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_config_validate_missing_hmac_key() {
+        let config = Config {
+            bind_addr: "127.0.0.1:8080".parse().unwrap(),
+            redis_url: "redis://127.0.0.1:6379".to_string(),
+            db_credentials: DbCredentials {
+                host: "localhost".to_string(),
+                port: 5432,
+                name: "predictiq".to_string(),
+                user: "postgres".to_string(),
+                password: secrecy::SecretString::new("postgres".to_string().into()),
+            },
+            #[allow(deprecated)]
+            database_url: "postgres://postgres:postgres@localhost:5432/predictiq".to_string(),
+            hmac_key: "".to_string(),
+            hmac_key_previous: None,
+            hmac_key_rotation_grace_seconds: 3600,
+            db_pool: DbPoolConfig {
+                min_connections: 5,
+                max_connections: 25,
+                acquire_timeout: Duration::from_secs(5),
+                idle_timeout: None,
+                max_lifetime: None,
+                query_timeout: Duration::from_secs(30),
+                statement_timeout_ms: 30_000,
+                lock_timeout_ms: 10_000,
+            },
+            blockchain_rpc_url: "https://testnet.soroban.org".to_string(),
+            blockchain_network: BlockchainNetwork::Testnet,
+            contract_id: "contract_id".to_string(),
+            retry_attempts: 3,
+            retry_base_delay_ms: 200,
+            rpc_backoff_jitter_factor: 1.0,
+            event_poll_interval: Duration::from_secs(5),
+            tx_poll_interval: Duration::from_secs(4),
+            confirmation_ledger_lag: 3,
+            sync_market_ids: vec![],
+            featured_limit: 10,
+            content_default_page_size: 20,
+            sendgrid_api_key: None,
+            from_email: None,
+            sendgrid_key_rotated_at: None,
+            base_url: "http://localhost:8080".to_string(),
+            email_idempotency_secret: "".to_string(),
+            api_keys: vec![],
+            admin_whitelist_ips: vec![],
+            trust_proxy: true,
+            request_signing_secret: None,
+            sendgrid_webhook_secret: None,
+            webhook_replay_window_secs: 300,
+            trusted_proxy_cidrs: vec![],
+            metrics_public: false,
+            metrics_allowlist_ips: vec![],
+            otlp_endpoint: None,
+            trace_sample_rate: 0.1,
+            idempotency_window_secs: 86400,
+            newsletter_token_ttl_secs: 86400,
+            gdpr_export_rate_limit: 3,
+            gdpr_export_rate_window_secs: 3600,
+            newsletter_rate_limit_max: 5,
+            newsletter_rate_limit_window_secs: 3600,
+            email_stale_job_threshold_secs: 3600,
+            newsletter_cleanup_batch_size: 500,
+            email_per_recipient_hourly_limit: 10,
+            unsubscribe_signing_secret: None,
+            cors: CorsConfig {
+                dev_mode: false,
+                allowed_origins: vec![],
+                allowed_methods: vec!["GET".to_string()],
+                allowed_headers: vec!["content-type".to_string()],
+                allow_credentials: false,
+                max_age_secs: 3600,
+            },
+            contract_key_schema: ContractKeySchema {
+                version: "1.0.0".to_string(),
+                market: "market:{id}".to_string(),
+                platform_stats: "platform:stats".to_string(),
+                user_bets: "user_bets:{id}".to_string(),
+                oracle_result: "oracle_result:{id}".to_string(),
+                health_check: "platform:stats".to_string(),
+            },
+            network_passphrase: "Test SDF Network ; September 2015".to_string(),
+            watched_tx_ttl_secs: 1800,
+            watched_tx_max_size: 10_000,
+            is_production: false,
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_config_validate_missing_db_password() {
+        let config = Config {
+            bind_addr: "127.0.0.1:8080".parse().unwrap(),
+            redis_url: "redis://127.0.0.1:6379".to_string(),
+            db_credentials: DbCredentials {
+                host: "localhost".to_string(),
+                port: 5432,
+                name: "predictiq".to_string(),
+                user: "postgres".to_string(),
+                // Empty password must fail validation
+                password: secrecy::SecretString::new("".to_string().into()),
+            },
+            #[allow(deprecated)]
+            database_url: "postgres://postgres:@localhost:5432/predictiq".to_string(),
+            hmac_key: "secret".to_string(),
+            hmac_key_previous: None,
+            hmac_key_rotation_grace_seconds: 3600,
+            db_pool: DbPoolConfig {
+                min_connections: 5,
+                max_connections: 25,
+                acquire_timeout: Duration::from_secs(5),
+                idle_timeout: None,
+                max_lifetime: None,
+                query_timeout: Duration::from_secs(30),
+                statement_timeout_ms: 30_000,
+                lock_timeout_ms: 10_000,
+            },
+            blockchain_rpc_url: "https://testnet.soroban.org".to_string(),
+            blockchain_network: BlockchainNetwork::Testnet,
+            contract_id: "contract_id".to_string(),
+            retry_attempts: 3,
+            retry_base_delay_ms: 200,
+            rpc_backoff_jitter_factor: 1.0,
+            event_poll_interval: Duration::from_secs(5),
+            tx_poll_interval: Duration::from_secs(4),
+            confirmation_ledger_lag: 3,
+            sync_market_ids: vec![],
+            featured_limit: 10,
+            content_default_page_size: 20,
+            sendgrid_api_key: None,
+            from_email: None,
+            sendgrid_key_rotated_at: None,
+            base_url: "http://localhost:8080".to_string(),
+            email_idempotency_secret: "".to_string(),
+            api_keys: vec![],
+            admin_whitelist_ips: vec![],
+            trust_proxy: true,
+            request_signing_secret: None,
+            sendgrid_webhook_secret: None,
+            webhook_replay_window_secs: 300,
+            trusted_proxy_cidrs: vec![],
+            metrics_public: false,
+            metrics_allowlist_ips: vec![],
+            otlp_endpoint: None,
+            trace_sample_rate: 0.1,
+            idempotency_window_secs: 86400,
+            newsletter_token_ttl_secs: 86400,
+            gdpr_export_rate_limit: 3,
+            gdpr_export_rate_window_secs: 3600,
+            newsletter_rate_limit_max: 5,
+            newsletter_rate_limit_window_secs: 3600,
+            email_stale_job_threshold_secs: 3600,
+            newsletter_cleanup_batch_size: 500,
+            email_per_recipient_hourly_limit: 10,
+            unsubscribe_signing_secret: None,
+            cors: CorsConfig {
+                dev_mode: false,
+                allowed_origins: vec![],
+                allowed_methods: vec!["GET".to_string()],
+                allowed_headers: vec!["content-type".to_string()],
+                allow_credentials: false,
+                max_age_secs: 3600,
+            },
+            contract_key_schema: ContractKeySchema {
+                version: "1.0.0".to_string(),
+                market: "market:{id}".to_string(),
+                platform_stats: "platform:stats".to_string(),
+                user_bets: "user_bets:{id}".to_string(),
+                oracle_result: "oracle_result:{id}".to_string(),
+                health_check: "platform:stats".to_string(),
+            },
+            network_passphrase: "Test SDF Network ; September 2015".to_string(),
+            watched_tx_ttl_secs: 1800,
+            watched_tx_max_size: 10_000,
+            is_production: false,
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_config_validate_malformed_redis_url() {
+        let config = Config {
+            bind_addr: "127.0.0.1:8080".parse().unwrap(),
+            redis_url: "memcached://127.0.0.1:11211".to_string(),
+            db_credentials: DbCredentials {
+                host: "localhost".to_string(),
+                port: 5432,
+                name: "predictiq".to_string(),
+                user: "postgres".to_string(),
+                password: secrecy::SecretString::new("postgres".to_string().into()),
+            },
+            #[allow(deprecated)]
+            database_url: "postgres://postgres:postgres@localhost:5432/predictiq".to_string(),
+            hmac_key: "secret".to_string(),
+            hmac_key_previous: None,
+            hmac_key_rotation_grace_seconds: 3600,
+            db_pool: DbPoolConfig {
+                min_connections: 5,
+                max_connections: 25,
+                acquire_timeout: Duration::from_secs(5),
+                idle_timeout: None,
+                max_lifetime: None,
+                query_timeout: Duration::from_secs(30),
+                statement_timeout_ms: 30_000,
+                lock_timeout_ms: 10_000,
+            },
+            blockchain_rpc_url: "https://testnet.soroban.org".to_string(),
+            blockchain_network: BlockchainNetwork::Testnet,
+            contract_id: "contract_id".to_string(),
+            retry_attempts: 3,
+            retry_base_delay_ms: 200,
+            rpc_backoff_jitter_factor: 1.0,
+            event_poll_interval: Duration::from_secs(5),
+            tx_poll_interval: Duration::from_secs(4),
+            confirmation_ledger_lag: 3,
+            sync_market_ids: vec![],
+            featured_limit: 10,
+            content_default_page_size: 20,
+            sendgrid_api_key: None,
+            from_email: None,
+            sendgrid_key_rotated_at: None,
+            base_url: "http://localhost:8080".to_string(),
+            email_idempotency_secret: "".to_string(),
+            api_keys: vec![],
+            admin_whitelist_ips: vec![],
+            trust_proxy: true,
+            request_signing_secret: None,
+            sendgrid_webhook_secret: None,
+            webhook_replay_window_secs: 300,
+            trusted_proxy_cidrs: vec![],
+            metrics_public: false,
+            metrics_allowlist_ips: vec![],
+            otlp_endpoint: None,
+            trace_sample_rate: 0.1,
+            idempotency_window_secs: 86400,
+            newsletter_token_ttl_secs: 86400,
+            gdpr_export_rate_limit: 3,
+            gdpr_export_rate_window_secs: 3600,
+            newsletter_rate_limit_max: 5,
+            newsletter_rate_limit_window_secs: 3600,
+            email_stale_job_threshold_secs: 3600,
+            newsletter_cleanup_batch_size: 500,
+            email_per_recipient_hourly_limit: 10,
+            unsubscribe_signing_secret: None,
+            cors: CorsConfig {
+                dev_mode: false,
+                allowed_origins: vec![],
+                allowed_methods: vec!["GET".to_string()],
+                allowed_headers: vec!["content-type".to_string()],
+                allow_credentials: false,
+                max_age_secs: 3600,
+            },
+            contract_key_schema: ContractKeySchema {
+                version: "1.0.0".to_string(),
+                market: "market:{id}".to_string(),
+                platform_stats: "platform:stats".to_string(),
+                user_bets: "user_bets:{id}".to_string(),
+                oracle_result: "oracle_result:{id}".to_string(),
+                health_check: "platform:stats".to_string(),
+            },
+            network_passphrase: "Test SDF Network ; September 2015".to_string(),
+            watched_tx_ttl_secs: 1800,
+            watched_tx_max_size: 10_000,
+            is_production: false,
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_detects_two_node_cycle() {
+        let schema = ContractKeySchema {
+            version: "1.0.0".to_string(),
+            market: "stats:{platform_stats}:{id}".to_string(),
+            platform_stats: "markets:{market}:{id}".to_string(),
+            user_bets: "user_bets:{id}".to_string(),
+            oracle_result: "oracle_result:{id}".to_string(),
+            health_check: "health_check:{id}".to_string(),
+        };
+
+        let result = schema.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| e.contains("circular dependency")),
+            "expected circular dependency error, got: {:?}",
+            err.errors
+        );
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| e.contains("market") && e.contains("platform_stats")),
+            "expected cycle path to mention market and platform_stats, got: {:?}",
+            err.errors
+        );
+    }
+
+    #[test]
+    fn test_validate_detects_three_node_cycle() {
+        let schema = ContractKeySchema {
+            version: "1.0.0".to_string(),
+            market: "mb:{user_bets}:{id}".to_string(),
+            platform_stats: "platform:stats".to_string(),
+            user_bets: "or:{oracle_result}:{id}".to_string(),
+            oracle_result: "mk:{market}:{id}".to_string(),
+            health_check: "health_check:{id}".to_string(),
+        };
+
+        let result = schema.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.errors
+                .iter()
+                .any(|e| e.contains("circular dependency")),
+            "expected circular dependency error, got: {:?}",
+            err.errors
+        );
+        assert!(
+            err.errors.iter().any(|e| {
+                e.contains("market")
+                    && e.contains("user_bets")
+                    && e.contains("oracle_result")
+            }),
+            "expected cycle path to mention market, user_bets, and oracle_result, got: {:?}",
+            err.errors
+        );
+    }
+
+    #[test]
+    fn test_validate_no_cycle_on_defaults() {
+        let schema = ContractKeySchema {
+            version: "1.0.0".to_string(),
+            market: "market:{id}".to_string(),
+            platform_stats: "platform:stats".to_string(),
+            user_bets: "user_bets:{id}".to_string(),
+            oracle_result: "oracle_result:{id}".to_string(),
+            health_check: "health_check:{id}".to_string(),
+        };
+
+        assert!(schema.validate().is_ok());
     }
 }

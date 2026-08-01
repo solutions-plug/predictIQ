@@ -41,12 +41,15 @@ rules:
       - pattern-not-inside: |
           pub async fn $FUNC(...) -> ... {
             ...
-            $AUTH_CHECK
+            $AUTH_CHECK(...)
             ...
           }
       - metavariable-regex:
           metavariable: $FUNC
           regex: (resolve_market|admin_.*|delete_.*|update_.*)
+      - metavariable-regex:
+          metavariable: $AUTH_CHECK
+          regex: (require_admin|check_auth|verify_admin|assert_admin|ensure_authorized)
     message: Admin function may be missing authentication check
     severity: WARNING
     languages: [rust]

@@ -46,7 +46,7 @@ export function useAsync<T>(
   useEffect(() => {
     isMountedRef.current = true;
     if (options.immediate) {
-      execute();
+      void execute();
     }
 
     return () => {

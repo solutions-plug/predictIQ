@@ -42,6 +42,30 @@ describe('useAsync', () => {
     expect(result.current.error).toEqual(mockError);
   });
 
+  it('sets error state when async function rejects and exposes it in the return value', async () => {
+    const rejectionError = new Error('promise rejected');
+    const mockFn = jest.fn().mockRejectedValue(rejectionError);
+    const { result } = renderHook(() => useAsync(mockFn, { immediate: true }));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // error must be accessible from the hook's return value
+    expect(result.current.error).toBeInstanceOf(Error);
+    expect(result.current.error?.message).toBe('promise rejected');
+    expect(result.current.data).toBeNull();
+  });
+
+  it('normalizes non-Error rejections into an Error object', async () => {
+    // The hook wraps primitive rejections so callers always receive an Error.
+    const mockFn = jest.fn().mockRejectedValue('plain string rejection');
+    const { result } = renderHook(() => useAsync(mockFn, { immediate: true }));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.error).toBeInstanceOf(Error);
+    expect(result.current.error?.message).toBe('plain string rejection');
+  });
+
   it('allows manual execution', async () => {
     const mockData = { manual: 'execution' };
     const mockFn = jest.fn().mockResolvedValue(mockData);
