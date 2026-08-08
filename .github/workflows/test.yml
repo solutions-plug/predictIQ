@@ -655,7 +655,7 @@ jobs:
 
       - name: Upload crash artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-crashes
           path: contracts/predict-iq/fuzz/artifacts/
@@ -992,7 +992,7 @@ jobs:
 
       - name: Upload benchmark results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: api-benchmark-results
           path: |
@@ -1087,7 +1087,7 @@ jobs:
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: frontend-coverage-report
           path: frontend/coverage/
@@ -1333,7 +1333,7 @@ jobs:
 
       - name: Upload live schema dump
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: live-schema-dump
           path: /tmp/live-schema.sql
