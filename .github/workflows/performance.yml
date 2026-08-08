@@ -291,7 +291,7 @@ jobs:
             echo "No baselines found on main branch"
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: "18"
 
@@ -351,7 +351,7 @@ jobs:
           path: performance/backend/reports/
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: "18"
 
