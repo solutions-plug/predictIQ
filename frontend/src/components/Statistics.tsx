@@ -12,61 +12,88 @@ import './Statistics.css';
 const REFRESH_INTERVAL_MS = 30_000;
 
 // Field names match the backend's Statistics struct (services/api/src/db.rs),
-// which serializes as snake_case like every other typed response in this client.
+// which serializes as snake_case like every other typed response in this
+// client. `total_volume` is an exact decimal string on the wire; the other
+// counts are integers. Every field is optional here because /api/v1/statistics
+// is typed as an untyped AnyObject and a fresh deployment may omit values.
 interface StatisticsData {
-  total_markets?: number;
-  total_volume?: number;
-  active_markets?: number;
+  total_markets?: number | string;
+  total_volume?: number | string;
+  active_markets?: number | string;
+  resolved_markets?: number | string;
   [key: string]: unknown;
 }
 
+// === Metric tiles
+// The endpoint's response is not yet formalized, so the component renders a
+// fixed set of known metrics and coerces every one to a number, defaulting to
+// 0 for anything missing or non-numeric (issue #1351: a not-yet-populated
+// field must render as `0`, never `undefined`/blank).
+interface MetricTile {
+  key: keyof StatisticsData;
+  label: string;
+  prefix?: string;
+}
+
+const METRIC_TILES: readonly MetricTile[] = [
+  { key: 'total_markets', label: 'Total Markets' },
+  { key: 'total_volume', label: 'Total Volume', prefix: '$' },
+  { key: 'active_markets', label: 'Active Markets' },
+  { key: 'resolved_markets', label: 'Resolved Markets' },
+];
+
+// Coerce a wire value (number, decimal string, or absent) to a finite number,
+// falling back to 0 so a tile is never blank.
+function toNumber(value: unknown): number {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
 export const Statistics: React.FC = () => {
-  const fetchStatistics = React.useCallback((signal: AbortSignal) => api.getStatistics(signal), []);
-  const { data, status, error, retry } = useAsync<StatisticsData>(
-    fetchStatistics,
-    { immediate: true }
+  const fetchStatistics = React.useCallback(
+    (signal: AbortSignal) => api.getStatistics(signal),
+    [],
   );
+  const { data, status, error, retry } = useAsync<StatisticsData>(fetchStatistics, {
+    immediate: true,
+  });
   const isOnline = useOnlineStatus();
+  const isLoading = status === 'loading';
 
   // Pause auto-refresh while offline (requests would just fail/retry for no
-  // reason) and resume — with an immediate refetch — once connectivity is
+  // reason) and resume - with an immediate refetch - once connectivity is
   // restored.
   const wasOnlineRef = React.useRef(isOnline);
   React.useEffect(() => {
     if (isOnline && !wasOnlineRef.current) {
-      void execute();
+      void retry();
     }
     wasOnlineRef.current = isOnline;
 
     if (!isOnline) return undefined;
 
     const id = setInterval(() => {
-      void execute();
+      void retry();
     }, REFRESH_INTERVAL_MS);
 
     return () => clearInterval(id);
-  }, [isOnline, execute]);
+  }, [isOnline, retry]);
 
   const displayValues = React.useMemo(
-    () => ({
-      totalMarkets:
-        typeof data?.total_markets === 'number'
-          ? data.total_markets.toLocaleString()
-          : 'N/A',
-      totalVolume:
-        typeof data?.total_volume === 'number'
-          ? `$${data.total_volume.toLocaleString()}`
-          : '$N/A',
-      activeMarkets:
-        typeof data?.active_markets === 'number'
-          ? data.active_markets.toLocaleString()
-          : 'N/A',
-    }),
-    [data?.active_markets, data?.total_markets, data?.total_volume],
+    () =>
+      METRIC_TILES.map((tile) => ({
+        ...tile,
+        display: `${tile.prefix ?? ''}${toNumber(data?.[tile.key]).toLocaleString()}`,
+      })),
+    [data],
   );
 
   const handleRetry = () => {
-    retry();
+    void retry();
   };
 
   if (error) {
@@ -87,38 +114,23 @@ export const Statistics: React.FC = () => {
     <section className="statistics" aria-labelledby="statistics-heading">
       <h2 id="statistics-heading">Platform Statistics</h2>
       <div className="stats-grid">
-        <div className="stat-item">
-          <h3>Total Markets</h3>
-          {loading ? (
-            <Skeleton className="stat-skeleton stat-skeleton--markets" aria-label="Loading total markets" />
-          ) : (
-            <p className="stat-value" aria-live="polite">
-              {displayValues.totalMarkets}
-            </p>
-          )}
-        </div>
-        <div className="stat-item">
-          <h3>Total Volume</h3>
-          {loading ? (
-            <Skeleton className="stat-skeleton stat-skeleton--volume" aria-label="Loading total volume" />
-          ) : (
-            <p className="stat-value" aria-live="polite">
-              {displayValues.totalVolume}
-            </p>
-          )}
-        </div>
-        <div className="stat-item">
-          <h3>Active Markets</h3>
-          {loading ? (
-            <Skeleton className="stat-skeleton stat-skeleton--active-markets" aria-label="Loading active markets" />
-          ) : (
-            <p className="stat-value" aria-live="polite">
-              {displayValues.activeMarkets}
-            </p>
-          )}
-        </div>
+        {displayValues.map((tile) => (
+          <div className="stat-item" key={String(tile.key)}>
+            <h3>{tile.label}</h3>
+            {isLoading ? (
+              <Skeleton
+                className="stat-skeleton"
+                aria-label={`Loading ${tile.label.toLowerCase()}`}
+              />
+            ) : (
+              <p className="stat-value" aria-live="polite">
+                {tile.display}
+              </p>
+            )}
+          </div>
+        ))}
       </div>
-      {loading && (
+      {isLoading && (
         <div className="loading-overlay" aria-live="polite">
           <LoadingSpinner size="large" aria-label="Loading statistics data" />
           <p>Loading statistics...</p>

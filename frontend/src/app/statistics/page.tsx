@@ -111,7 +111,8 @@ function StatisticsDashboard() {
   const category = resolveCategory(searchParams.get('category'));
 
   const fetchStatistics = React.useCallback((signal: AbortSignal) => api.getStatistics(signal), []);
-  const { data, loading, error, execute } = useAsync<StatisticsData>(fetchStatistics, { immediate: true });
+  const { data, status, error, retry } = useAsync<StatisticsData>(fetchStatistics, { immediate: true });
+  const loading = status === 'loading';
 
   const { summary, categories, history } = React.useMemo(() => normalizeStatistics(data ?? null), [data]);
 
@@ -174,7 +175,7 @@ function StatisticsDashboard() {
         <h1 id="statistics-dashboard-heading">Statistics Dashboard</h1>
         <div className="error-message" role="alert">
           <p>Failed to load statistics. Please try again.</p>
-          <button onClick={() => execute()} className="retry-button" type="button">
+          <button onClick={() => void retry()} className="retry-button" type="button">
             Retry
           </button>
         </div>

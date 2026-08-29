@@ -23,18 +23,19 @@ describe('Statistics', () => {
     render(<Statistics />);
 
     expect(screen.getByRole('status', { name: /loading statistics data/i })).toBeInTheDocument();
-    expect(screen.getAllByRole('status', { name: /loading/i })).toHaveLength(4); // 3 skeletons + 1 spinner
+    expect(screen.getAllByRole('status', { name: /loading/i })).toHaveLength(5); // 4 skeletons + 1 spinner
   });
 
-  it('displays data when loaded successfully', async () => {
-    // Shape returned by the real /api/v1/statistics backend response
-    // (services/api/src/db.rs Statistics struct — snake_case, with an
-    // extra field the UI doesn't display, to prove unknown fields are ignored).
+  it('renders real data from a mocked /api/v1/statistics response', async () => {
+    // Shape returned by the real backend (services/api/src/db.rs Statistics
+    // struct): snake_case, `total_volume` an exact decimal string, plus an
+    // extra field the UI ignores to prove unknown keys are tolerated.
     const mockData = {
       total_markets: 150,
-      total_volume: 2500000,
+      total_volume: '2500000.50',
       active_markets: 50000,
       resolved_markets: 12,
+      unmapped_future_field: 'ignored',
     };
     mockApi.getStatistics.mockResolvedValue(mockData);
 
@@ -44,9 +45,25 @@ describe('Statistics', () => {
       expect(screen.getByText('150')).toBeInTheDocument();
     });
 
-    expect(screen.getByText('$2,500,000')).toBeInTheDocument();
+    expect(screen.getByText('$2,500,000.5')).toBeInTheDocument();
     expect(screen.getByText('50,000')).toBeInTheDocument();
+    expect(screen.getByText('12')).toBeInTheDocument();
     expect(screen.queryByRole('status', { name: /loading/i })).not.toBeInTheDocument();
+  });
+
+  it('renders every metric field as 0 for an all-zero / empty response', async () => {
+    // A fresh deployment: the endpoint returns an object with no populated
+    // metrics. Every tile must show `0` / `$0`, never `undefined` or blank.
+    mockApi.getStatistics.mockResolvedValue({});
+
+    render(<Statistics />);
+
+    await waitFor(() => {
+      expect(screen.queryByRole('status', { name: /loading/i })).not.toBeInTheDocument();
+    });
+
+    const values = screen.getAllByText(/^\$?0$/).map((el) => el.textContent);
+    expect(values).toEqual(['0', '$0', '0', '0']);
   });
 
   it('shows error state and retry button on failure', async () => {
