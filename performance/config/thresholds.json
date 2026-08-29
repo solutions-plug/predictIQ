@@ -44,6 +44,12 @@
     "performance": 90,
     "accessibility": 95,
     "best-practices": 90,
-    "seo": 90
+    "seo": 90,
+    "budgets": {
+      "_comment": "Core Web Vitals budget for the landing route, enforced by frontend/scripts/lighthouse-audit.js (#1349). LCP/TBT in ms, CLS unitless.",
+      "largest-contentful-paint": 2500,
+      "total-blocking-time": 300,
+      "cumulative-layout-shift": 0.1
+    }
   }
 }
