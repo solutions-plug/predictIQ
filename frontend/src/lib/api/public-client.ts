@@ -16,7 +16,14 @@ import { getEnvConfig } from '../env';
 import { apiCache, CACHE_TTL } from './cache';
 import { csrfHeaders, isCsrfTokenError } from './csrf';
 import { newIdempotencyKey, isValidIdempotencyKey } from './idempotency';
+import {
+  newsletterSubscribeSchema,
+  emailRequestSchema,
+  gdprExportSchema,
+  placeBetSchema,
+} from './requestSchemas';
 import type { paths, components } from './schema';
+import type { ZodType } from 'zod';
 
 const config = getEnvConfig();
 const BASE_URL = config.NEXT_PUBLIC_API_URL.replace(/\/$/, "");
@@ -143,6 +150,14 @@ interface RequestOptions {
    * new key.
    */
   idempotencyKey?: string | true;
+  /**
+   * Zod schema (derived from the generated OpenAPI types) to validate the
+   * request body against before it is sent (#1341). A failure throws an
+   * `ApiError` with code `CLIENT_VALIDATION_ERROR` locally instead of letting
+   * the server return a raw 400. Schemas are loose, so absent-but-optional
+   * fields are never rejected.
+   */
+  bodySchema?: ZodType;
   signal?: AbortSignal;
 }
 
@@ -231,6 +246,24 @@ async function request<T>(
       : isValidIdempotencyKey(options.idempotencyKey)
         ? options.idempotencyKey
         : undefined;
+
+  // Validate the outgoing body against the generated-schema-derived contract
+  // before the first attempt, so a malformed body fails locally with a clear
+  // message instead of surfacing as a raw server 400 (#1341).
+  if (options.bodySchema && options.body !== undefined) {
+    const parsed = options.bodySchema.safeParse(options.body);
+    if (!parsed.success) {
+      const detail = parsed.error.issues
+        .map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`)
+        .join('; ');
+      throw new ApiError(
+        `Request body failed client-side validation: ${detail}`,
+        0,
+        'CLIENT_VALIDATION_ERROR',
+        { issues: parsed.error.issues },
+      );
+    }
+  }
 
   let lastError: Error | null = null;
 
@@ -457,6 +490,7 @@ export const api = {
       fillPath(PLACE_BET_PATH, 'market_id', marketId),
       {
         body,
+        bodySchema: placeBetSchema,
         cacheTags: [CacheTag.BLOCKCHAIN, CacheTag.MARKETS],
         idempotencyKey: options.idempotencyKey ?? true,
         signal: options.signal,
@@ -467,6 +501,7 @@ export const api = {
   newsletterSubscribe: (body: { email: string; source?: string }, signal?: AbortSignal) =>
     request<{ success: boolean; message: string }>("POST", "/api/v1/newsletter/subscribe", {
       body,
+      bodySchema: newsletterSubscribeSchema,
       cacheTags: [CacheTag.NEWSLETTER, CacheTag.STATISTICS],
       // The subscribe endpoint declares Idempotency-Key in openapi.yaml; a
       // retry of a submit that already succeeded server-side then returns the
@@ -485,6 +520,7 @@ export const api = {
   newsletterUnsubscribe: (email: string, signal?: AbortSignal) =>
     request<{ success: boolean; message: string }>("DELETE", "/api/v1/newsletter/unsubscribe", {
       body: { email },
+      bodySchema: emailRequestSchema,
       cacheTags: [CacheTag.NEWSLETTER, CacheTag.STATISTICS],
       signal,
     }),
@@ -493,7 +529,7 @@ export const api = {
     request<{ success: boolean; message: string }>(
       "POST",
       "/api/v1/newsletter/gdpr/request-token",
-      { body, cacheTags: [CacheTag.NEWSLETTER], signal }
+      { body, bodySchema: emailRequestSchema, cacheTags: [CacheTag.NEWSLETTER], signal }
     ),
 
   newsletterGdprExport: (
@@ -505,6 +541,7 @@ export const api = {
       "/api/v1/newsletter/gdpr/export",
       {
         body: typeof body === 'string' ? { email: body } : body,
+        bodySchema: gdprExportSchema,
         cacheTags: [CacheTag.NEWSLETTER],
         signal,
       }
@@ -513,6 +550,7 @@ export const api = {
   newsletterGdprDelete: (email: string, signal?: AbortSignal) =>
     request<{ success: boolean; message: string }>("DELETE", "/api/v1/newsletter/gdpr/delete", {
       body: { email },
+      bodySchema: emailRequestSchema,
       cacheTags: [CacheTag.NEWSLETTER],
       signal,
     }),
