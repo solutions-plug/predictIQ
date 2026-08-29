@@ -1,4 +1,4 @@
-import { MarketDetailView } from '../../../components/markets/MarketDetailView';
+import { MarketDetailView } from '@/components/markets/MarketDetailView';
 
 interface MarketDetailPageProps {
   params: Promise<{ marketId: string }>;

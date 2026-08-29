@@ -1,8 +1,8 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { api, ApiError } from '../../../../lib/api/admin-client';
-import { Form, FormField, Input, Textarea, Button, StatusAlert } from '../../../../components/admin/Form';
+import { api, ApiError } from '@/lib/api/admin-client';
+import { Form, FormField, Input, Textarea, Button, StatusAlert } from '@/components/admin/Form';
 
 interface ContentFields {
   hero_title: string;

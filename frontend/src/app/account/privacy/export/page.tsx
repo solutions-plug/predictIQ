@@ -2,8 +2,8 @@
 
 import React, { useState } from 'react';
 import Link from 'next/link';
-import { api, ApiError } from '../../../../lib/api/public-client';
-import { LoadingSpinner } from '../../../../components/LoadingSpinner';
+import { api, ApiError } from '@/lib/api/public-client';
+import { LoadingSpinner } from '@/components/LoadingSpinner';
 
 type Step = 'request-token' | 'verify-and-export' | 'export-complete';
 

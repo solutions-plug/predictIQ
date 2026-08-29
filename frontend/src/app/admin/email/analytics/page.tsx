@@ -1,8 +1,8 @@
 'use client';
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { api, ApiError } from '../../../../lib/api/admin-client';
-import { Select, Button, StatusAlert } from '../../../../components/admin/Form';
+import { api, ApiError } from '@/lib/api/admin-client';
+import { Select, Button, StatusAlert } from '@/components/admin/Form';
 
 export interface EmailAnalyticsRecord {
   template_name: string;
