@@ -15,6 +15,7 @@
 import { getEnvConfig } from '../env';
 import { apiCache, CACHE_TTL } from './cache';
 import { csrfHeaders, isCsrfTokenError } from './csrf';
+import { newIdempotencyKey, isValidIdempotencyKey } from './idempotency';
 import type { paths, components } from './schema';
 
 const config = getEnvConfig();
@@ -133,6 +134,15 @@ interface RequestOptions {
    * Only set this for endpoints that are truly idempotent (e.g. PUT upserts).
    */
   idempotent?: boolean;
+  /**
+   * Idempotency key for this logical submission (#1340). `true` generates a
+   * fresh UUID v4; a string reuses a caller-supplied key. Whatever value is
+   * resolved is sent as the `Idempotency-Key` header on every automatic retry
+   * of this `request()` call, so a network-layer retry can't create a
+   * duplicate. A new `request()` call is a new logical submission and gets a
+   * new key.
+   */
+  idempotencyKey?: string | true;
   signal?: AbortSignal;
 }
 
@@ -212,6 +222,16 @@ async function request<T>(
 
   const maxRetries = options.maxRetries ?? DEFAULT_RETRY_CONFIG.maxRetries;
   const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
+
+  // Resolve the idempotency key once, outside the retry loop, so every retry of
+  // this logical submission carries the same key (#1340).
+  const idempotencyKey =
+    options.idempotencyKey === true
+      ? newIdempotencyKey()
+      : isValidIdempotencyKey(options.idempotencyKey)
+        ? options.idempotencyKey
+        : undefined;
+
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -220,7 +240,11 @@ async function request<T>(
     try {
       const res = await fetch(url, {
         method,
-        headers: { "Content-Type": "application/json", ...csrfHeaders(method) },
+        headers: {
+          "Content-Type": "application/json",
+          ...csrfHeaders(method),
+          ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+        },
         body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
         signal,
       });
@@ -414,16 +438,29 @@ export const api = {
       signal,
     }),
 
-  /** Submits a bet for the connected wallet. Returns the pending on-chain tx. */
+  /**
+   * Submits a bet for the connected wallet. Returns the pending on-chain tx.
+   *
+   * An idempotency key is generated per call so an automatic network retry
+   * can't place the bet twice (#1340). A caller that also needs to survive a
+   * double-click (see #13) can pass its own `idempotencyKey` and hold it
+   * stable until the submission succeeds; editing the amount/outcome and
+   * resubmitting is a new logical submission and should use a new key.
+   */
   placeBet: (
     marketId: number | string,
     body: { wallet: string; outcome: number; amount: string },
-    signal?: AbortSignal
+    options: { idempotencyKey?: string; signal?: AbortSignal } = {}
   ) =>
     request<{ tx_hash: string; status: string }>(
       "POST",
       fillPath(PLACE_BET_PATH, 'market_id', marketId),
-      { body, cacheTags: [CacheTag.BLOCKCHAIN, CacheTag.MARKETS], signal },
+      {
+        body,
+        cacheTags: [CacheTag.BLOCKCHAIN, CacheTag.MARKETS],
+        idempotencyKey: options.idempotencyKey ?? true,
+        signal: options.signal,
+      },
     ),
 
   // Newsletter (public subscription / self-service)
@@ -431,6 +468,10 @@ export const api = {
     request<{ success: boolean; message: string }>("POST", "/api/v1/newsletter/subscribe", {
       body,
       cacheTags: [CacheTag.NEWSLETTER, CacheTag.STATISTICS],
+      // The subscribe endpoint declares Idempotency-Key in openapi.yaml; a
+      // retry of a submit that already succeeded server-side then returns the
+      // same result instead of a spurious "already subscribed" (#1340).
+      idempotencyKey: true,
       signal,
     }),
 
