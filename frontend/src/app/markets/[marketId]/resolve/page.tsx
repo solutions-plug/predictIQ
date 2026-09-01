@@ -1,8 +1,8 @@
 'use client';
 
 import { use, useEffect, useState } from 'react';
-import { api, ApiError, getContractErrorMessage } from '../../../../lib/api/admin-client';
-import { canResolveMarket, parseMarketView, type MarketView } from '../../../../lib/markets/marketState';
+import { api, ApiError, getContractErrorMessage } from '@/lib/api/admin-client';
+import { canResolveMarket, parseMarketView, type MarketView } from '@/lib/markets/marketState';
 import './resolve.css';
 
 /**

@@ -1,11 +1,11 @@
 'use client';
 
 import { useCallback, useState } from 'react';
-import { useAsync } from '../../../../lib/hooks/useAsync';
-import { useTransaction } from '../../../../lib/hooks/useTransaction';
-import { describeWriteError } from '../../../../lib/api/contractErrors';
-import { ApiError } from '../../../../lib/api/public-client';
-import { getEnvConfig } from '../../../../lib/env';
+import { useAsync } from '@/lib/hooks/useAsync';
+import { useTransaction } from '@/lib/hooks/useTransaction';
+import { describeWriteError } from '@/lib/api/contractErrors';
+import { ApiError } from '@/lib/api/public-client';
+import { getEnvConfig } from '@/lib/env';
 
 interface DisputedOutcome {
   outcome_index: number;

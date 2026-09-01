@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { api } from '../../../lib/api/admin-client';
+import { api } from '@/lib/api/admin-client';
 
 type Log = { id?: string | number; actor?: string; action?: string; resource_type?: string; timestamp?: string; status?: string };
 

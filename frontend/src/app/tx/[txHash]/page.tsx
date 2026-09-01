@@ -1,4 +1,4 @@
-import { TransactionStatusView } from '../../../components/markets/TransactionStatusView';
+import { TransactionStatusView } from '@/components/markets/TransactionStatusView';
 
 interface TransactionStatusPageProps {
   params: Promise<{ txHash: string }>;

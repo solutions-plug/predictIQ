@@ -2,16 +2,16 @@
 
 import React from 'react';
 import { useRouter } from 'next/navigation';
-import { getEnvConfig } from '../../../lib/env';
-import { getConnectedWalletAddress } from '../../../lib/wallet';
-import { getSupportedAsset } from '../../../lib/assets';
-import { TokenSelector } from '../../../components/markets/TokenSelector';
+import { getEnvConfig } from '@/lib/env';
+import { getConnectedWalletAddress } from '@/lib/wallet';
+import { getSupportedAsset } from '@/lib/assets';
+import { TokenSelector } from '@/components/markets/TokenSelector';
 import {
   marketFormSchema,
   validateMarketForm,
   type MarketFormErrors,
   type MarketFormValues,
-} from '../../../lib/validation/marketForm';
+} from '@/lib/validation/marketForm';
 import './page.css';
 
 const EMPTY_FORM: MarketFormValues = {

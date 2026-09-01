@@ -1,9 +1,9 @@
 'use client';
 
 import React, { useState } from 'react';
-import { api, ApiError } from '../../../../lib/api/admin-client';
-import { Modal } from '../../../../components/admin/Modal';
-import { Form, FormField, Input, Button, StatusAlert } from '../../../../components/admin/Form';
+import { api, ApiError } from '@/lib/api/admin-client';
+import { Modal } from '@/components/admin/Modal';
+import { Form, FormField, Input, Button, StatusAlert } from '@/components/admin/Form';
 
 interface ReplayResult {
   from_ledger?: number;

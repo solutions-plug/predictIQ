@@ -3,8 +3,8 @@
 import React, { Suspense, useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
-import { LoadingSpinner } from '../../../components/LoadingSpinner';
-import { getEnvConfig } from '../../../lib/env';
+import { LoadingSpinner } from '@/components/LoadingSpinner';
+import { getEnvConfig } from '@/lib/env';
 
 type UnsubscribeStatus = 'idle' | 'loading' | 'success' | 'already-unsubscribed' | 'error';
 
