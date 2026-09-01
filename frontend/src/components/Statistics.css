@@ -108,6 +108,19 @@
 
 .stat-skeleton {
   display: inline-block;
+}
+
+.stat-skeleton--markets {
+  width: 4rem;
+  height: 2rem;
+}
+
+.stat-skeleton--volume {
+  width: 6rem;
+  height: 2rem;
+}
+
+.stat-skeleton--active-markets {
   width: 5rem;
   height: 2rem;
 }

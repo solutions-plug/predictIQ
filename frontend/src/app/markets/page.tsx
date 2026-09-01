@@ -41,7 +41,8 @@ function MarketsListing() {
   const page = resolvePage(searchParams.get('page'));
 
   const fetchMarkets = React.useCallback((signal: AbortSignal) => api.getFeaturedMarkets(signal), []);
-  const { data, loading, error, execute } = useAsync<FeaturedMarket[]>(fetchMarkets, { immediate: true });
+  const { data, status: loadStatus, error, retry } = useAsync<FeaturedMarket[]>(fetchMarkets, { immediate: true });
+  const loading = loadStatus === 'loading';
 
   const markets = data ?? [];
 
@@ -80,7 +81,7 @@ function MarketsListing() {
         <h1 id="markets-heading">Markets</h1>
         <div className="error-message" role="alert">
           <p>Failed to load markets. Please try again.</p>
-          <button onClick={() => execute()} className="retry-button" type="button">
+          <button onClick={() => retry()} className="retry-button" type="button">
             Retry
           </button>
         </div>

@@ -54,6 +54,13 @@
   border-radius: var(--radius-sm);
 }
 
+.statistics-trends h2 {
+  font-family: var(--font-display);
+  font-size: var(--text-sm);
+  color: var(--fg-muted);
+  margin: 0 0 1rem;
+}
+
 .statistics-table {
   width: 100%;
   border-collapse: collapse;

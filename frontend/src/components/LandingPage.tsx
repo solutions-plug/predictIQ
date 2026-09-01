@@ -1,3 +1,5 @@
+'use client';
+
 import React from 'react';
 import { useI18n } from '../lib/hooks/useI18n';
 import { useDarkMode } from '../lib/hooks/useDarkMode';
@@ -18,28 +20,31 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
   const { isDarkMode, toggleDarkMode } = useDarkMode();
 
   const features = [
-    { icon: '/icons/decentralized.svg', title: t('features.decentralized.title'), description: t('features.decentralized.description') },
-    { icon: '/icons/secure.svg', title: t('features.secure.title'), description: t('features.secure.description') },
-    { icon: '/icons/fast.svg', title: t('features.fast.title'), description: t('features.fast.description') },
+    { icon: '/icons/decentralized.svg', title: t('features.decentralized.title'), description: t('features.decentralized.description'), href: '/markets' },
+    { icon: '/icons/secure.svg', title: t('features.secure.title'), description: t('features.secure.description'), href: '/markets' },
+    { icon: '/icons/fast.svg', title: t('features.fast.title'), description: t('features.fast.description'), href: '/markets' },
   ];
 
   const steps = [
-    { title: t('howItWorks.step1.title'), description: t('howItWorks.step1.description') },
-    { title: t('howItWorks.step2.title'), description: t('howItWorks.step2.description') },
-    { title: t('howItWorks.step3.title'), description: t('howItWorks.step3.description') },
-    { title: t('howItWorks.step4.title'), description: t('howItWorks.step4.description') },
+    { title: t('howItWorks.step1.title'), description: t('howItWorks.step1.description'), href: '/markets' },
+    { title: t('howItWorks.step2.title'), description: t('howItWorks.step2.description'), href: '/markets' },
+    { title: t('howItWorks.step3.title'), description: t('howItWorks.step3.description'), href: '/markets' },
+    { title: t('howItWorks.step4.title'), description: t('howItWorks.step4.description'), href: '/account/bets' },
   ];
 
+  // Product links point at routes that actually exist; Resources links are
+  // external. The Legal column was dropped - there are no privacy/terms pages
+  // yet, and #1346 requires no dead links.
   const footerColumns = [
     { heading: t('footer.title'), headingLevel: 'h2' as const, tagline: t('footer.tagline') },
-    { heading: t('footer.linksHeading'), links: [
-      { href: '/docs', label: t('footer.documentation') },
-      { href: '/github', label: t('footer.github') },
-      { href: '/discord', label: t('footer.discord') },
+    { heading: t('footer.productHeading'), links: [
+      { href: '/markets', label: t('footer.markets') },
+      { href: '/statistics', label: t('footer.statistics') },
+      { href: '/markets/create', label: t('footer.createMarket') },
     ] },
-    { heading: t('footer.legalHeading'), links: [
-      { href: '/privacy', label: t('footer.privacy') },
-      { href: '/terms', label: t('footer.terms') },
+    { heading: t('footer.resourcesHeading'), links: [
+      { href: 'https://github.com/solutions-plug/predictIQ#readme', label: t('footer.documentation'), external: true },
+      { href: 'https://github.com/solutions-plug/predictIQ', label: t('footer.github'), external: true },
     ] },
   ];
 
@@ -117,8 +122,19 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
           <p className="hero-description">
             {t('hero.description')}
           </p>
-          
-          {/* CTA Form */}
+
+          {/* Primary CTAs into the live product. Plain links (not the newsletter
+              form) so the hero works with JS pending and needs no client state. */}
+          <div className="hero-cta-group">
+            <a href="/markets" className="hero-cta hero-cta--primary">
+              {t('hero.primaryCta')}
+            </a>
+            <a href="#how-it-works" className="hero-cta hero-cta--secondary">
+              {t('hero.secondaryCta')}
+            </a>
+          </div>
+
+          {/* Early-access signup */}
           <NewsletterSignup />
         </section>
 
@@ -181,8 +197,15 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
           {footerColumns.map((column) => (
             <FooterColumn key={column.heading} {...column} />
           ))}
+          <FooterColumn heading={t('footer.newsletterHeading')}>
+            {/* The signup form itself lives in the hero (one set of field ids on
+                the page); the footer points people back to it. */}
+            <p>
+              <a href="#main-content">{t('hero.signupHeading')}</a>
+            </p>
+          </FooterColumn>
         </div>
-        
+
         <div className="footer-bottom">
           <p>{t('footer.copyright')}</p>
         </div>

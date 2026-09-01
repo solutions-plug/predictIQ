@@ -14,6 +14,7 @@
 
 import { getEnvConfig } from '../env';
 import { apiCache, CACHE_TTL } from './cache';
+import { reportResponseHeaders } from './deprecation';
 import { csrfHeaders, isCsrfTokenError } from './csrf';
 import { newIdempotencyKey, isValidIdempotencyKey } from './idempotency';
 import {
@@ -22,6 +23,7 @@ import {
   gdprExportSchema,
   placeBetSchema,
 } from './requestSchemas';
+import { reportRateLimited } from './rateLimit';
 import type { paths, components } from './schema';
 import type { ZodType } from 'zod';
 
@@ -56,10 +58,10 @@ const PATHS = {
  */
 const PLACE_BET_PATH = "/api/v1/blockchain/markets/{market_id}/bets";
 
-/** Fills a `{placeholder}` segment of a schema path template with an encoded value. */
-export function fillPath(template: string, placeholder: string, value: string | number): string {
-  return template.replace(`{${placeholder}}`, encodeURIComponent(value));
-}
+// Path-parameter encoding lives in ./paths. Re-exported here so existing importers of
+// `fillPath` from './public-client' keep working.
+export { fillPath, fillPathParams } from './paths';
+import { fillPath } from './paths';
 
 const DEFAULT_RETRY_CONFIG: RetryConfig = {
   maxRetries: 3,
@@ -235,6 +237,20 @@ async function request<T>(
     }
   }
 
+  // De-dupe concurrent GETs to the same URL: two components reading the same
+  // resource at once share a single network request (#1334). Mutations are never
+  // de-duped - each write is a distinct action.
+  if (method === "GET") {
+    return apiCache.dedupe(url, () => sendWithRetries<T>(method, url, options));
+  }
+  return sendWithRetries<T>(method, url, options);
+}
+
+async function sendWithRetries<T>(
+  method: HttpMethod,
+  url: string,
+  options: RequestOptions
+): Promise<T> {
   const maxRetries = options.maxRetries ?? DEFAULT_RETRY_CONFIG.maxRetries;
   const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
 
@@ -283,12 +299,16 @@ async function request<T>(
       });
 
       clear();
+      reportResponseHeaders(res.headers);
 
       if (!res.ok) {
         if (res.status === 429) {
+          const retryAfter = res.headers.get('Retry-After');
+          const retryAfterSec = retryAfter ? parseInt(retryAfter, 10) : NaN;
+          // Surface the cooldown to the UI (one shared countdown toast, #1339).
+          reportRateLimited(Number.isNaN(retryAfterSec) ? 1 : retryAfterSec);
           if (attempt < maxRetries) {
-            const retryAfter = res.headers.get('Retry-After');
-            const delayMs = getRetryDelay(attempt, retryAfter ? parseInt(retryAfter, 10) : undefined);
+            const delayMs = getRetryDelay(attempt, Number.isNaN(retryAfterSec) ? undefined : retryAfterSec);
             await sleep(delayMs);
             continue;
           }

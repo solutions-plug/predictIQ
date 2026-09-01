@@ -1,19 +1,27 @@
 import { useState, useEffect } from 'react';
 import {
   DARK_MODE_STORAGE_KEY,
+  THEME_ATTRIBUTE,
   applyDarkModePreference,
   getDarkModePreference,
   type DarkModePreference,
 } from '../darkMode';
 
 /**
- * Read the dark-mode state that the blocking inline init script already applied
+ * Read the theme state that the blocking inline init script already applied
  * to <html> before the first paint.  Called as a lazy useState initializer so
  * it runs synchronously on the very first render — not inside a useEffect —
  * which means the toggle icon/aria-label are correct from frame 0.
  *
+ * The data-theme attribute is only ever set for an explicit user choice (both
+ * the init script and the toggle write it exclusively when a preference is
+ * stored), so its presence means hasStoredPreference === true. When it is
+ * absent the app is following the OS preference — even if the OS happens to
+ * prefer dark — so hasStoredPreference is false and live OS-following stays
+ * active.
+ *
  * Falls back to getDarkModePreference() in environments where the DOM is not
- * available (SSR) or where the init script did not run (neither class present).
+ * available (SSR) or where the init script did not run (no attribute present).
  */
 function readInitialDarkMode(): DarkModePreference {
   if (typeof document === 'undefined') {
@@ -21,30 +29,29 @@ function readInitialDarkMode(): DarkModePreference {
     return { isDarkMode: false, hasStoredPreference: false };
   }
 
-  const classList = document.documentElement.classList;
+  const theme = document.documentElement.getAttribute(THEME_ATTRIBUTE);
 
-  if (classList.contains('dark-mode')) {
+  if (theme === 'dark') {
     return { isDarkMode: true, hasStoredPreference: true };
   }
 
-  if (classList.contains('light-mode')) {
+  if (theme === 'light') {
     return { isDarkMode: false, hasStoredPreference: true };
   }
 
-  // Init script didn't run or neither class was applied — derive from storage /
-  // system preference the same way getDarkModePreference() does.
+  // Init script didn't run or no explicit choice was stored — derive from
+  // storage / system preference the same way getDarkModePreference() does.
   return getDarkModePreference();
 }
 
 /**
- * Returns true when the inline init script has already applied a class to
- * <html>, meaning the lazy initializer already captured the correct state
- * and the mount effect should not overwrite it.
+ * Returns true when the inline init script has already pinned a data-theme
+ * attribute on <html>, meaning the lazy initializer already captured the
+ * correct state and the mount effect should not overwrite it.
  */
-function domClassWasApplied(): boolean {
+function themeWasApplied(): boolean {
   if (typeof document === 'undefined') return false;
-  const cl = document.documentElement.classList;
-  return cl.contains('dark-mode') || cl.contains('light-mode');
+  return document.documentElement.hasAttribute(THEME_ATTRIBUTE);
 }
 
 /**
@@ -52,19 +59,20 @@ function domClassWasApplied(): boolean {
  * Respects system preference and allows manual toggle.
  * Persists preference to localStorage.
  *
- * The initial rendered state is derived from the DOM class applied by the
- * blocking inline script in layout.tsx, so the toggle icon and aria-label
- * are correct on the very first paint with no flash of incorrect state.
+ * The initial rendered state is derived from the data-theme attribute applied
+ * by the blocking inline script in layout.tsx, so the toggle icon and
+ * aria-label are correct on the very first paint with no flash of incorrect
+ * state.
  */
 export function useDarkMode() {
-  // Lazy initializer: runs synchronously on first render, reads the DOM class
-  // that the init script applied before paint.
+  // Lazy initializer: runs synchronously on first render, reads the data-theme
+  // attribute that the init script applied before paint.
   const [preference, setPreference] = useState<DarkModePreference>(readInitialDarkMode);
   const [isLoaded, setIsLoaded] = useState(false);
 
   useEffect(() => {
-    if (domClassWasApplied()) {
-      // The init script already applied the correct class and the lazy
+    if (themeWasApplied()) {
+      // The init script already pinned the explicit theme and the lazy
       // initializer already captured it — no need to re-derive or re-apply.
       // Just mark the hook as loaded.
       setIsLoaded(true);

@@ -18,4 +18,27 @@ describe('Step', () => {
     );
     expect(screen.getByRole('listitem')).toBeInTheDocument();
   });
+
+  it('links the step title to its feature when href is given', () => {
+    render(<Step title="Browse markets" description="See open markets." href="/markets" />);
+    const link = screen.getByRole('link', { name: 'Browse markets' });
+    expect(link).toHaveAttribute('href', '/markets');
+    // heading still present and named by the link
+    expect(screen.getByRole('heading', { level: 3, name: 'Browse markets' })).toBeInTheDocument();
+  });
+
+  it('renders a plain title (no link) when href is omitted', () => {
+    render(<Step title="Static step" description="No link." />);
+    expect(screen.queryByRole('link')).not.toBeInTheDocument();
+  });
+
+  it('does not carry a hardcoded step number (numbering is CSS counter, DOM-order derived)', () => {
+    const { container } = render(
+      <ol>
+        <Step title="First" description="a" />
+        <Step title="Second" description="b" />
+      </ol>,
+    );
+    expect(container.textContent).not.toMatch(/\b(1\.|01|Step 1)\b/);
+  });
 });

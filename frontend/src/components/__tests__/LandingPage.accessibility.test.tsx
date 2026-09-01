@@ -7,6 +7,14 @@ import { api } from '../../lib/api/public-client';
 
 expect.extend(toHaveNoViolations);
 
+// The newsletter form's field-level error alert. Scoped by id because the page
+// also renders a Statistics error alert when that section fails to load, so a bare
+// getByRole('alert') is ambiguous.
+const formErrorAlert = (): HTMLElement | undefined =>
+  screen
+    .queryAllByRole('alert')
+    .find((el) => el.id === 'email-error' || el.id === 'api-error');
+
 const originalFetch = global.fetch;
 
 describe('LandingPage Accessibility Tests', () => {
@@ -143,7 +151,7 @@ describe('LandingPage Accessibility Tests', () => {
       await userEvent.click(submitButton);
       
       const emailInput = screen.getByLabelText(/email address/i);
-      const errorMessage = screen.getByRole('alert');
+      const errorMessage = formErrorAlert()!;
       
       expect(emailInput).toHaveAttribute('aria-describedby', 'email-error');
       expect(errorMessage).toHaveAttribute('id', 'email-error');
@@ -169,7 +177,7 @@ describe('LandingPage Accessibility Tests', () => {
         expect(emailInput).toHaveAttribute('aria-describedby', 'api-error');
       });
 
-      const errorMessage = screen.getByRole('alert');
+      const errorMessage = formErrorAlert()!;
       expect(errorMessage).toHaveAttribute('id', 'api-error');
     });
 
@@ -281,7 +289,7 @@ describe('LandingPage Accessibility Tests', () => {
       const submitButton = screen.getByRole('button', { name: /get early access/i });
       await userEvent.click(submitButton);
       
-      const errorMessage = screen.getByRole('alert');
+      const errorMessage = formErrorAlert()!;
       expect(errorMessage).toHaveTextContent(/email is required/i);
     });
 
@@ -291,12 +299,12 @@ describe('LandingPage Accessibility Tests', () => {
       const submitButton = screen.getByRole('button', { name: /get early access/i });
       await userEvent.click(submitButton);
       
-      expect(screen.getByRole('alert')).toBeInTheDocument();
+      expect(formErrorAlert()).toBeInTheDocument();
       
       const emailInput = screen.getByLabelText(/email address/i);
       await userEvent.type(emailInput, 't');
       
-      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      expect(formErrorAlert()).toBeUndefined();
     });
 
     it('should validate email format', async () => {
@@ -308,7 +316,7 @@ describe('LandingPage Accessibility Tests', () => {
       await userEvent.type(emailInput, 'invalid-email');
       await userEvent.click(submitButton);
       
-      expect(screen.getByRole('alert')).toHaveTextContent(/valid email address/i);
+      expect(formErrorAlert()!).toHaveTextContent(/valid email address/i);
     });
 
     it('should disable form after successful submission', async () => {
@@ -463,7 +471,7 @@ describe('LandingPage Accessibility Tests', () => {
       await userEvent.click(submitButton);
       
       await waitFor(() => {
-        expect(screen.getByRole('alert')).toHaveTextContent(/invalid email format/i);
+        expect(formErrorAlert()!).toHaveTextContent(/invalid email format/i);
       });
     });
   });

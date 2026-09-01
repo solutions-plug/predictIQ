@@ -132,4 +132,51 @@ describe('API client paths match schema.d.ts (contract test, #3)', () => {
       expect(calledPath).toBe(fillTemplate(template, params));
     },
   );
+
+  // Whole-source sweep: no client method may reference a path that is neither in
+  // schema.d.ts nor an explicitly-tracked "not in openapi.yaml yet" entry. Adding a
+  // new endpoint with a mistyped or un-schema'd path fails here at PR time (#1342).
+  const KNOWN_UNLISTED: ReadonlySet<string> = new Set([
+    '/health', // liveness probe, not part of the versioned API surface
+    '/api/v1/blockchain/markets/{market_id}/bets', // placeBet - pending openapi.yaml (#78)
+    '/api/v1/newsletter/subscribe',
+    '/api/v1/newsletter/confirm',
+    '/api/v1/newsletter/unsubscribe',
+    '/api/v1/newsletter/gdpr/request-token',
+    '/api/v1/newsletter/gdpr/export',
+    '/api/v1/newsletter/gdpr/delete',
+    '/api/v1/email/preview/{param}',
+    '/api/v1/email/test',
+    '/api/v1/email/analytics',
+    '/api/v1/email/queue/stats',
+    '/api/blockchain/replay',
+  ]);
+
+  const PLACEHOLDER = new RegExp(String.raw`\$\{[^}]+\}`, 'g');
+
+  it('every /api path literal in the client source is schema-defined or explicitly tracked', () => {
+    const dir = path.join(__dirname, '..');
+    const sources = ['public-client.ts', 'admin-client.ts']
+      .map((f) => fs.readFileSync(path.join(dir, f), 'utf8'))
+      .join('\n');
+
+    const literals = new Set<string>();
+    const re = /["'`](\/(?:api|health)[^"'`\s]*)["'`]/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(sources))) {
+      literals.add(m[1].replace(PLACEHOLDER, '{param}'));
+    }
+    expect(literals.size).toBeGreaterThan(10); // sanity: the sweep found paths
+
+    // schema keys use real placeholder names (`{market_id}`); the swept literals
+    // are normalised to `{param}`. Compare with placeholders stripped.
+    const stripParams = (p: string) => p.replace(/\{[^}]+\}/g, '{}');
+    const schemaShapes = new Set([...schemaPaths].map(stripParams));
+    const allowedShapes = new Set([...KNOWN_UNLISTED].map(stripParams));
+
+    const unaccounted = [...literals]
+      .map(stripParams)
+      .filter((p) => !schemaShapes.has(p) && !allowedShapes.has(p));
+    expect(unaccounted).toEqual([]);
+  });
 });

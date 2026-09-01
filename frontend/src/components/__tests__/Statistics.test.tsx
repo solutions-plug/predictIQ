@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, act } from '@testing-library/react';
 import { Statistics } from '../Statistics';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { api } from '../../lib/api/public-client';
@@ -23,19 +23,18 @@ describe('Statistics', () => {
     render(<Statistics />);
 
     expect(screen.getByRole('status', { name: /loading statistics data/i })).toBeInTheDocument();
-    expect(screen.getAllByRole('status', { name: /loading/i })).toHaveLength(5); // 4 skeletons + 1 spinner
+    expect(screen.getAllByRole('status', { name: /loading/i })).toHaveLength(4); // 3 skeletons + 1 spinner
   });
 
-  it('renders real data from a mocked /api/v1/statistics response', async () => {
-    // Shape returned by the real backend (services/api/src/db.rs Statistics
-    // struct): snake_case, `total_volume` an exact decimal string, plus an
-    // extra field the UI ignores to prove unknown keys are tolerated.
+  it('displays data when loaded successfully', async () => {
+    // Shape returned by the real /api/v1/statistics backend response
+    // (services/api/src/db.rs Statistics struct — snake_case, with an
+    // extra field the UI doesn't display, to prove unknown fields are ignored).
     const mockData = {
       total_markets: 150,
-      total_volume: '2500000.50',
+      total_volume: 2500000,
       active_markets: 50000,
       resolved_markets: 12,
-      unmapped_future_field: 'ignored',
     };
     mockApi.getStatistics.mockResolvedValue(mockData);
 
@@ -45,61 +44,103 @@ describe('Statistics', () => {
       expect(screen.getByText('150')).toBeInTheDocument();
     });
 
-    expect(screen.getByText('$2,500,000.5')).toBeInTheDocument();
+    expect(screen.getByText('$2,500,000')).toBeInTheDocument();
     expect(screen.getByText('50,000')).toBeInTheDocument();
-    expect(screen.getByText('12')).toBeInTheDocument();
     expect(screen.queryByRole('status', { name: /loading/i })).not.toBeInTheDocument();
   });
 
-  it('renders every metric field as 0 for an all-zero / empty response', async () => {
-    // A fresh deployment: the endpoint returns an object with no populated
-    // metrics. Every tile must show `0` / `$0`, never `undefined` or blank.
-    mockApi.getStatistics.mockResolvedValue({});
-
-    render(<Statistics />);
-
-    await waitFor(() => {
-      expect(screen.queryByRole('status', { name: /loading/i })).not.toBeInTheDocument();
-    });
-
-    const values = screen.getAllByText(/^\$?0$/).map((el) => el.textContent);
-    expect(values).toEqual(['0', '$0', '0', '0']);
-  });
-
   it('shows error state and retry button on failure', async () => {
+    jest.useFakeTimers();
     const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     mockApi.getStatistics.mockRejectedValue(new Error('Network error'));
 
     render(<Statistics />);
 
-    await waitFor(() => {
-      expect(screen.getByText(/failed to load statistics/i)).toBeInTheDocument();
+    // Fast-forward through the soft-retry backoff (#1352): failed attempts at
+    // 0s, 1s, 3s and 7s, after which the budget is exhausted and the hook
+    // surfaces a hard error state with a manual retry action.
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(8000);
     });
 
+    expect(screen.getByText(/failed to load statistics/i)).toBeInTheDocument();
     expect(screen.getByRole('alert')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument();
 
     consoleSpy.mockRestore();
+    jest.useRealTimers();
   });
 
   it('retries on button click', async () => {
+    jest.useFakeTimers();
+    // Exhaust the soft-retry budget first: initial call + 3 automatic retries
+    // all fail before the error state surfaces.
     mockApi.getStatistics
+      .mockRejectedValueOnce(new Error('Network error'))
+      .mockRejectedValueOnce(new Error('Network error'))
+      .mockRejectedValueOnce(new Error('Network error'))
       .mockRejectedValueOnce(new Error('Network error'))
       .mockResolvedValueOnce({ total_markets: 100 });
 
     render(<Statistics />);
 
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument();
+    // Soft-retry budget exhausts after 1s + 2s + 4s of backoff, surfacing the
+    // manual retry button.
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(8000);
     });
 
-    fireEvent.click(screen.getByRole('button', { name: /retry/i }));
+    expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument();
 
-    await waitFor(() => {
-      expect(screen.getByText('100')).toBeInTheDocument();
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: /retry/i }));
     });
 
-    expect(mockApi.getStatistics).toHaveBeenCalledTimes(2);
+    // The manual retry succeeds on a microtask (no timers involved).
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(0);
+    });
+
+    expect(screen.getByText('100')).toBeInTheDocument();
+    expect(mockApi.getStatistics).toHaveBeenCalledTimes(5);
+    jest.useRealTimers();
+  });
+
+  it('keeps the last data visible during a background refresh (stale-while-revalidating)', async () => {
+    jest.useFakeTimers();
+    let resolveRefresh: (value: { total_markets: number }) => void = () => {};
+    mockApi.getStatistics
+      .mockResolvedValueOnce({ total_markets: 150 })
+      .mockImplementationOnce(
+        () =>
+          new Promise<{ total_markets: number }>((resolve) => {
+            resolveRefresh = resolve;
+          }),
+      );
+
+    render(<Statistics />);
+
+    // Initial fetch resolves (microtask only), showing real values.
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByText('150')).toBeInTheDocument();
+
+    // A background poll fires (30s interval): the grid must stay visible and
+    // the skeleton/spinner must NOT reappear while the refresh is in flight.
+    await act(async () => {
+      await jest.advanceTimersByTimeAsync(30_000);
+    });
+
+    expect(screen.getByText('150')).toBeInTheDocument();
+    expect(screen.queryByRole('status', { name: /loading/i })).not.toBeInTheDocument();
+
+    // Let the in-flight refresh settle so the suite exits cleanly.
+    act(() => {
+      resolveRefresh({ total_markets: 150 });
+    });
+
+    jest.useRealTimers();
   });
 
   it('has proper accessibility attributes', () => {

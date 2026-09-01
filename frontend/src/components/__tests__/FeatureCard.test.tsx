@@ -34,4 +34,21 @@ describe('FeatureCard', () => {
     render(<FeatureCard icon="/icons/chart.svg" title="Live data" description="Real-time odds." />);
     expect(screen.getByRole('article')).toBeInTheDocument();
   });
+
+  it('without href, the card is not a link', () => {
+    render(<FeatureCard icon="/i.svg" title="Plain" description="No link." />);
+    expect(screen.queryByRole('link')).not.toBeInTheDocument();
+  });
+
+  it('with href, the whole card is a keyboard-reachable link with an accessible name', () => {
+    render(
+      <FeatureCard icon="/i.svg" title="Oracle resolution" description="Pyth + Reflector." href="/markets" />,
+    );
+    const link = screen.getByRole('link');
+    expect(link).toHaveAttribute('href', '/markets');
+    // Anchors are tab-focusable by default (no tabindex needed); assert it isn't
+    // removed from the tab order.
+    expect(link).not.toHaveAttribute('tabindex', '-1');
+    expect(link).toHaveAccessibleName(/oracle resolution/i);
+  });
 });

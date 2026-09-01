@@ -1,5 +1,60 @@
 import { test, expect } from '@playwright/test';
 
+// axe-core's browser bundle - injected into the page and run there, so the scan
+// sees the real styled DOM (contrast, focus outlines) rather than jsdom.
+const AXE_SOURCE_PATH = require.resolve('axe-core/axe.min.js');
+
+interface AxeResult {
+  violations: Array<{ id: string; impact: string | null; nodes: unknown[] }>;
+}
+
+async function runAxe(page: import('@playwright/test').Page, selector = 'main'): Promise<AxeResult> {
+  await page.addScriptTag({ path: AXE_SOURCE_PATH });
+  return page.evaluate(async (sel) => {
+    // @ts-expect-error - axe is attached to window by the injected script
+    return window.axe.run(document.querySelector(sel) ?? document, {
+      resultTypes: ['violations'],
+    });
+  }, selector);
+}
+
+test.describe('Automated axe scan (landing page)', () => {
+  test('the fully rendered, styled landing page has no critical or serious violations', async ({
+    page,
+  }) => {
+    await page.goto('/');
+    // Wait for the page to settle and for webfonts/CSS to finish loading before
+    // scanning, so contrast checks do not fire against a flash-of-unstyled-content.
+    await page.waitForLoadState('networkidle');
+    await page.evaluate(() => document.fonts.ready);
+
+    const { violations } = await runAxe(page, 'body');
+    const serious = violations.filter(
+      (v) => v.impact === 'critical' || v.impact === 'serious',
+    );
+
+    expect(
+      serious,
+      serious.map((v) => `${v.id} (${v.impact}, ${v.nodes.length} node(s))`).join('\n'),
+    ).toEqual([]);
+  });
+
+  test('the newsletter error state has no critical or serious violations', async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+    await page.evaluate(() => document.fonts.ready);
+
+    await page.getByRole('button', { name: /get early access/i }).click();
+    await expect(page.locator('#email-error')).toBeVisible();
+
+    const { violations } = await runAxe(page, 'body');
+    const serious = violations.filter(
+      (v) => v.impact === 'critical' || v.impact === 'serious',
+    );
+    expect(serious).toEqual([]);
+  });
+});
+
 test.describe('Keyboard Navigation', () => {
   test('should navigate with Tab key', async ({ page }) => {
     await page.goto('/');

@@ -53,7 +53,9 @@ export function useAsync<T>(
     abortControllerRef.current = controller;
 
     if (!isMountedRef.current) return;
-    setState({ data: null, error: null, status: 'loading' });
+    // Stale-while-revalidating: keep the last-successful data on screen while
+    // (re)fetching so a transient blip never blanks already-rendered values.
+    setState((prev) => ({ ...prev, error: null, status: 'loading' }));
 
     let attempt = 0;
     for (;;) {
@@ -81,7 +83,7 @@ export function useAsync<T>(
 
         if (isMountedRef.current) {
           const normalized = error instanceof Error ? error : new Error(String(error));
-          setState({ data: null, error: normalized, status: 'error' });
+          setState((prev) => ({ ...prev, error: normalized, status: 'error' }));
         }
         return;
       }

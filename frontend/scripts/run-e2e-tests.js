@@ -31,9 +31,17 @@ console.log('CI Mode:', CI ? 'Yes' : 'No');
 console.log('');
 
 try {
-  // Run Playwright tests
-  const command = `npx playwright test ${CI ? '--reporter=github,html,json,junit' : ''}`;
-  
+  // Run Playwright tests. Built from `config` above so the printed
+  // "Configuration" actually reflects what gets invoked — it previously
+  // hardcoded `--reporter=github,html,json,junit` in CI and computed the
+  // rest for display only, with no effect on the command.
+  const flags = [
+    `--reporter=${CI ? 'github,html,json,junit' : config.reporter}`,
+    `--retries=${config.retries}`,
+    config.workers ? `--workers=${config.workers}` : '',
+  ].filter(Boolean);
+  const command = `npx playwright test ${flags.join(' ')}`;
+
   console.log(`Running: ${command}\n`);
   
   execSync(command, {

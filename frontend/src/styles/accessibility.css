@@ -22,7 +22,7 @@
 }
 .skip-link:focus {
   top: 1rem;
-  outline: 3px solid var(--ring, #f59e0b);
+  outline: 3px solid var(--ring-strong, var(--ring, #f59e0b));
   outline-offset: 2px;
 }
 
@@ -53,9 +53,13 @@
 
 /* ============================================
    FOCUS INDICATORS
+
+   --ring-strong is a mode-aware token (see tokens.css) that keeps >= 3:1
+   non-text contrast against EVERY background token in both light and dark
+   schemes (WCAG 2.1 AA non-text contrast / visibility of focus).
    ============================================ */
 *:focus-visible {
-  outline: 3px solid var(--ring, #f59e0b);
+  outline: 3px solid var(--ring-strong, var(--ring, #f59e0b));
   outline-offset: 2px;
   border-radius: 4px;
 }
@@ -117,14 +121,20 @@ textarea[aria-invalid='true'] {
 }
 
 /* ============================================
-   TOUCH TARGETS (minimum 44x44)
+   INTERACTIVE TARGET SIZE — WCAG 2.5.5 (44 x 44 CSS px)
+
+   Every button, link, and form control gets a hit target of at least
+   44 x 44px so low-motion / touch users can reliably activate it.
    ============================================ */
 button,
-a[role='menuitem'],
-input[type='checkbox'],
-input[type='radio'],
-select {
+[role='button'],
+a[href],
+input,
+select,
+textarea,
+summary {
   min-height: 44px;
+  min-width: 44px;
 }
 
 /* ============================================
@@ -158,6 +168,10 @@ html {
 
 /* ============================================
    REDUCED MOTION
+
+   Disables non-essential animation for users who opt out of motion, covering
+   the loading spinner (spin), skeleton shimmer, toast in/out transitions, and
+   any other keyframe/transition. Essential functionality is unaffected.
    ============================================ */
 @media (prefers-reduced-motion: reduce) {
   html {
@@ -166,10 +180,16 @@ html {
   *,
   *::before,
   *::after {
+    animation-name: none !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+  .spinner,
+  .loading-spinner .spinner,
+  .skeleton {
+    animation: none !important;
   }
 }
 

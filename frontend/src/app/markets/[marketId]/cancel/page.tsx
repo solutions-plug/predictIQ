@@ -1,11 +1,11 @@
 'use client';
 
 import { use, useEffect, useState } from 'react';
-import { api } from '../../../../lib/api/public-client';
-import { getEnvConfig } from '../../../../lib/env';
-import { useWalletAddress } from '../../../../lib/hooks/useWalletAddress';
-import { canCancelMarket, parseMarketView, type MarketView } from '../../../../lib/markets/marketState';
-import { Modal } from '../../../../components/Modal';
+import { api } from '@/lib/api/public-client';
+import { getEnvConfig } from '@/lib/env';
+import { useWalletAddress } from '@/lib/hooks/useWalletAddress';
+import { canCancelMarket, parseMarketView, type MarketView } from '@/lib/markets/marketState';
+import { Modal } from '@/components/Modal';
 import './cancel.css';
 
 /**

@@ -6,6 +6,7 @@ import { useAsync } from '../../lib/hooks/useAsync';
 import { api } from '../../lib/api/public-client';
 import { LoadingSpinner } from '../../components/LoadingSpinner';
 import { ExportButton, type ExportSection } from '../../components/statistics/ExportButton';
+import { VolumeChart } from '../../components/statistics/VolumeChart';
 import './statistics-dashboard.css';
 
 interface CategoryBreakdown {
@@ -175,7 +176,7 @@ function StatisticsDashboard() {
         <h1 id="statistics-dashboard-heading">Statistics Dashboard</h1>
         <div className="error-message" role="alert">
           <p>Failed to load statistics. Please try again.</p>
-          <button onClick={() => void retry()} className="retry-button" type="button">
+          <button onClick={() => retry()} className="retry-button" type="button">
             Retry
           </button>
         </div>
@@ -267,6 +268,11 @@ function StatisticsDashboard() {
               )}
             </tbody>
           </table>
+
+          <section className="statistics-trends" aria-labelledby="statistics-trends-heading">
+            <h2 id="statistics-trends-heading">Trends</h2>
+            <VolumeChart data={filteredHistory} />
+          </section>
 
           <table className="statistics-table">
             <caption>

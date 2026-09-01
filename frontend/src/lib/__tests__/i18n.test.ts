@@ -59,7 +59,7 @@ describe('i18n', () => {
 
     it('should handle nested keys', () => {
       const result = i18n.t('features.decentralized.title');
-      expect(result).toBe('Fully Decentralized');
+      expect(result).toBe('Multi-outcome markets');
     });
 
     it('should return default value when a key resolves to a nested object rather than a string', () => {

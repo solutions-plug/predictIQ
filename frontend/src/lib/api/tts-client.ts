@@ -19,6 +19,7 @@
 
 import { getEnvConfig } from '../env';
 import { ApiError } from './public-client';
+import { fillPath } from './paths';
 
 const config = getEnvConfig();
 const BASE_URL = (config.NEXT_PUBLIC_TTS_API_URL ?? '').replace(/\/$/, '');
@@ -92,7 +93,7 @@ export async function enqueue(
 
 /** Fetch the current status of a TTS job. */
 export async function getJob(jobId: string, credential?: string, signal?: AbortSignal): Promise<TTSJob> {
-  const res = await fetch(`${requireBaseUrl()}/tts/job/${encodeURIComponent(jobId)}`, {
+  const res = await fetch(`${requireBaseUrl()}${fillPath('/tts/job/{id}', 'id', jobId)}`, {
     headers: authHeaders(credential),
     signal,
   });
@@ -102,7 +103,7 @@ export async function getJob(jobId: string, credential?: string, signal?: AbortS
 
 /** Download the generated audio for a completed job as a Blob. Throws if the job isn't done yet. */
 export async function getJobAudio(jobId: string, credential?: string, signal?: AbortSignal): Promise<Blob> {
-  const res = await fetch(`${requireBaseUrl()}/tts/job/${encodeURIComponent(jobId)}/audio`, {
+  const res = await fetch(`${requireBaseUrl()}${fillPath('/tts/job/{id}/audio', 'id', jobId)}`, {
     headers: authHeaders(credential),
     signal,
   });

@@ -1,8 +1,8 @@
 'use client';
 
 import React, { useState } from 'react';
-import { api, ApiError } from '../../../../lib/api/public-client';
-import { LoadingSpinner } from '../../../../components/LoadingSpinner';
+import { api, ApiError } from '@/lib/api/public-client';
+import { LoadingSpinner } from '@/components/LoadingSpinner';
 
 const REQUIRED_CONFIRMATION_PHRASE = 'DELETE MY DATA PERMANENTLY';
 

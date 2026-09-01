@@ -56,4 +56,32 @@ describe('FooterColumn', () => {
     );
     expect(screen.getAllByRole('link', { name: 'Guide' })).toHaveLength(2);
   });
+
+  it('external links open in a new tab with a safe rel', () => {
+    render(
+      <FooterColumn
+        heading="Resources"
+        links={[{ href: 'https://github.com/x/y', label: 'GitHub', external: true }]}
+      />,
+    );
+    const link = screen.getByRole('link', { name: 'GitHub' });
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+  });
+
+  it('internal links get no target/rel', () => {
+    render(<FooterColumn heading="Product" links={[{ href: '/markets', label: 'Markets' }]} />);
+    const link = screen.getByRole('link', { name: 'Markets' });
+    expect(link).not.toHaveAttribute('target');
+    expect(link).not.toHaveAttribute('rel');
+  });
+
+  it('renders arbitrary children (e.g. a newsletter embed) under the heading', () => {
+    render(
+      <FooterColumn heading="Stay in the loop">
+        <button type="button">Subscribe</button>
+      </FooterColumn>,
+    );
+    expect(screen.getByRole('button', { name: 'Subscribe' })).toBeInTheDocument();
+  });
 });

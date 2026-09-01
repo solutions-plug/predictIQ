@@ -1,0 +1,8 @@
+.next/
+coverage/
+playwright-report/
+test-results/
+node_modules/
+public/
+src/lib/api/schema.d.ts
+next-env.d.ts

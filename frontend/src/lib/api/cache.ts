@@ -125,10 +125,45 @@ class ApiCache {
   }
 
   /**
+   * Invalidate every entry carrying `tag`. Call this from a mutation flow after a
+   * successful write (e.g. `invalidateTag('market:' + id)` after placing a bet) so the
+   * next read of that resource fetches fresh state without a manual page refresh.
+   */
+  invalidateTag(tag: string): void {
+    this.invalidateByTags([tag]);
+  }
+
+  // --- In-flight request de-duplication ---------------------------------------
+  //
+  // Two components mounting at once and reading the same resource must not each
+  // fire a network request. `dedupe` returns the promise of any request already
+  // in flight for `key`; otherwise it starts one, shares it, and forgets it once
+  // it settles (so a later read still goes to the network / cache as normal).
+
+  private inFlight = new Map<string, Promise<unknown>>();
+
+  dedupe<T>(key: string, factory: () => Promise<T>): Promise<T> {
+    const existing = this.inFlight.get(key) as Promise<T> | undefined;
+    if (existing) return existing;
+
+    const promise = factory().finally(() => {
+      this.inFlight.delete(key);
+    });
+    this.inFlight.set(key, promise);
+    return promise;
+  }
+
+  /** Number of requests currently in flight (test/telemetry aid). */
+  get inFlightCount(): number {
+    return this.inFlight.size;
+  }
+
+  /**
    * Clear all cache
    */
   clear(): void {
     this.cache.clear();
+    this.inFlight.clear();
   }
 }
 

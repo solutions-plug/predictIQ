@@ -3,6 +3,8 @@ import React from 'react';
 export interface FooterColumnLink {
   href: string;
   label: string;
+  /** External links open in a new tab and get rel="noopener". */
+  external?: boolean;
 }
 
 export interface FooterColumnProps {
@@ -10,6 +12,8 @@ export interface FooterColumnProps {
   headingLevel?: 'h2' | 'h3';
   tagline?: string;
   links?: FooterColumnLink[];
+  /** A newsletter-signup embed (or any node) rendered under the heading. */
+  children?: React.ReactNode;
 }
 
 export const FooterColumn: React.FC<FooterColumnProps> = ({
@@ -17,6 +21,7 @@ export const FooterColumn: React.FC<FooterColumnProps> = ({
   headingLevel = 'h3',
   tagline,
   links,
+  children,
 }) => {
   const Heading = headingLevel;
   return (
@@ -27,11 +32,19 @@ export const FooterColumn: React.FC<FooterColumnProps> = ({
         <ul>
           {links.map((link) => (
             <li key={link.href}>
-              <a href={link.href}>{link.label}</a>
+              <a
+                href={link.href}
+                {...(link.external
+                  ? { target: '_blank', rel: 'noopener noreferrer' }
+                  : {})}
+              >
+                {link.label}
+              </a>
             </li>
           ))}
         </ul>
       )}
+      {children}
     </div>
   );
 };

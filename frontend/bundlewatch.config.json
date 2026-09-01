@@ -1,16 +1,24 @@
 {
   "files": [
     {
-      "path": ".next/static/chunks/vendor.js",
-      "maxSize": "250 kB"
+      "path": ".next/static/chunks/framework-*.js",
+      "maxSize": "50 kB"
     },
     {
-      "path": ".next/static/chunks/main*.js",
+      "path": ".next/static/chunks/main-app-*.js",
+      "maxSize": "100 kB"
+    },
+    {
+      "path": ".next/static/chunks/app/page-*.js",
       "maxSize": "150 kB"
     },
     {
-      "path": ".next/static/chunks/pages/_app*.js",
-      "maxSize": "100 kB"
+      "path": ".next/static/chunks/app/markets/**/*.js",
+      "maxSize": "200 kB"
+    },
+    {
+      "path": ".next/static/chunks/app/admin/**/*.js",
+      "maxSize": "200 kB"
     }
   ],
   "ci": {

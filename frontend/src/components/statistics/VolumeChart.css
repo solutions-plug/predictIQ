@@ -1,0 +1,95 @@
+/* VolumeChart — time-series trend cards with accessible table fallback */
+.volume-chart {
+  display: grid;
+  gap: 1.5rem;
+  margin: 2rem 0;
+}
+
+.volume-chart__card {
+  padding: 1.25rem;
+  background: var(--surface-glass);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.volume-chart__card-title {
+  margin: 0 0 1rem;
+  font-family: var(--font-body);
+  font-size: var(--text-xs);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fg-subtle);
+  font-weight: 600;
+}
+
+.volume-chart__svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-width: 600px;
+}
+
+.volume-chart__line {
+  vector-effect: non-scaling-stroke;
+}
+
+.volume-chart__axis {
+  font-size: 11px;
+  fill: var(--fg-muted);
+}
+
+.volume-chart__table-wrap {
+  overflow-x: auto;
+}
+
+.volume-chart__table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.volume-chart__table caption {
+  text-align: left;
+  padding: 0.75rem 1rem;
+  font-size: var(--text-sm);
+  color: var(--fg-muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.volume-chart__table th,
+.volume-chart__table td {
+  padding: 0.5rem 1rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  font-size: var(--text-sm);
+}
+
+.volume-chart__table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.volume-chart__toggle {
+  margin-top: 1rem;
+  padding: 0.5rem 0.9rem;
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: border-color var(--dur) var(--ease-expo), color var(--dur);
+}
+
+.volume-chart__toggle:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.volume-chart__empty {
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+}

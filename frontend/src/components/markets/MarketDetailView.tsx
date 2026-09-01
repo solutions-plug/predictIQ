@@ -34,7 +34,8 @@ export const MarketDetailView: React.FC<MarketDetailViewProps> = ({ marketId }) 
     (signal: AbortSignal) => api.getBlockchainMarket(marketId, signal),
     [marketId],
   );
-  const { data, loading, error, execute } = useAsync<MarketData>(fetchMarket, { immediate: true });
+  const { data, status, error, retry } = useAsync<MarketData>(fetchMarket, { immediate: true });
+  const loading = status === 'loading';
 
   const [payoutState, setPayoutState] = React.useState<PayoutViewState | null>(null);
   const [payoutLoading, setPayoutLoading] = React.useState(false);
@@ -84,7 +85,7 @@ export const MarketDetailView: React.FC<MarketDetailViewProps> = ({ marketId }) 
       <section className="market-detail" aria-label="Market details">
         <div className="market-detail__error" role="alert">
           <p>Failed to load this market. Please try again.</p>
-          <button type="button" className="retry-button" onClick={() => execute()}>
+          <button type="button" className="retry-button" onClick={() => retry()}>
             Retry
           </button>
         </div>

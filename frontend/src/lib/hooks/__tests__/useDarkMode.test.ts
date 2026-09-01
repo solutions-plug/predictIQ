@@ -3,6 +3,8 @@ import { darkModeInitScript } from '../../darkMode';
 import { useDarkMode } from '../useDarkMode';
 
 describe('useDarkMode', () => {
+  const changeHandlers: Array<(event: { matches: boolean }) => void> = [];
+
   const mockMatchMedia = (matches: boolean) => {
     Object.defineProperty(window, 'matchMedia', {
       writable: true,
@@ -12,7 +14,11 @@ describe('useDarkMode', () => {
         onchange: null,
         addListener: jest.fn(),
         removeListener: jest.fn(),
-        addEventListener: jest.fn(),
+        addEventListener: jest.fn(
+          (_type: string, handler: (event: { matches: boolean }) => void) => {
+            changeHandlers.push(handler);
+          },
+        ),
         removeEventListener: jest.fn(),
         dispatchEvent: jest.fn(),
       })),
@@ -20,11 +26,13 @@ describe('useDarkMode', () => {
   };
 
   beforeEach(() => {
+    changeHandlers.length = 0;
     localStorage.clear();
-    document.documentElement.classList.remove('dark-mode');
-    document.documentElement.classList.remove('light-mode');
+    document.documentElement.removeAttribute('data-theme');
     mockMatchMedia(false);
   });
+
+  const getTheme = () => document.documentElement.getAttribute('data-theme');
 
   it('should initialize with light mode by default', async () => {
     const { result } = renderHook(() => useDarkMode());
@@ -35,7 +43,7 @@ describe('useDarkMode', () => {
     expect(localStorage.getItem('darkMode')).toBeNull();
   });
 
-  it('should use system dark mode when no preference is stored', async () => {
+  it('should follow system dark mode when no preference is stored, without pinning the theme', async () => {
     mockMatchMedia(true);
 
     const { result } = renderHook(() => useDarkMode());
@@ -43,8 +51,8 @@ describe('useDarkMode', () => {
     await waitFor(() => expect(result.current.isLoaded).toBe(true));
 
     expect(result.current.isDarkMode).toBe(true);
-    expect(document.documentElement.classList.contains('dark-mode')).toBe(true);
-    expect(document.documentElement.classList.contains('light-mode')).toBe(false);
+    // Following the system must NOT look like an explicit choice.
+    expect(getTheme()).toBeNull();
     expect(localStorage.getItem('darkMode')).toBeNull();
   });
 
@@ -52,11 +60,11 @@ describe('useDarkMode', () => {
     const { result } = renderHook(() => useDarkMode());
 
     await waitFor(() => expect(result.current.isLoaded).toBe(true));
-    
+
     act(() => {
       result.current.toggleDarkMode();
     });
-    
+
     expect(result.current.isDarkMode).toBe(true);
   });
 
@@ -64,24 +72,23 @@ describe('useDarkMode', () => {
     const { result } = renderHook(() => useDarkMode());
 
     await waitFor(() => expect(result.current.isLoaded).toBe(true));
-    
+
     act(() => {
       result.current.toggleDarkMode();
     });
-    
+
     expect(localStorage.getItem('darkMode')).toBe('true');
   });
 
   it('should load dark mode preference from localStorage', async () => {
     localStorage.setItem('darkMode', 'true');
-    
+
     const { result } = renderHook(() => useDarkMode());
-    
+
     await waitFor(() => expect(result.current.isLoaded).toBe(true));
 
     expect(result.current.isDarkMode).toBe(true);
-    expect(document.documentElement.classList.contains('dark-mode')).toBe(true);
-    expect(document.documentElement.classList.contains('light-mode')).toBe(false);
+    expect(getTheme()).toBe('dark');
   });
 
   it('should restore stored light preference over system dark mode', async () => {
@@ -93,8 +100,7 @@ describe('useDarkMode', () => {
     await waitFor(() => expect(result.current.isLoaded).toBe(true));
 
     expect(result.current.isDarkMode).toBe(false);
-    expect(document.documentElement.classList.contains('dark-mode')).toBe(false);
-    expect(document.documentElement.classList.contains('light-mode')).toBe(true);
+    expect(getTheme()).toBe('light');
   });
 
   it('should apply stored dark preference before React loads', () => {
@@ -102,8 +108,7 @@ describe('useDarkMode', () => {
 
     Function(darkModeInitScript)();
 
-    expect(document.documentElement.classList.contains('dark-mode')).toBe(true);
-    expect(document.documentElement.classList.contains('light-mode')).toBe(false);
+    expect(getTheme()).toBe('dark');
   });
 
   it('should apply stored light preference before React loads', () => {
@@ -112,17 +117,26 @@ describe('useDarkMode', () => {
 
     Function(darkModeInitScript)();
 
-    expect(document.documentElement.classList.contains('dark-mode')).toBe(false);
-    expect(document.documentElement.classList.contains('light-mode')).toBe(true);
+    expect(getTheme()).toBe('light');
+  });
+
+  it('should not pin the theme before React loads when no preference is stored', () => {
+    mockMatchMedia(true);
+
+    Function(darkModeInitScript)();
+
+    // Following the system: the CSS prefers-color-scheme media query drives
+    // the theme, so the init script must leave the attribute untouched.
+    expect(getTheme()).toBeNull();
   });
 
   // ------------------------------------------------------------------
-  // Bug #1159 — lazy initializer reads DOM class on first render
+  // Bug #1159 — lazy initializer reads DOM state on first render
   // ------------------------------------------------------------------
 
-  it('reads dark-mode class from DOM and returns isDarkMode:true on the very first render (before isLoaded)', () => {
+  it('reads data-theme="dark" from DOM and returns isDarkMode:true on the very first render (before isLoaded)', () => {
     // Simulate what the inline init script does before React hydrates.
-    document.documentElement.classList.add('dark-mode');
+    document.documentElement.setAttribute('data-theme', 'dark');
 
     const { result } = renderHook(() => useDarkMode());
 
@@ -130,8 +144,8 @@ describe('useDarkMode', () => {
     expect(result.current.isDarkMode).toBe(true);
   });
 
-  it('reads light-mode class from DOM and returns isDarkMode:false on the very first render', () => {
-    document.documentElement.classList.add('light-mode');
+  it('reads data-theme="light" from DOM and returns isDarkMode:false on the very first render', () => {
+    document.documentElement.setAttribute('data-theme', 'light');
 
     const { result } = renderHook(() => useDarkMode());
 
@@ -139,8 +153,8 @@ describe('useDarkMode', () => {
   });
 
   it('no stale icon flash: isDarkMode is already correct before isLoaded becomes true', async () => {
-    // Init script applied dark-mode before React renders.
-    document.documentElement.classList.add('dark-mode');
+    // Init script applied data-theme="dark" before React renders.
+    document.documentElement.setAttribute('data-theme', 'dark');
 
     const { result } = renderHook(() => useDarkMode());
 
@@ -152,8 +166,8 @@ describe('useDarkMode', () => {
     expect(result.current.isDarkMode).toBe(true);
   });
 
-  it('falls back to getDarkModePreference when no DOM class is set', async () => {
-    // Neither class present — should fall back to system/storage preference.
+  it('falls back to getDarkModePreference when no data-theme attribute is set', async () => {
+    // No attribute present — should fall back to system/storage preference.
     mockMatchMedia(false);
 
     const { result } = renderHook(() => useDarkMode());
@@ -162,8 +176,8 @@ describe('useDarkMode', () => {
     expect(result.current.isDarkMode).toBe(false);
   });
 
-  it('toggleDarkMode still works correctly after lazy-init from DOM class', async () => {
-    document.documentElement.classList.add('dark-mode');
+  it('toggleDarkMode still works correctly after lazy-init from DOM attribute', async () => {
+    document.documentElement.setAttribute('data-theme', 'dark');
 
     const { result } = renderHook(() => useDarkMode());
 
@@ -174,35 +188,73 @@ describe('useDarkMode', () => {
     });
 
     expect(result.current.isDarkMode).toBe(false);
-    expect(document.documentElement.classList.contains('dark-mode')).toBe(false);
+    expect(getTheme()).toBe('light');
     expect(localStorage.getItem('darkMode')).toBe('false');
   });
 
-  it('should add dark-mode class to document element', async () => {
+  it('should set data-theme="dark" when toggling on', async () => {
     const { result } = renderHook(() => useDarkMode());
 
     await waitFor(() => expect(result.current.isLoaded).toBe(true));
-    
+
     act(() => {
       result.current.toggleDarkMode();
     });
-    
-    expect(document.documentElement.classList.contains('dark-mode')).toBe(true);
+
+    expect(getTheme()).toBe('dark');
   });
 
-  it('should remove dark-mode class when toggling off', async () => {
+  it('should set data-theme="light" when toggling off', async () => {
     localStorage.setItem('darkMode', 'true');
-    
+
     const { result } = renderHook(() => useDarkMode());
 
     await waitFor(() => expect(result.current.isLoaded).toBe(true));
-    
+
     act(() => {
       result.current.toggleDarkMode();
     });
-    
-    expect(document.documentElement.classList.contains('dark-mode')).toBe(false);
-    expect(document.documentElement.classList.contains('light-mode')).toBe(true);
+
+    expect(result.current.isDarkMode).toBe(false);
+    expect(getTheme()).toBe('light');
     expect(localStorage.getItem('darkMode')).toBe('false');
+  });
+
+  // ------------------------------------------------------------------
+  // System-following vs explicit choice
+  // ------------------------------------------------------------------
+
+  it('follows OS theme changes live when no explicit choice is stored', async () => {
+    mockMatchMedia(false);
+
+    const { result } = renderHook(() => useDarkMode());
+
+    await waitFor(() => expect(result.current.isLoaded).toBe(true));
+    expect(result.current.isDarkMode).toBe(false);
+
+    // OS flips to dark — the hook reacts without a page reload.
+    act(() => {
+      changeHandlers.forEach((handler) => handler({ matches: true }));
+    });
+
+    expect(result.current.isDarkMode).toBe(true);
+    // Still following the system: no explicit theme is pinned.
+    expect(getTheme()).toBeNull();
+    expect(localStorage.getItem('darkMode')).toBeNull();
+  });
+
+  it('does not register an OS-change listener when an explicit choice is stored', async () => {
+    mockMatchMedia(true); // OS prefers dark
+    localStorage.setItem('darkMode', 'false'); // but the user chose light
+
+    const { result } = renderHook(() => useDarkMode());
+
+    await waitFor(() => expect(result.current.isLoaded).toBe(true));
+
+    expect(result.current.isDarkMode).toBe(false);
+    expect(getTheme()).toBe('light');
+
+    // The stored choice must never be overridden by an OS-level change.
+    expect(changeHandlers).toHaveLength(0);
   });
 });

@@ -3,6 +3,7 @@ frontend/.next/
 out/
 dist/
 build/
+**/tsconfig.tsbuildinfo
 
 # Dependencies
 node_modules/
