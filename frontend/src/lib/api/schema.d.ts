@@ -259,10 +259,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** GDPR data export for a subscriber */
-        get: operations["newsletterGdprExport"];
+        get?: never;
         put?: never;
-        post?: never;
+        /** GDPR data export for a subscriber */
+        post: operations["newsletterGdprExport"];
         delete?: never;
         options?: never;
         head?: never;
@@ -513,8 +513,7 @@ export interface components {
             /** Format: int64 */
             id: number;
             title: string;
-            /** Format: double */
-            volume: number;
+            volume: string;
             /** Format: date-time */
             ends_at: string;
             onchain_volume: string;
@@ -523,6 +522,7 @@ export interface components {
         };
         InvalidationResult: {
             invalidated_keys: number;
+            cache_invalidated: boolean;
         };
         NewsletterSubscribeRequest: {
             /** Format: email */
@@ -1009,14 +1009,16 @@ export interface operations {
     };
     newsletterGdprExport: {
         parameters: {
-            query: {
-                email: string;
-            };
+            query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EmailRequest"];
+            };
+        };
         responses: {
             /** @description Subscriber data */
             200: {

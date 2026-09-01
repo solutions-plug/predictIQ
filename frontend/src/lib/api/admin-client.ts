@@ -19,9 +19,12 @@ export {
 import { api as publicApi, CacheTag } from './public-client';
 import { fillPath } from './paths';
 import { apiCache, CACHE_TTL } from './cache';
+import { reportResponseHeaders } from './deprecation';
 import { reportRateLimited } from './rateLimit';
 import { getEnvConfig } from '../env';
+import { emailTestSchema } from './requestSchemas';
 import type { paths, components } from './schema';
+import type { ZodType } from 'zod';
 
 const config = getEnvConfig();
 const BASE_URL = config.NEXT_PUBLIC_API_URL.replace(/\/$/, "");
@@ -93,6 +96,11 @@ interface RequestOptions {
   maxRetries?: number;
   timeoutMs?: number;
   idempotent?: boolean;
+  /**
+   * Zod schema to validate the request body against before sending (#1341);
+   * mirrors the option in public-client.ts.
+   */
+  bodySchema?: ZodType;
   signal?: AbortSignal;
 }
 
@@ -122,6 +130,23 @@ async function request<T>(
 
   const maxRetries = options.maxRetries ?? DEFAULT_RETRY_CONFIG.maxRetries;
   const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
+
+  // Validate the outgoing body before the first attempt (#1341).
+  if (options.bodySchema && options.body !== undefined) {
+    const parsed = options.bodySchema.safeParse(options.body);
+    if (!parsed.success) {
+      const detail = parsed.error.issues
+        .map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`)
+        .join('; ');
+      throw new ApiError(
+        `Request body failed client-side validation: ${detail}`,
+        0,
+        'CLIENT_VALIDATION_ERROR',
+        { issues: parsed.error.issues },
+      );
+    }
+  }
+
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -354,7 +379,7 @@ export const api = {
     request<{ success: boolean; message: string; message_id: string }>(
       "POST",
       "/api/v1/email/test",
-      { body, cacheTags: [CacheTag.EMAIL], signal }
+      { body, bodySchema: emailTestSchema, cacheTags: [CacheTag.EMAIL], signal }
     ),
 
   getEmailAnalytics: (params?: { template_name?: string; days?: number }, signal?: AbortSignal) =>

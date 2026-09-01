@@ -180,8 +180,10 @@ describe('API Client', () => {
         json: async () => ({ message: 'Invalid email format' }),
       });
 
+      // A well-formed address passes the client-side schema check (#1341) and
+      // reaches the (mocked) server, which is what this 400-handling test needs.
       await expect(
-        api.newsletterSubscribe({ email: 'invalid' })
+        api.newsletterSubscribe({ email: 'rejected-by-server@example.com' })
       ).rejects.toThrow('Invalid email format');
     });
 

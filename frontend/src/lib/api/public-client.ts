@@ -16,8 +16,16 @@ import { getEnvConfig } from '../env';
 import { apiCache, CACHE_TTL } from './cache';
 import { reportResponseHeaders } from './deprecation';
 import { csrfHeaders, isCsrfTokenError } from './csrf';
+import { newIdempotencyKey, isValidIdempotencyKey } from './idempotency';
+import {
+  newsletterSubscribeSchema,
+  emailRequestSchema,
+  gdprExportSchema,
+  placeBetSchema,
+} from './requestSchemas';
 import { reportRateLimited } from './rateLimit';
 import type { paths, components } from './schema';
+import type { ZodType } from 'zod';
 
 const config = getEnvConfig();
 const BASE_URL = config.NEXT_PUBLIC_API_URL.replace(/\/$/, "");
@@ -135,6 +143,23 @@ interface RequestOptions {
    * Only set this for endpoints that are truly idempotent (e.g. PUT upserts).
    */
   idempotent?: boolean;
+  /**
+   * Idempotency key for this logical submission (#1340). `true` generates a
+   * fresh UUID v4; a string reuses a caller-supplied key. Whatever value is
+   * resolved is sent as the `Idempotency-Key` header on every automatic retry
+   * of this `request()` call, so a network-layer retry can't create a
+   * duplicate. A new `request()` call is a new logical submission and gets a
+   * new key.
+   */
+  idempotencyKey?: string | true;
+  /**
+   * Zod schema (derived from the generated OpenAPI types) to validate the
+   * request body against before it is sent (#1341). A failure throws an
+   * `ApiError` with code `CLIENT_VALIDATION_ERROR` locally instead of letting
+   * the server return a raw 400. Schemas are loose, so absent-but-optional
+   * fields are never rejected.
+   */
+  bodySchema?: ZodType;
   signal?: AbortSignal;
 }
 
@@ -228,6 +253,34 @@ async function sendWithRetries<T>(
 ): Promise<T> {
   const maxRetries = options.maxRetries ?? DEFAULT_RETRY_CONFIG.maxRetries;
   const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
+
+  // Resolve the idempotency key once, outside the retry loop, so every retry of
+  // this logical submission carries the same key (#1340).
+  const idempotencyKey =
+    options.idempotencyKey === true
+      ? newIdempotencyKey()
+      : isValidIdempotencyKey(options.idempotencyKey)
+        ? options.idempotencyKey
+        : undefined;
+
+  // Validate the outgoing body against the generated-schema-derived contract
+  // before the first attempt, so a malformed body fails locally with a clear
+  // message instead of surfacing as a raw server 400 (#1341).
+  if (options.bodySchema && options.body !== undefined) {
+    const parsed = options.bodySchema.safeParse(options.body);
+    if (!parsed.success) {
+      const detail = parsed.error.issues
+        .map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`)
+        .join('; ');
+      throw new ApiError(
+        `Request body failed client-side validation: ${detail}`,
+        0,
+        'CLIENT_VALIDATION_ERROR',
+        { issues: parsed.error.issues },
+      );
+    }
+  }
+
   let lastError: Error | null = null;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -236,7 +289,11 @@ async function sendWithRetries<T>(
     try {
       const res = await fetch(url, {
         method,
-        headers: { "Content-Type": "application/json", ...csrfHeaders(method) },
+        headers: {
+          "Content-Type": "application/json",
+          ...csrfHeaders(method),
+          ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+        },
         body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
         signal,
       });
@@ -434,23 +491,42 @@ export const api = {
       signal,
     }),
 
-  /** Submits a bet for the connected wallet. Returns the pending on-chain tx. */
+  /**
+   * Submits a bet for the connected wallet. Returns the pending on-chain tx.
+   *
+   * An idempotency key is generated per call so an automatic network retry
+   * can't place the bet twice (#1340). A caller that also needs to survive a
+   * double-click (see #13) can pass its own `idempotencyKey` and hold it
+   * stable until the submission succeeds; editing the amount/outcome and
+   * resubmitting is a new logical submission and should use a new key.
+   */
   placeBet: (
     marketId: number | string,
     body: { wallet: string; outcome: number; amount: string },
-    signal?: AbortSignal
+    options: { idempotencyKey?: string; signal?: AbortSignal } = {}
   ) =>
     request<{ tx_hash: string; status: string }>(
       "POST",
       fillPath(PLACE_BET_PATH, 'market_id', marketId),
-      { body, cacheTags: [CacheTag.BLOCKCHAIN, CacheTag.MARKETS], signal },
+      {
+        body,
+        bodySchema: placeBetSchema,
+        cacheTags: [CacheTag.BLOCKCHAIN, CacheTag.MARKETS],
+        idempotencyKey: options.idempotencyKey ?? true,
+        signal: options.signal,
+      },
     ),
 
   // Newsletter (public subscription / self-service)
   newsletterSubscribe: (body: { email: string; source?: string }, signal?: AbortSignal) =>
     request<{ success: boolean; message: string }>("POST", "/api/v1/newsletter/subscribe", {
       body,
+      bodySchema: newsletterSubscribeSchema,
       cacheTags: [CacheTag.NEWSLETTER, CacheTag.STATISTICS],
+      // The subscribe endpoint declares Idempotency-Key in openapi.yaml; a
+      // retry of a submit that already succeeded server-side then returns the
+      // same result instead of a spurious "already subscribed" (#1340).
+      idempotencyKey: true,
       signal,
     }),
 
@@ -464,6 +540,7 @@ export const api = {
   newsletterUnsubscribe: (email: string, signal?: AbortSignal) =>
     request<{ success: boolean; message: string }>("DELETE", "/api/v1/newsletter/unsubscribe", {
       body: { email },
+      bodySchema: emailRequestSchema,
       cacheTags: [CacheTag.NEWSLETTER, CacheTag.STATISTICS],
       signal,
     }),
@@ -472,7 +549,7 @@ export const api = {
     request<{ success: boolean; message: string }>(
       "POST",
       "/api/v1/newsletter/gdpr/request-token",
-      { body, cacheTags: [CacheTag.NEWSLETTER], signal }
+      { body, bodySchema: emailRequestSchema, cacheTags: [CacheTag.NEWSLETTER], signal }
     ),
 
   newsletterGdprExport: (
@@ -484,6 +561,7 @@ export const api = {
       "/api/v1/newsletter/gdpr/export",
       {
         body: typeof body === 'string' ? { email: body } : body,
+        bodySchema: gdprExportSchema,
         cacheTags: [CacheTag.NEWSLETTER],
         signal,
       }
@@ -492,6 +570,7 @@ export const api = {
   newsletterGdprDelete: (email: string, signal?: AbortSignal) =>
     request<{ success: boolean; message: string }>("DELETE", "/api/v1/newsletter/gdpr/delete", {
       body: { email },
+      bodySchema: emailRequestSchema,
       cacheTags: [CacheTag.NEWSLETTER],
       signal,
     }),
