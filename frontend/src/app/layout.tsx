@@ -66,7 +66,9 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
         <AxeAccessibility />
         <OfflineBanner />
         <ErrorBoundary section="main">
-          <WalletProvider>{children}</WalletProvider>
+          <WalletProvider>
+            <AppShell>{children}</AppShell>
+          </WalletProvider>
         </ErrorBoundary>
       </body>
     </html>
