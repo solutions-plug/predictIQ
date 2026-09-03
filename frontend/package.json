@@ -42,7 +42,7 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
-    "@axe-core/react": "^4.12.1",
+    "@axe-core/react": "^4.13.0",
     "@eslint/eslintrc": "^3.2.0",
     "@next/bundle-analyzer": "16.2.11",
     "@playwright/test": "^1.61.1",
