@@ -236,7 +236,7 @@ jobs:
           retention-days: 90
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: contract-${{ needs.build-and-test.outputs.contract-hash }}
           name: Contract Deployment ${{ needs.build-and-test.outputs.contract-hash }}
