@@ -61,7 +61,7 @@
     "eslint-config-prettier": "^9.1.0",
     "jest": "^30.4.2",
     "jest-axe": "^10.0.0",
-    "jest-environment-jsdom": "^30.4.1",
+    "jest-environment-jsdom": "^30.5.0",
     "lighthouse": "^13.4.1",
     "openapi-typescript": "^7.0.0",
     "pa11y": "^9.1.1",
