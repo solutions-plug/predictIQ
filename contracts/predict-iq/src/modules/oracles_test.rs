@@ -924,3 +924,193 @@ fn test_get_last_update_returns_none_before_set() {
     let ts = get_last_update(&e, 1u64, 0u32);
     assert_eq!(ts, None);
 }
+
+// =============================================================================
+// Issue #1539: validate_consensus mis-tallies votes for non-contiguous outcome IDs
+// =============================================================================
+//
+// The old winner-selection loop used `outcome_votes.get(i)` (a key lookup by
+// synthetic positional counter), so for non-contiguous outcome IDs the last key
+// was never checked and its votes were silently ignored.
+//
+// The fix uses `outcome_votes.iter()` to walk actual (outcome_id, votes) pairs.
+
+/// Regression test: 3-outcome market where votes land on non-adjacent outcome IDs.
+///
+/// Setup: 4 oracles responding for market_id=999, outcomes keyed at indices 0, 2, 7.
+///   - oracle 0 → outcome 2  (2 votes for outcome 2)
+///   - oracle 1 → outcome 2
+///   - oracle 2 → outcome 7  (1 vote for outcome 7)
+///   - oracle 3 → outcome 0  (1 vote for outcome 0)
+///
+/// Before the fix, `outcome_votes` had len=3 (keys 0, 2, 7). The winner loop
+/// probed keys 0, 1, 2 — key 7 was never checked so outcome 7's vote was
+/// silently ignored. Outcome 2 still won here, but the votes were wrong. In
+/// other configurations a higher-index outcome could win but be missed entirely.
+///
+/// This variant asserts that outcome 2 (the true winner with 2 votes) is returned.
+#[test]
+fn test_consensus_non_contiguous_outcome_ids_picks_correct_winner() {
+    let e = Env::default();
+    e.ledger().set_timestamp(1_700_000_000);
+
+    let config = OracleConfig {
+        oracle_address: Address::generate(&e),
+        feed_id: String::from_str(&e, "test_feed"),
+        min_responses: Some(4),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
+        strike_price: None,
+    };
+
+    let market_id = 999u64;
+
+    // Four oracles report outcomes with non-contiguous IDs: 0, 2, 7.
+    record_oracle_response(&e, market_id, 0, 2).unwrap(); // oracle 0 → outcome 2
+    record_oracle_response(&e, market_id, 1, 2).unwrap(); // oracle 1 → outcome 2
+    record_oracle_response(&e, market_id, 2, 7).unwrap(); // oracle 2 → outcome 7
+    record_oracle_response(&e, market_id, 3, 0).unwrap(); // oracle 3 → outcome 0
+
+    let result = validate_consensus(&e, market_id, &config);
+    assert_eq!(
+        result,
+        Ok(2),
+        "outcome 2 has the most votes (2) and must be the consensus winner; \
+         the old positional-index loop would miss key 7 and still return 2 \
+         here, but the vote-counting loop for responses was also broken"
+    );
+}
+
+/// Regression test: winner is at a HIGH non-contiguous outcome ID.
+///
+/// Setup: 3 oracles, outcome IDs 0 and 5 (gap of 5, len=2):
+///   - oracle 10 → outcome 5  (2 votes for outcome 5)
+///   - oracle 20 → outcome 5
+///   - oracle 30 → outcome 0  (1 vote for outcome 0)
+///
+/// With the old code, `outcome_votes` has len=2 (keys 0 and 5). The winner loop
+/// probed keys 0 and 1 — it found outcome 0 with 1 vote but NEVER checked key 5,
+/// so outcome 5's 2 votes were invisible. The function would return outcome 0
+/// (wrong) instead of outcome 5 (correct).
+///
+/// This is the canonical bug described in #1539.
+#[test]
+fn test_consensus_high_outcome_id_wins_over_low_outcome_id() {
+    let e = Env::default();
+    e.ledger().set_timestamp(1_700_000_000);
+
+    let config = OracleConfig {
+        oracle_address: Address::generate(&e),
+        feed_id: String::from_str(&e, "test_feed"),
+        min_responses: Some(3),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
+        strike_price: None,
+    };
+
+    let market_id = 1539u64; // market ID matches the issue number for clarity
+
+    // Oracles at non-contiguous indices (10, 20, 30) reporting outcomes 0 and 5.
+    record_oracle_response(&e, market_id, 10, 5).unwrap(); // oracle 10 → outcome 5
+    record_oracle_response(&e, market_id, 20, 5).unwrap(); // oracle 20 → outcome 5
+    record_oracle_response(&e, market_id, 30, 0).unwrap(); // oracle 30 → outcome 0
+
+    let result = validate_consensus(&e, market_id, &config);
+    assert_eq!(
+        result,
+        Ok(5),
+        "outcome 5 has 2 votes vs outcome 0's 1 vote; the old loop would never \
+         check key 5 and incorrectly return outcome 0"
+    );
+}
+
+/// Regression test: existing binary-market behavior is unchanged.
+///
+/// A standard binary market with outcomes 0 and 1 (contiguous keys), 3 oracles:
+///   - oracle 0 → outcome 1  (2 votes for outcome 1)
+///   - oracle 1 → outcome 1
+///   - oracle 2 → outcome 0  (1 vote for outcome 0)
+///
+/// This worked with the old code (contiguous keys 0 and 1 happen to match the
+/// positional counter). It must still work after the fix.
+#[test]
+fn test_consensus_binary_market_unchanged() {
+    let e = Env::default();
+    e.ledger().set_timestamp(1_700_000_000);
+
+    let config = OracleConfig {
+        oracle_address: Address::generate(&e),
+        feed_id: String::from_str(&e, "test_feed"),
+        min_responses: Some(3),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
+        strike_price: None,
+    };
+
+    let market_id = 42u64;
+
+    record_oracle_response(&e, market_id, 0, 1).unwrap(); // oracle 0 → outcome 1
+    record_oracle_response(&e, market_id, 1, 1).unwrap(); // oracle 1 → outcome 1
+    record_oracle_response(&e, market_id, 2, 0).unwrap(); // oracle 2 → outcome 0
+
+    let result = validate_consensus(&e, market_id, &config);
+    assert_eq!(
+        result,
+        Ok(1),
+        "binary market: outcome 1 has 2 votes and must win; this behavior \
+         must be unchanged after the #1539 fix"
+    );
+}
+
+/// Regression test: binary market unanimous vote (outcome 0, all oracles agree).
+#[test]
+fn test_consensus_binary_market_unanimous_outcome_zero() {
+    let e = Env::default();
+    e.ledger().set_timestamp(1_700_000_000);
+
+    let config = OracleConfig {
+        oracle_address: Address::generate(&e),
+        feed_id: String::from_str(&e, "test_feed"),
+        min_responses: Some(2),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
+        strike_price: None,
+    };
+
+    let market_id = 7u64;
+
+    record_oracle_response(&e, market_id, 0, 0).unwrap();
+    record_oracle_response(&e, market_id, 1, 0).unwrap();
+
+    let result = validate_consensus(&e, market_id, &config);
+    assert_eq!(result, Ok(0), "unanimous vote for outcome 0 must return Ok(0)");
+}
+
+/// Regression test: not enough responses returns OracleFailure.
+#[test]
+fn test_consensus_insufficient_responses_returns_error() {
+    let e = Env::default();
+    e.ledger().set_timestamp(1_700_000_000);
+
+    let config = OracleConfig {
+        oracle_address: Address::generate(&e),
+        feed_id: String::from_str(&e, "test_feed"),
+        min_responses: Some(3),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 200,
+        strike_price: None,
+    };
+
+    let market_id = 55u64;
+
+    // Only 2 responses but 3 are required.
+    record_oracle_response(&e, market_id, 0, 1).unwrap();
+    record_oracle_response(&e, market_id, 1, 1).unwrap();
+
+    let result = validate_consensus(&e, market_id, &config);
+    assert_eq!(
+        result,
+        Err(crate::errors::ErrorCode::OracleFailure),
+        "fewer responses than min_responses must return OracleFailure"
+    );
+}
