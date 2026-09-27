@@ -67,7 +67,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
                 {this.state.error.message}
               </p>
             )}
-            <div className="error-actions" style={{ display: 'flex', gap: '0.75rem', justifyContent: 'center', marginTop: '1rem' }}>
+            <div className="error-actions">
               <button 
                 type="button"
                 onClick={() => {

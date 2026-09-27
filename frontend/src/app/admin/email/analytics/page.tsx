@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { api, ApiError } from '@/lib/api/admin-client';
 import { Select, Button, StatusAlert } from '@/components/admin/Form';
+import './analytics.css';
 
 export interface EmailAnalyticsRecord {
   template_name: string;
@@ -145,13 +146,10 @@ export default function EmailAnalyticsPage() {
 
       {/* Filter Controls Card */}
       <div className="admin-card">
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
-          <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', flex: 1 }}>
-            <div style={{ minWidth: '220px' }}>
-              <label
-                htmlFor="template-filter"
-                style={{ display: 'block', fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--fg-muted)', marginBottom: '0.35rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}
-              >
+        <div className="u-flex u-items-center u-justify-between u-gap-lg u-flex-wrap">
+          <div className="u-flex u-gap-lg u-flex-wrap u-flex-1">
+            <div className="analytics-filter analytics-filter--template">
+              <label htmlFor="template-filter" className="analytics-filter__label">
                 Template
               </label>
               <Select
@@ -168,11 +166,8 @@ export default function EmailAnalyticsPage() {
               </Select>
             </div>
 
-            <div style={{ minWidth: '160px' }}>
-              <label
-                htmlFor="days-filter"
-                style={{ display: 'block', fontSize: 'var(--text-xs)', fontWeight: 600, color: 'var(--fg-muted)', marginBottom: '0.35rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}
-              >
+            <div className="analytics-filter analytics-filter--days">
+              <label htmlFor="days-filter" className="analytics-filter__label">
                 Time Window
               </label>
               <Select
@@ -190,7 +185,7 @@ export default function EmailAnalyticsPage() {
             </div>
           </div>
 
-          <div style={{ alignSelf: 'flex-end' }}>
+          <div className="u-self-end">
             <Button
               variant="secondary"
               onClick={fetchAnalytics}
@@ -225,9 +220,7 @@ export default function EmailAnalyticsPage() {
 
         <div className="admin-metric-card">
           <span className="admin-metric-label">Delivery Rate</span>
-          <span className="admin-metric-value" style={{ color: 'var(--success)' }}>
-            {deliveryRate}
-          </span>
+          <span className="admin-metric-value u-color-success">{deliveryRate}</span>
           <span className="admin-metric-sub">
             {aggregatedTotals.delivered.toLocaleString()} of {aggregatedTotals.sent.toLocaleString()}
           </span>
@@ -235,9 +228,7 @@ export default function EmailAnalyticsPage() {
 
         <div className="admin-metric-card">
           <span className="admin-metric-label">Open Rate</span>
-          <span className="admin-metric-value" style={{ color: 'var(--gold)' }}>
-            {openRate}
-          </span>
+          <span className="admin-metric-value u-color-gold">{openRate}</span>
           <span className="admin-metric-sub">
             {aggregatedTotals.opened.toLocaleString()} unique opens
           </span>
@@ -245,9 +236,7 @@ export default function EmailAnalyticsPage() {
 
         <div className="admin-metric-card">
           <span className="admin-metric-label">Click Rate (CTR)</span>
-          <span className="admin-metric-value" style={{ color: 'var(--purple-soft)' }}>
-            {clickRate}
-          </span>
+          <span className="admin-metric-value u-color-purple">{clickRate}</span>
           <span className="admin-metric-sub">
             {aggregatedTotals.clicked.toLocaleString()} link clicks (CTOR: {clickToOpenRate})
           </span>
@@ -255,10 +244,7 @@ export default function EmailAnalyticsPage() {
 
         <div className="admin-metric-card">
           <span className="admin-metric-label">Bounce Rate</span>
-          <span
-            className="admin-metric-value"
-            style={{ color: aggregatedTotals.bounced > 0 ? 'var(--destructive)' : 'var(--fg)' }}
-          >
+          <span className={`admin-metric-value ${aggregatedTotals.bounced > 0 ? 'u-color-danger' : ''}`}>
             {bounceRate}
           </span>
           <span className="admin-metric-sub">
@@ -281,34 +267,22 @@ export default function EmailAnalyticsPage() {
       <div className="admin-card">
         <div className="admin-card-header">
           <h2 className="admin-card-title">Daily & Template Breakdown</h2>
-          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--fg-muted)' }}>
-            Showing {analyticsData.length} records
-          </span>
+          <span className="u-text-xs u-muted">Showing {analyticsData.length} records</span>
         </div>
 
         {/* Loading State */}
         {isLoading && (
-          <div style={{ padding: '3rem', textAlign: 'center', color: 'var(--fg-muted)' }}>
-            <span className="spinner" style={{ width: '28px', height: '28px', marginBottom: '0.75rem' }} />
-            <p style={{ margin: 0, fontSize: 'var(--text-sm)' }}>Loading email analytics metrics...</p>
+          <div className="analytics-loading">
+            <span className="spinner spinner--md analytics-loading__spinner" />
+            <p className="analytics-loading__text">Loading email analytics metrics...</p>
           </div>
         )}
 
         {/* Zero-send / Empty State */}
         {!isLoading && analyticsData.length === 0 && (
-          <div
-            style={{
-              padding: '3rem 1.5rem',
-              textAlign: 'center',
-              backgroundColor: 'var(--surface-2)',
-              borderRadius: 'var(--radius-sm)',
-              border: '1px dashed var(--border)',
-            }}
-          >
-            <h3 style={{ margin: '0 0 0.5rem', fontSize: 'var(--text-base)', color: 'var(--fg)' }}>
-              No Email Activity Found
-            </h3>
-            <p style={{ margin: 0, fontSize: 'var(--text-sm)', color: 'var(--fg-muted)', maxWidth: '480px', marginInline: 'auto' }}>
+          <div className="analytics-empty">
+            <h3 className="analytics-empty__title">No Email Activity Found</h3>
+            <p className="analytics-empty__desc">
               No emails were recorded during the selected period. Computed rates remain safely at <strong>0%</strong> (or N/A) without division-by-zero errors.
             </p>
           </div>
@@ -322,15 +296,15 @@ export default function EmailAnalyticsPage() {
                 <tr>
                   <th scope="col">Date</th>
                   <th scope="col">Template</th>
-                  <th scope="col" style={{ textAlign: 'right' }}>Sent</th>
-                  <th scope="col" style={{ textAlign: 'right' }}>Delivered</th>
-                  <th scope="col" style={{ textAlign: 'right' }}>Delivery %</th>
-                  <th scope="col" style={{ textAlign: 'right' }}>Opened</th>
-                  <th scope="col" style={{ textAlign: 'right' }}>Open %</th>
-                  <th scope="col" style={{ textAlign: 'right' }}>Clicked</th>
-                  <th scope="col" style={{ textAlign: 'right' }}>Click %</th>
-                  <th scope="col" style={{ textAlign: 'right' }}>Bounced</th>
-                  <th scope="col" style={{ textAlign: 'right' }}>Bounce %</th>
+                  <th scope="col" className="u-text-right">Sent</th>
+                  <th scope="col" className="u-text-right">Delivered</th>
+                  <th scope="col" className="u-text-right">Delivery %</th>
+                  <th scope="col" className="u-text-right">Opened</th>
+                  <th scope="col" className="u-text-right">Open %</th>
+                  <th scope="col" className="u-text-right">Clicked</th>
+                  <th scope="col" className="u-text-right">Click %</th>
+                  <th scope="col" className="u-text-right">Bounced</th>
+                  <th scope="col" className="u-text-right">Bounce %</th>
                 </tr>
               </thead>
               <tbody>
@@ -342,29 +316,19 @@ export default function EmailAnalyticsPage() {
 
                   return (
                     <tr key={`${row.template_name}-${row.date}-${idx}`}>
-                      <td style={{ fontWeight: 500 }}>{row.date}</td>
+                      <td className="analytics-date-cell">{row.date}</td>
                       <td>
-                        <span
-                          style={{
-                            fontFamily: 'monospace',
-                            fontSize: 'var(--text-xs)',
-                            backgroundColor: 'var(--surface-2)',
-                            padding: '0.2rem 0.4rem',
-                            borderRadius: '4px',
-                          }}
-                        >
-                          {row.template_name}
-                        </span>
+                        <span className="analytics-template-chip">{row.template_name}</span>
                       </td>
-                      <td style={{ textAlign: 'right' }}>{(row.sent_count || 0).toLocaleString()}</td>
-                      <td style={{ textAlign: 'right' }}>{(row.delivered_count || 0).toLocaleString()}</td>
-                      <td style={{ textAlign: 'right', color: 'var(--success)' }}>{rowDeliveryRate}</td>
-                      <td style={{ textAlign: 'right' }}>{(row.opened_count || 0).toLocaleString()}</td>
-                      <td style={{ textAlign: 'right', color: 'var(--gold)' }}>{rowOpenRate}</td>
-                      <td style={{ textAlign: 'right' }}>{(row.clicked_count || 0).toLocaleString()}</td>
-                      <td style={{ textAlign: 'right', color: 'var(--purple-soft)' }}>{rowClickRate}</td>
-                      <td style={{ textAlign: 'right' }}>{(row.bounced_count || 0).toLocaleString()}</td>
-                      <td style={{ textAlign: 'right', color: row.bounced_count > 0 ? 'var(--destructive)' : 'var(--fg-muted)' }}>
+                      <td className="u-text-right">{(row.sent_count || 0).toLocaleString()}</td>
+                      <td className="u-text-right">{(row.delivered_count || 0).toLocaleString()}</td>
+                      <td className="u-text-right u-color-success">{rowDeliveryRate}</td>
+                      <td className="u-text-right">{(row.opened_count || 0).toLocaleString()}</td>
+                      <td className="u-text-right u-color-gold">{rowOpenRate}</td>
+                      <td className="u-text-right">{(row.clicked_count || 0).toLocaleString()}</td>
+                      <td className="u-text-right u-color-purple">{rowClickRate}</td>
+                      <td className="u-text-right">{(row.bounced_count || 0).toLocaleString()}</td>
+                      <td className={`u-text-right ${row.bounced_count > 0 ? 'u-color-danger' : 'u-muted'}`}>
                         {rowBounceRate}
                       </td>
                     </tr>

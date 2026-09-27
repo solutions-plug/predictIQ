@@ -31,12 +31,7 @@ export const OutcomeList: React.FC<OutcomeListProps> = ({ outcomes, scrollThresh
       {outcomes.map((outcome) => (
         <li key={outcome.id} className="outcome-list__item">
           <span className="outcome-list__label">{outcome.label}</span>
-          <span
-            className="outcome-list__odds"
-            style={{ '--outcome-weight': outcome.odds } as React.CSSProperties}
-          >
-            {formatOdds(outcome.odds)}
-          </span>
+          <span className="outcome-list__odds">{formatOdds(outcome.odds)}</span>
         </li>
       ))}
     </ul>

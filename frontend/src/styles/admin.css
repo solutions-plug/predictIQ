@@ -1,5 +1,10 @@
 /**
  * PredictIQ Admin Dashboard Styles
+ *
+ * Styled entirely via classNames, not inline `style` props: this app's
+ * CSP sends `style-src 'self'` with no `unsafe-inline` and no style
+ * nonce, so an inline style attribute is silently dropped by the browser
+ * rather than applied.
  */
 
 .admin-layout {
@@ -16,7 +21,6 @@
   position: sticky;
   top: 0;
   z-index: 100;
-  backdrop-filter: blur(12px);
 }
 
 .admin-header-container {
@@ -40,9 +44,9 @@
 .admin-brand-badge {
   font-size: var(--text-xs);
   padding: 0.2rem 0.5rem;
-  border-radius: var(--radius-pill);
-  background: var(--grad-brand);
-  color: #0f172a;
+  border-radius: var(--radius-sm);
+  background: var(--primary);
+  color: var(--on-primary);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -129,6 +133,11 @@
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
+}
+.admin-card-header--stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.75rem;
 }
 
 .admin-card-title {
@@ -247,4 +256,344 @@
   border-top-color: var(--gold);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
+}
+.spinner--sm {
+  width: 16px;
+  height: 16px;
+}
+.spinner--md {
+  width: 28px;
+  height: 28px;
+}
+.spinner--lg {
+  width: 32px;
+  height: 32px;
+}
+
+/* ---- Header brand / exit link (src/app/admin/layout.tsx) ---- */
+.admin-brand-inner {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+.admin-brand-name {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1.2rem;
+  letter-spacing: -0.02em;
+}
+.admin-brand-name-accent {
+  color: var(--gold);
+}
+.admin-exit-link {
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  text-decoration: none;
+  padding: 0.4rem 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background-color: var(--surface-2);
+}
+
+/* ---- Admin auth gate (src/app/admin/layout.tsx AdminAuthGate) ---- */
+.admin-auth-form {
+  max-width: 360px;
+  margin: 4rem auto;
+  padding: 2rem;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+.admin-auth-form label {
+  display: block;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--fg);
+}
+.admin-auth-form input {
+  display: block;
+  width: 100%;
+  margin-top: 0.5rem;
+  padding: 0.65rem 0.85rem;
+  font-size: var(--text-sm);
+  font-family: inherit;
+  background-color: var(--surface-2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: none;
+  box-sizing: border-box;
+}
+.admin-auth-form input:focus {
+  border-color: var(--ring);
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.25);
+}
+.admin-auth-form button {
+  padding: 0.65rem 1.25rem;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  font-family: inherit;
+  background-color: var(--gold);
+  color: var(--on-primary);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+/* ---- admin/Form.tsx (Form/FormField/Input/Textarea/Select/Button/StatusAlert) ---- */
+.form-field {
+  margin-bottom: 1.25rem;
+}
+.form-field label {
+  display: block;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--fg);
+  margin-bottom: 0.4rem;
+}
+.form-field label > span {
+  color: var(--destructive);
+  margin-left: 0.25rem;
+}
+.form-field-hint {
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  margin-top: -0.2rem;
+  margin-bottom: 0.4rem;
+  line-height: 1.4;
+}
+.form-field-error {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--destructive);
+  font-size: var(--text-xs);
+  margin-top: 0.4rem;
+  font-weight: 500;
+}
+.form-input,
+.form-textarea,
+.form-select {
+  width: 100%;
+  padding: 0.65rem 0.85rem;
+  font-size: var(--text-sm);
+  font-family: inherit;
+  background-color: var(--surface-2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: none;
+  transition: border-color var(--dur-fast), box-shadow var(--dur-fast);
+  box-sizing: border-box;
+}
+.form-select {
+  cursor: pointer;
+}
+.form-textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+.form-input:focus,
+.form-textarea:focus,
+.form-select:focus {
+  border-color: var(--ring);
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.25);
+}
+.input-error,
+.textarea-error,
+.select-error {
+  border-color: var(--destructive);
+}
+.input-error:focus,
+.textarea-error:focus,
+.select-error:focus {
+  box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.25);
+}
+.form-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.65rem 1.25rem;
+  font-size: var(--text-sm);
+  font-family: inherit;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--dur-fast);
+  text-decoration: none;
+}
+.form-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.form-btn--full-width {
+  width: 100%;
+}
+.btn-primary {
+  background-color: var(--gold);
+  color: var(--on-primary);
+  border: none;
+  font-weight: 600;
+}
+.btn-danger {
+  background-color: var(--destructive);
+  color: #ffffff;
+  border: none;
+  font-weight: 600;
+}
+.btn-secondary {
+  background-color: var(--surface-2);
+  color: var(--fg);
+  border: 1px solid var(--border-strong);
+  font-weight: 500;
+}
+.btn-ghost {
+  background-color: transparent;
+  color: var(--fg-muted);
+  border: none;
+  font-weight: 500;
+}
+.btn-loading-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+.status-alert {
+  border-radius: var(--radius-sm);
+  padding: 0.85rem 1.15rem;
+  color: var(--fg);
+  margin-bottom: 1.25rem;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.status-alert__body {
+  flex: 1;
+}
+.status-alert__title {
+  margin: 0 0 0.25rem;
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.status-alert__message {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--fg);
+  line-height: 1.4;
+}
+.status-alert__dismiss {
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 0.2rem;
+  line-height: 1;
+  font-size: 1.1rem;
+}
+.alert-success {
+  background-color: rgba(52, 211, 153, 0.12);
+  border: 1px solid var(--success);
+}
+.alert-success .status-alert__title {
+  color: var(--success);
+}
+.alert-error {
+  background-color: rgba(248, 113, 113, 0.12);
+  border: 1px solid var(--destructive);
+}
+.alert-error .status-alert__title {
+  color: var(--destructive);
+}
+.alert-warning {
+  background-color: rgba(251, 191, 36, 0.12);
+  border: 1px solid var(--gold);
+}
+.alert-warning .status-alert__title {
+  color: var(--gold-soft);
+}
+.alert-info {
+  background-color: rgba(139, 92, 246, 0.12);
+  border: 1px solid var(--purple);
+}
+.alert-info .status-alert__title {
+  color: var(--purple-soft);
+}
+
+/* ---- admin/Modal.tsx ---- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(5, 10, 20, 0.85);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  padding: 1rem;
+}
+.modal-container {
+  width: 100%;
+  max-width: 560px;
+  background-color: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow), 0 0 30px rgba(0, 0, 0, 0.6);
+  color: var(--fg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  outline: none;
+}
+.modal-container--w-540 {
+  max-width: 540px;
+}
+.modal-header {
+  padding: 1.25rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.modal-header--stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.75rem;
+}
+.modal-header h2 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-family: var(--font-display);
+  font-weight: 600;
+  color: var(--fg);
+}
+.modal-header p {
+  margin: 0.35rem 0 0;
+  font-size: var(--text-sm);
+  color: var(--fg-muted);
+  line-height: 1.4;
+}
+.modal-close {
+  background: transparent;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  padding: 0.25rem;
+  font-size: 1.25rem;
+  line-height: 1;
+  border-radius: var(--radius-sm);
+}
+.modal-body {
+  padding: 1.5rem;
+  overflow-y: auto;
+  max-height: calc(80vh - 120px);
 }

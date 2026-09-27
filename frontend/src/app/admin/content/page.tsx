@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { api, ApiError } from '@/lib/api/admin-client';
 import { Form, FormField, Input, Textarea, Button, StatusAlert } from '@/components/admin/Form';
+import './content.css';
 
 interface ContentFields {
   hero_title: string;
@@ -167,7 +168,7 @@ export default function ContentManagementPage() {
           </p>
         </div>
 
-        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+        <div className="u-flex u-gap-md u-items-center">
           <Button
             type="button"
             variant="secondary"
@@ -208,13 +209,13 @@ export default function ContentManagementPage() {
       )}
 
       {isLoading ? (
-        <div style={{ padding: '4rem', textAlign: 'center', color: 'var(--fg-muted)' }}>
-          <span className="spinner" style={{ width: '32px', height: '32px', marginBottom: '1rem' }} />
-          <p style={{ margin: 0, fontSize: 'var(--text-sm)' }}>Loading site content fields...</p>
+        <div className="content-loading">
+          <span className="spinner spinner--lg content-loading__spinner" />
+          <p className="content-loading__text">Loading site content fields...</p>
         </div>
       ) : (
         <Form id="content-edit-form" onSubmit={handleSave}>
-          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: '1.5rem' }}>
+          <div className="u-grid-2">
             {/* Section 1: Hero & Announcements */}
             <div className="admin-card">
               <div className="admin-card-header">
@@ -371,18 +372,7 @@ export default function ContentManagementPage() {
           </div>
 
           {/* Form Actions Footer */}
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'flex-end',
-              gap: '1rem',
-              marginTop: '1.5rem',
-              padding: '1rem',
-              backgroundColor: 'var(--surface)',
-              border: '1px solid var(--border)',
-              borderRadius: 'var(--radius)',
-            }}
-          >
+          <div className="content-form-actions">
             <Button
               type="button"
               variant="secondary"

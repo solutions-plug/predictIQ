@@ -1,0 +1,259 @@
+.unsubscribe-page-container {
+  max-width: 600px;
+  margin: 80px auto;
+  padding: 32px 24px;
+  border-radius: var(--radius);
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+  color: var(--fg);
+  text-align: center;
+  font-family: var(--font-body);
+}
+
+.unsubscribe-page__intro {
+  margin-bottom: 24px;
+}
+
+.unsubscribe-page__back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg-muted);
+  text-decoration: none;
+  font-size: var(--text-sm);
+  margin-bottom: 16px;
+  transition: color var(--dur-fast);
+}
+
+.unsubscribe-page__back-link:hover {
+  color: var(--fg);
+}
+
+.unsubscribe-page__back-link:focus-visible {
+  outline: 2px solid var(--ring-strong);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.unsubscribe-page__title {
+  font-family: var(--font-display);
+  font-size: var(--text-xl);
+  margin: 0 0 8px;
+  color: var(--fg);
+}
+
+.unsubscribe-page__desc {
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+  margin: 0;
+}
+
+.unsubscribe-page__loading {
+  padding: 32px 0;
+}
+
+.unsubscribe-page__loading-copy {
+  margin-top: 16px;
+  color: var(--fg-muted);
+}
+
+.unsubscribe-page__panel {
+  padding: 24px;
+  border-radius: var(--radius-sm);
+  margin-bottom: 24px;
+}
+
+.unsubscribe-page__panel--success {
+  background-color: rgba(52, 211, 153, 0.1);
+  border: 1px solid var(--success);
+}
+
+.unsubscribe-page__panel--info {
+  background-color: rgba(139, 92, 246, 0.1);
+  border: 1px solid var(--accent);
+}
+
+.unsubscribe-page__panel--error {
+  background-color: rgba(248, 113, 113, 0.1);
+  border: 1px solid var(--destructive);
+}
+
+.unsubscribe-page__icon {
+  font-size: 2.5rem;
+  margin-bottom: 12px;
+}
+
+.unsubscribe-page__panel-heading {
+  font-size: var(--text-lg);
+  margin: 0 0 8px;
+  color: var(--fg);
+}
+
+.unsubscribe-page__panel-copy {
+  margin: 0 0 16px;
+  color: var(--fg-muted);
+  line-height: 1.5;
+}
+
+.unsubscribe-page__panel--error .unsubscribe-page__panel-copy {
+  margin: 0 0 20px;
+}
+
+.unsubscribe-page__panel-subcopy {
+  font-size: var(--text-xs);
+  color: var(--fg-subtle);
+  margin: 0 0 20px;
+}
+
+.unsubscribe-page__cta {
+  display: inline-block;
+  padding: 10px 20px;
+  border-radius: var(--radius-pill);
+  text-decoration: none;
+  font-weight: 600;
+  font-size: var(--text-sm);
+  transition: transform var(--dur-fast) var(--ease-expo), background-color var(--dur-fast);
+}
+
+.unsubscribe-page__cta--primary {
+  background-color: var(--primary);
+  color: var(--on-primary);
+}
+
+.unsubscribe-page__cta--primary:hover {
+  background-color: var(--gold-soft);
+  transform: translateY(-1px);
+}
+
+.unsubscribe-page__cta--secondary {
+  background-color: var(--surface-2);
+  color: var(--fg);
+  border: 1px solid var(--border-strong);
+}
+
+.unsubscribe-page__cta--secondary:hover {
+  background-color: var(--surface);
+  transform: translateY(-1px);
+}
+
+.unsubscribe-page__cta:focus-visible {
+  outline: 2px solid var(--ring-strong);
+  outline-offset: 2px;
+}
+
+.unsubscribe-page__retry-btn {
+  padding: 8px 16px;
+  background-color: transparent;
+  color: var(--fg);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-weight: 500;
+  font-family: var(--font-body);
+  transition: background-color var(--dur-fast);
+}
+
+.unsubscribe-page__retry-btn:hover {
+  background-color: var(--surface-2);
+}
+
+.unsubscribe-page__retry-btn:focus-visible {
+  outline: 2px solid var(--ring-strong);
+  outline-offset: 2px;
+}
+
+.unsubscribe-page__form {
+  text-align: left;
+  margin-top: 20px;
+}
+
+.unsubscribe-page__label {
+  display: block;
+  font-size: var(--text-sm);
+  margin-bottom: 8px;
+  color: var(--fg-muted);
+}
+
+.unsubscribe-page__form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.unsubscribe-page__input {
+  width: 100%;
+  padding: 12px 16px;
+  border-radius: var(--radius-sm);
+  background-color: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font-size: var(--text-base);
+  font-family: var(--font-body);
+  box-sizing: border-box;
+  transition: border-color var(--dur-fast), box-shadow var(--dur-fast);
+}
+
+.unsubscribe-page__input--error {
+  border-color: var(--destructive);
+}
+
+.unsubscribe-page__input:focus-visible {
+  outline: none;
+  border-color: var(--ring);
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.2);
+}
+
+.unsubscribe-page__field-error {
+  color: var(--destructive);
+  font-size: var(--text-xs);
+}
+
+.unsubscribe-page__submit {
+  padding: 12px 20px;
+  background-color: var(--primary);
+  color: var(--on-primary);
+  border: none;
+  border-radius: var(--radius-sm);
+  font-weight: 600;
+  font-size: var(--text-base);
+  font-family: var(--font-body);
+  cursor: pointer;
+  transition: background-color var(--dur-fast), transform var(--dur-fast) var(--ease-expo);
+}
+
+.unsubscribe-page__submit:hover {
+  background-color: var(--gold-soft);
+  transform: translateY(-1px);
+}
+
+.unsubscribe-page__submit:focus-visible {
+  outline: 2px solid var(--ring-strong);
+  outline-offset: 2px;
+}
+
+.unsubscribe-page__suspense-fallback {
+  text-align: center;
+  padding: 100px 0;
+}
+
+@media (max-width: 480px) {
+  .unsubscribe-page-container {
+    margin: 32px auto;
+    padding: 24px 18px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .unsubscribe-page__cta,
+  .unsubscribe-page__submit,
+  .unsubscribe-page__retry-btn,
+  .unsubscribe-page__back-link,
+  .unsubscribe-page__input {
+    transition: none;
+  }
+  .unsubscribe-page__cta:hover,
+  .unsubscribe-page__submit:hover {
+    transform: none;
+  }
+}

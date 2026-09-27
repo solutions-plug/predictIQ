@@ -1,12 +1,14 @@
 import type { ReactNode } from 'react';
 import { headers } from 'next/headers';
-import { Orbitron, Exo_2 } from 'next/font/google';
+import { Orbitron, Exo_2, JetBrains_Mono } from 'next/font/google';
+import { AppShell } from '../components/AppShell';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { OfflineBanner } from '../components/OfflineBanner';
 import { AxeAccessibility } from '../components/AxeAccessibility';
 import { WalletProvider } from '../lib/wallet/WalletProvider';
 import { darkModeInitScript } from '../lib/darkMode';
 import '../styles/tokens.css';
+import '../styles/ui.css';
 import '../styles/accessibility.css';
 import '../styles/landing.css';
 
@@ -23,6 +25,15 @@ const body = Exo_2({
   subsets: ['latin'],
   weight: ['300', '400', '500', '600', '700'],
   variable: '--font-body',
+  display: 'swap',
+});
+
+// Tabular numerals for prices, odds, volumes, timestamps, and addresses -
+// anywhere data should read as data, not as marketing copy.
+const mono = JetBrains_Mono({
+  subsets: ['latin'],
+  weight: ['400', '500', '600', '700'],
+  variable: '--font-mono',
   display: 'swap',
 });
 
@@ -55,7 +66,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
   return (
     <html
       lang="en"
-      className={`${display.variable} ${body.variable}`}
+      className={`${display.variable} ${body.variable} ${mono.variable}`}
       suppressHydrationWarning
     >
       <head>
