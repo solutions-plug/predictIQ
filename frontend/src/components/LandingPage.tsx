@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useI18n } from '../lib/hooks/useI18n';
 import { useDarkMode } from '../lib/hooks/useDarkMode';
 import { type Locale } from '../lib/i18n';
@@ -10,6 +10,7 @@ import { NewsletterSignup } from './NewsletterSignup';
 import { FeatureCard } from './landing/FeatureCard';
 import { Step } from './landing/Step';
 import { FooterColumn } from './landing/FooterColumn';
+import { LiveMarketsTicker } from './landing/LiveMarketsTicker';
 
 interface LandingPageProps {
   className?: string;
@@ -18,6 +19,18 @@ interface LandingPageProps {
 export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
   const { t, locale, setLocale, availableLocales } = useI18n();
   const { isDarkMode, toggleDarkMode } = useDarkMode();
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+
+  // Below the 860px breakpoint the nav collapses into a disclosure panel;
+  // Escape closes it same as any other transient panel in this app.
+  useEffect(() => {
+    if (!isMenuOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsMenuOpen(false);
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [isMenuOpen]);
 
   const features = [
     { icon: '/icons/decentralized.svg', title: t('features.decentralized.title'), description: t('features.decentralized.description'), href: '/markets' },
@@ -49,7 +62,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
   ];
 
   return (
-    <div className={className}>
+    <div className={`landing-page ${className ?? ''}`}>
       {/* Skip to main content link */}
       <a href="#main-content" className="skip-link">
         Skip to main content
@@ -68,13 +81,13 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
               />
               <span className="logo-text" aria-hidden="true">PredictIQ</span>
             </div>
-            <ul className="nav-menu">
-              <li><a href="#features">Features</a></li>
-              <li><a href="#how-it-works">How It Works</a></li>
-              <li><a href="#about">About</a></li>
-              <li><a href="#contact">Contact</a></li>
+            <ul className={`nav-menu ${isMenuOpen ? 'nav-menu--open' : ''}`} id="primary-nav-menu">
+              <li><a href="#features" onClick={() => setIsMenuOpen(false)}>Features</a></li>
+              <li><a href="#how-it-works" onClick={() => setIsMenuOpen(false)}>How It Works</a></li>
+              <li><a href="#about" onClick={() => setIsMenuOpen(false)}>About</a></li>
+              <li><a href="#contact" onClick={() => setIsMenuOpen(false)}>Contact</a></li>
             </ul>
-            
+
             {/* Controls */}
             <div className="header-controls">
               {/* Dark Mode Toggle */}
@@ -105,6 +118,19 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
                   ))}
                 </select>
               </div>
+
+              {/* Mobile nav toggle — only visible/interactive below the 860px
+                  breakpoint where .nav-menu collapses (see landing.css). */}
+              <button
+                type="button"
+                className="nav-menu-toggle"
+                aria-expanded={isMenuOpen}
+                aria-controls="primary-nav-menu"
+                aria-label={isMenuOpen ? 'Close menu' : 'Open menu'}
+                onClick={() => setIsMenuOpen((open) => !open)}
+              >
+                <span aria-hidden="true">{isMenuOpen ? '✕' : '☰'}</span>
+              </button>
             </div>
           </div>
         </nav>
@@ -114,28 +140,31 @@ export const LandingPage: React.FC<LandingPageProps> = ({ className }) => {
       <main id="main-content" role="main">
         {/* Hero Section */}
         <section aria-labelledby="hero-heading" className="hero">
-          <div className="hero-glow" aria-hidden="true" />
-          <span className="eyebrow">Live on Stellar</span>
-          <h1 id="hero-heading">
-            {t('hero.title')}
-          </h1>
-          <p className="hero-description">
-            {t('hero.description')}
-          </p>
+          <div className="hero-copy">
+            <span className="eyebrow">Live on Stellar</span>
+            <h1 id="hero-heading">
+              {t('hero.title')}
+            </h1>
+            <p className="hero-description">
+              {t('hero.description')}
+            </p>
 
-          {/* Primary CTAs into the live product. Plain links (not the newsletter
-              form) so the hero works with JS pending and needs no client state. */}
-          <div className="hero-cta-group">
-            <a href="/markets" className="hero-cta hero-cta--primary">
-              {t('hero.primaryCta')}
-            </a>
-            <a href="#how-it-works" className="hero-cta hero-cta--secondary">
-              {t('hero.secondaryCta')}
-            </a>
+            {/* Primary CTAs into the live product. Plain links (not the newsletter
+                form) so the hero works with JS pending and needs no client state. */}
+            <div className="hero-cta-group">
+              <a href="/markets" className="hero-cta hero-cta--primary">
+                {t('hero.primaryCta')}
+              </a>
+              <a href="#how-it-works" className="hero-cta hero-cta--secondary">
+                {t('hero.secondaryCta')}
+              </a>
+            </div>
+
+            {/* Early-access signup */}
+            <NewsletterSignup />
           </div>
 
-          {/* Early-access signup */}
-          <NewsletterSignup />
+          <LiveMarketsTicker />
         </section>
 
         {/* Statistics Section */}

@@ -8,6 +8,9 @@ describe('LandingPage hero CTAs (#1343)', () => {
     jest
       .spyOn(api, 'getStatistics')
       .mockResolvedValue({ total_markets: 1, total_volume: 0, active_markets: 0 });
+    // The hero also mounts a live-markets ticker that fetches independently
+    // on mount; stub it too so it doesn't consume a per-test fetch mock.
+    jest.spyOn(api, 'getFeaturedMarkets').mockResolvedValue([]);
   });
   afterEach(() => jest.restoreAllMocks());
 

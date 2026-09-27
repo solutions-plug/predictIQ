@@ -69,10 +69,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         {/* Admin Top Navigation */}
         <header className="admin-header" role="banner">
           <div className="admin-header-container">
-            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+            <div className="admin-brand-inner">
               <Link href="/" className="admin-brand" aria-label="PredictIQ Home">
-                <span style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: '1.2rem', letterSpacing: '-0.02em' }}>
-                  Predict<span style={{ color: 'var(--gold)' }}>IQ</span>
+                <span className="admin-brand-name">
+                  Predict<span className="admin-brand-name-accent">IQ</span>
                 </span>
               </Link>
               <span className="admin-brand-badge">Admin</span>
@@ -95,18 +95,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             </nav>
 
             <div>
-              <Link
-                href="/"
-                style={{
-                  fontSize: 'var(--text-xs)',
-                  color: 'var(--fg-muted)',
-                  textDecoration: 'none',
-                  padding: '0.4rem 0.75rem',
-                  borderRadius: 'var(--radius-sm)',
-                  border: '1px solid var(--border)',
-                  backgroundColor: 'var(--surface-2)',
-                }}
-              >
+              <Link href="/" className="admin-exit-link">
                 Exit to Site →
               </Link>
             </div>

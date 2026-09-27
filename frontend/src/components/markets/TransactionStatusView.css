@@ -3,7 +3,7 @@
   max-width: 640px;
   margin: 0 auto;
   padding: clamp(1.5rem, 3vw, 2.5rem);
-  background: linear-gradient(135deg, var(--surface) 0%, var(--surface-2) 100%);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow);

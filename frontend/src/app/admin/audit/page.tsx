@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { api } from '@/lib/api/admin-client';
+import './audit.css';
 
 type Log = { id?: string | number; actor?: string; action?: string; resource_type?: string; timestamp?: string; status?: string };
 
@@ -22,17 +23,73 @@ export default function AuditLogPage() {
   }, [filters, page]);
 
   const update = (key: keyof typeof filters, value: string) => { setPage(0); setFilters(f => ({ ...f, [key]: value })); };
-  return <main style={{ maxWidth: 1100, margin: '2rem auto', padding: '0 1rem' }}>
-    <h1>Audit log</h1>
-    <form onSubmit={e => e.preventDefault()} style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-      {(['actor', 'action'] as const).map(key => <label key={key}>{key}<input value={filters[key]} onChange={e => update(key, e.target.value)} /></label>)}
-      <label>From<input type="datetime-local" value={filters.from} onChange={e => update('from', e.target.value)} /></label>
-      <label>To<input type="datetime-local" value={filters.to} onChange={e => update('to', e.target.value)} /></label>
-    </form>
-    {error && <p role="alert">{error}</p>}
-    <table><caption>Administrative actions</caption><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Resource</th><th>Status</th></tr></thead>
-      <tbody>{logs.map((log, i) => <tr key={log.id ?? i}><td>{log.timestamp ? new Date(log.timestamp).toLocaleString() : '—'}</td><td>{log.actor ?? '—'}</td><td>{log.action ?? '—'}</td><td>{log.resource_type ?? '—'}</td><td>{log.status ?? '—'}</td></tr>)}</tbody>
-    </table>
-    <nav aria-label="Audit log pages"><button disabled={page === 0} onClick={() => setPage(p => p - 1)}>Previous</button><span> Page {page + 1} </span><button disabled={logs.length < limit} onClick={() => setPage(p => p + 1)}>Next</button></nav>
-  </main>;
+  return (
+    <div className="audit-log-page">
+      <div className="admin-page-header">
+        <div>
+          <h1 className="admin-page-title">Audit log</h1>
+          <p className="admin-page-desc">Administrative actions taken across the platform, with actor/action/date filtering.</p>
+        </div>
+      </div>
+
+      <form onSubmit={e => e.preventDefault()} className="admin-card audit-log-filters">
+        {(['actor', 'action'] as const).map(key => (
+          <label key={key} className="audit-log-filters__field">
+            {key}
+            <input value={filters[key]} onChange={e => update(key, e.target.value)} />
+          </label>
+        ))}
+        <label className="audit-log-filters__field">
+          From
+          <input type="datetime-local" value={filters.from} onChange={e => update('from', e.target.value)} />
+        </label>
+        <label className="audit-log-filters__field">
+          To
+          <input type="datetime-local" value={filters.to} onChange={e => update('to', e.target.value)} />
+        </label>
+      </form>
+
+      {error && (
+        <p role="alert" className="audit-log-error">
+          {error}
+        </p>
+      )}
+
+      <div className="admin-table-container">
+        <table className="admin-table">
+          <caption className="audit-log-caption">Administrative actions</caption>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Actor</th>
+              <th>Action</th>
+              <th>Resource</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {logs.map((log, i) => (
+              <tr key={log.id ?? i}>
+                <td>{log.timestamp ? new Date(log.timestamp).toLocaleString() : '—'}</td>
+                <td>{log.actor ?? '—'}</td>
+                <td>{log.action ?? '—'}</td>
+                <td>{log.resource_type ?? '—'}</td>
+                <td>{log.status ?? '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <nav aria-label="Audit log pages" className="audit-log-pagination">
+        <button type="button" disabled={page === 0} onClick={() => setPage(p => p - 1)}>
+          Previous
+        </button>
+        <span>Page {page + 1}</span>
+        <button type="button" disabled={logs.length < limit} onClick={() => setPage(p => p + 1)}>
+          Next
+        </button>
+      </nav>
+    </div>
+  );
 }
