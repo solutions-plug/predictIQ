@@ -37,7 +37,17 @@ export async function reportAccessibility(
   const axe = await import('@axe-core/react');
   const ReactDOM = await import('react-dom');
 
+  // @axe-core/react monkey-patches `React.createElement` in place. Turbopack's
+  // client bundle hands us a frozen ES module namespace object for `react`, so
+  // assigning to it directly throws ("... has only a getter"). Give axe a
+  // mutable shallow copy instead — it only ever writes to `createElement`.
+  const patchableReact = { ...ReactModule };
+
   // (ReactModule, ReactDOM, timeoutMs, config) — timeout is how long axe waits
   // after a render before scanning, to avoid throttling during bursty updates.
-  axe.default(ReactModule, ReactDOM, 1000, config);
+  try {
+    axe.default(patchableReact, ReactDOM, 1000, config);
+  } catch (err) {
+    console.warn('[a11y] failed to initialize @axe-core/react', err);
+  }
 }

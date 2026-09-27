@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { api, ApiError } from '@/lib/api/admin-client';
 import { Form, FormField, Input, Select, Button, StatusAlert } from '@/components/admin/Form';
+import './preview.css';
 
 interface TemplateOption {
   value: string;
@@ -137,17 +138,14 @@ export default function EmailPreviewPage() {
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 340px', gap: '1.5rem', alignItems: 'start' }}>
+      <div className="email-preview-columns">
         {/* Left Column: Preview Area */}
         <div>
           {/* Template Selection Card */}
           <div className="admin-card">
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
-              <div style={{ flex: '1 1 260px' }}>
-                <label
-                  htmlFor="template-select"
-                  style={{ display: 'block', fontSize: 'var(--text-sm)', fontWeight: 600, marginBottom: '0.4rem' }}
-                >
+            <div className="u-flex u-items-center u-justify-between u-gap-lg u-flex-wrap">
+              <div className="email-preview-select-wrap">
+                <label htmlFor="template-select" className="email-preview-label">
                   Select Email Template
                 </label>
                 <Select
@@ -164,7 +162,7 @@ export default function EmailPreviewPage() {
                 </Select>
               </div>
 
-              <div style={{ alignSelf: 'flex-end' }}>
+              <div className="u-self-end">
                 <Button
                   variant="secondary"
                   onClick={() => fetchPreview(selectedTemplate)}
@@ -176,74 +174,41 @@ export default function EmailPreviewPage() {
               </div>
             </div>
 
-            {currentTemplateInfo && (
-              <p style={{ margin: '0.75rem 0 0', fontSize: 'var(--text-xs)', color: 'var(--fg-muted)' }}>
-                {currentTemplateInfo.description}
-              </p>
-            )}
+            {currentTemplateInfo && <p className="email-preview-desc">{currentTemplateInfo.description}</p>}
           </div>
 
           {/* Email Preview Container */}
           <div className="admin-card">
             {/* Header with Subject and Tabs */}
-            <div className="admin-card-header" style={{ flexDirection: 'column', alignItems: 'stretch', gap: '0.75rem' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+            <div className="admin-card-header admin-card-header--stacked">
+              <div className="u-flex u-justify-between u-items-center u-flex-wrap u-gap-sm">
                 <div>
-                  <span style={{ fontSize: 'var(--text-xs)', color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                    Subject Line:
-                  </span>
-                  <div style={{ fontSize: 'var(--text-base)', fontWeight: 600, color: 'var(--fg)', marginTop: '0.2rem' }}>
+                  <span className="u-text-xs u-muted u-uppercase">Subject Line:</span>
+                  <div className="email-preview-subject-value">
                     {previewData?.subject || (isLoadingPreview ? 'Loading subject...' : '(No subject)')}
                   </div>
                 </div>
 
                 {/* View Tabs */}
-                <div style={{ display: 'flex', gap: '0.35rem', backgroundColor: 'var(--surface-2)', padding: '0.25rem', borderRadius: 'var(--radius-sm)' }}>
+                <div className="email-preview-tabs">
                   <button
                     type="button"
                     onClick={() => setActiveTab('preview')}
-                    style={{
-                      border: 'none',
-                      backgroundColor: activeTab === 'preview' ? 'var(--surface)' : 'transparent',
-                      color: activeTab === 'preview' ? 'var(--gold)' : 'var(--fg-muted)',
-                      padding: '0.35rem 0.75rem',
-                      borderRadius: 'var(--radius-sm)',
-                      fontSize: 'var(--text-xs)',
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                    }}
+                    className={`email-preview-tab ${activeTab === 'preview' ? 'email-preview-tab--active' : ''}`}
                   >
                     Sandboxed Preview
                   </button>
                   <button
                     type="button"
                     onClick={() => setActiveTab('text')}
-                    style={{
-                      border: 'none',
-                      backgroundColor: activeTab === 'text' ? 'var(--surface)' : 'transparent',
-                      color: activeTab === 'text' ? 'var(--gold)' : 'var(--fg-muted)',
-                      padding: '0.35rem 0.75rem',
-                      borderRadius: 'var(--radius-sm)',
-                      fontSize: 'var(--text-xs)',
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                    }}
+                    className={`email-preview-tab ${activeTab === 'text' ? 'email-preview-tab--active' : ''}`}
                   >
                     Plain Text
                   </button>
                   <button
                     type="button"
                     onClick={() => setActiveTab('html')}
-                    style={{
-                      border: 'none',
-                      backgroundColor: activeTab === 'html' ? 'var(--surface)' : 'transparent',
-                      color: activeTab === 'html' ? 'var(--gold)' : 'var(--fg-muted)',
-                      padding: '0.35rem 0.75rem',
-                      borderRadius: 'var(--radius-sm)',
-                      fontSize: 'var(--text-xs)',
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                    }}
+                    className={`email-preview-tab ${activeTab === 'html' ? 'email-preview-tab--active' : ''}`}
                   >
                     HTML Source
                   </button>
@@ -263,9 +228,9 @@ export default function EmailPreviewPage() {
 
             {/* Loading State */}
             {isLoadingPreview && (
-              <div style={{ padding: '3rem', textAlign: 'center', color: 'var(--fg-muted)' }}>
-                <span className="spinner" style={{ width: '28px', height: '28px', marginBottom: '0.75rem' }} />
-                <p style={{ margin: 0, fontSize: 'var(--text-sm)' }}>Rendering email template preview...</p>
+              <div className="email-preview-loading">
+                <span className="spinner spinner--md email-preview-loading__spinner" />
+                <p className="email-preview-loading__text">Rendering email template preview...</p>
               </div>
             )}
 
@@ -292,45 +257,11 @@ export default function EmailPreviewPage() {
                 )}
 
                 {activeTab === 'text' && (
-                  <pre
-                    style={{
-                      backgroundColor: 'var(--surface-2)',
-                      padding: '1.25rem',
-                      borderRadius: 'var(--radius-sm)',
-                      border: '1px solid var(--border)',
-                      fontSize: 'var(--text-xs)',
-                      fontFamily: 'monospace',
-                      color: 'var(--fg)',
-                      whiteSpace: 'pre-wrap',
-                      wordBreak: 'break-word',
-                      maxHeight: '540px',
-                      overflowY: 'auto',
-                      margin: 0,
-                    }}
-                  >
-                    {previewData.text_content || '(No plain text version available)'}
-                  </pre>
+                  <pre className="email-preview-pre">{previewData.text_content || '(No plain text version available)'}</pre>
                 )}
 
                 {activeTab === 'html' && (
-                  <pre
-                    style={{
-                      backgroundColor: 'var(--surface-2)',
-                      padding: '1.25rem',
-                      borderRadius: 'var(--radius-sm)',
-                      border: '1px solid var(--border)',
-                      fontSize: 'var(--text-xs)',
-                      fontFamily: 'monospace',
-                      color: 'var(--fg-muted)',
-                      whiteSpace: 'pre-wrap',
-                      wordBreak: 'break-all',
-                      maxHeight: '540px',
-                      overflowY: 'auto',
-                      margin: 0,
-                    }}
-                  >
-                    {previewData.html_content || '(Empty HTML content)'}
-                  </pre>
+                  <pre className="email-preview-pre email-preview-pre--html">{previewData.html_content || '(Empty HTML content)'}</pre>
                 )}
               </div>
             )}
@@ -344,7 +275,7 @@ export default function EmailPreviewPage() {
               <h3 className="admin-card-title">Send Test Email</h3>
             </div>
 
-            <p style={{ fontSize: 'var(--text-xs)', color: 'var(--fg-muted)', marginTop: 0, marginBottom: '1.25rem', lineHeight: 1.4 }}>
+            <p className="email-preview-test-desc">
               Dispatches a live test email using the selected template (<strong>{selectedTemplate}</strong>) with sample variables to your inbox.
             </p>
 
@@ -389,13 +320,8 @@ export default function EmailPreviewPage() {
                 />
               </FormField>
 
-              <div style={{ marginTop: '1.5rem' }}>
-                <Button
-                  type="submit"
-                  variant="primary"
-                  isLoading={isSendingTest}
-                  style={{ width: '100%' }}
-                >
+              <div className="u-mt-xl">
+                <Button type="submit" variant="primary" isLoading={isSendingTest} fullWidth>
                   Send Test Email
                 </Button>
               </div>
@@ -403,20 +329,8 @@ export default function EmailPreviewPage() {
           </div>
 
           {/* Sandbox Security Notice */}
-          <div
-            style={{
-              padding: '1rem',
-              backgroundColor: 'rgba(245, 158, 11, 0.08)',
-              border: '1px solid rgba(245, 158, 11, 0.2)',
-              borderRadius: 'var(--radius-sm)',
-              fontSize: 'var(--text-xs)',
-              color: 'var(--fg-muted)',
-              lineHeight: 1.4,
-            }}
-          >
-            <div style={{ fontWeight: 600, color: 'var(--gold)', marginBottom: '0.25rem' }}>
-              🔒 Sandboxed Rendering
-            </div>
+          <div className="email-preview-sandbox-notice">
+            <div className="email-preview-sandbox-notice__title">🔒 Sandboxed Rendering</div>
             Template HTML is rendered strictly inside an isolated <code>&lt;iframe sandbox=""&gt;</code> container to eliminate XSS risks and prevent arbitrary script execution.
           </div>
         </div>

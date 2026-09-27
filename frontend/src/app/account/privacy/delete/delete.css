@@ -1,0 +1,273 @@
+.gdpr-delete-page {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 2.5rem 1rem;
+}
+
+.gdpr-delete-page__header {
+  margin-bottom: 2rem;
+}
+
+.gdpr-delete-page__title {
+  font-size: var(--text-2xl);
+  margin-bottom: 0.75rem;
+  color: var(--fg);
+}
+
+.gdpr-delete-page__intro {
+  color: var(--fg-muted);
+  font-size: var(--text-base);
+  line-height: 1.6;
+}
+
+.gdpr-delete-page__banner {
+  padding: 1rem 1.25rem;
+  border-radius: var(--radius);
+  margin-bottom: 1.5rem;
+}
+
+.gdpr-delete-page__banner--success {
+  background-color: rgba(52, 211, 153, 0.15);
+  border: 1px solid var(--success);
+  color: var(--success);
+}
+
+.gdpr-delete-page__banner--error {
+  background-color: rgba(248, 113, 113, 0.15);
+  border: 1px solid var(--destructive);
+  color: var(--destructive);
+}
+
+.gdpr-delete-page__panel {
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.75rem;
+  margin-bottom: 2rem;
+}
+
+.gdpr-delete-page__panel-heading {
+  font-size: var(--text-lg);
+  color: var(--destructive);
+  margin-bottom: 0.75rem;
+}
+
+.gdpr-delete-page__panel-copy {
+  color: var(--fg-muted);
+  margin-bottom: 1.25rem;
+  line-height: 1.5;
+}
+
+.gdpr-delete-page__field {
+  margin-bottom: 1.25rem;
+}
+
+.gdpr-delete-page__label,
+.gdpr-delete-page__modal-label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.gdpr-delete-page__modal-label {
+  font-size: 0.9rem;
+}
+
+.gdpr-delete-page__required {
+  color: var(--destructive);
+}
+
+.gdpr-delete-page__input {
+  width: 100%;
+  padding: 0.75rem 1rem;
+  background-color: var(--bg-deep);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--fg);
+  font-size: 1rem;
+  font-family: var(--font-body);
+  box-sizing: border-box;
+  transition: border-color var(--dur-fast), box-shadow var(--dur-fast);
+}
+
+.gdpr-delete-page__input--error {
+  border-color: var(--destructive);
+}
+
+.gdpr-delete-page__input--mono {
+  font-family: monospace;
+  font-size: 0.9rem;
+}
+
+.gdpr-delete-page__input:focus-visible {
+  outline: none;
+  border-color: var(--ring);
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.2);
+}
+
+.gdpr-delete-page__input--error:focus-visible {
+  border-color: var(--destructive);
+  box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.2);
+}
+
+.gdpr-delete-page__field-error {
+  display: block;
+  color: var(--destructive);
+  margin-top: 0.5rem;
+  font-size: 0.875rem;
+}
+
+.gdpr-delete-page__submit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  background-color: var(--destructive);
+  color: #0f172a;
+  font-weight: 600;
+  padding: 0.75rem 1.5rem;
+  border-radius: var(--radius-pill);
+  border: none;
+  cursor: pointer;
+  font-size: 1rem;
+  font-family: var(--font-body);
+  transition: opacity var(--dur-fast), transform var(--dur-fast) var(--ease-expo);
+}
+
+.gdpr-delete-page__submit:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+.gdpr-delete-page__submit:focus-visible {
+  outline: 2px solid var(--ring-strong);
+  outline-offset: 2px;
+}
+
+.gdpr-delete-page__modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  z-index: 1000;
+  backdrop-filter: blur(4px);
+}
+
+.gdpr-delete-page__modal {
+  background-color: var(--surface);
+  border: 1px solid var(--destructive);
+  border-radius: var(--radius);
+  padding: 2rem;
+  max-width: 520px;
+  width: 100%;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
+}
+
+.gdpr-delete-page__modal-title {
+  font-size: var(--text-xl);
+  color: var(--destructive);
+  margin-bottom: 1rem;
+}
+
+.gdpr-delete-page__modal-desc {
+  color: var(--fg-muted);
+  margin-bottom: 1rem;
+  line-height: 1.5;
+}
+
+.gdpr-delete-page__code {
+  background-color: var(--bg-deep);
+  padding: 0.2rem 0.4rem;
+  border-radius: 4px;
+  color: var(--gold);
+  user-select: all;
+}
+
+.gdpr-delete-page__modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 1rem;
+}
+
+.gdpr-delete-page__cancel-btn {
+  padding: 0.625rem 1.25rem;
+  border-radius: var(--radius-pill);
+  background-color: transparent;
+  border: 1px solid var(--border-strong);
+  color: var(--fg-muted);
+  font-weight: 500;
+  font-family: var(--font-body);
+  cursor: pointer;
+  transition: background-color var(--dur-fast), color var(--dur-fast);
+}
+
+.gdpr-delete-page__cancel-btn:hover:not(:disabled) {
+  background-color: var(--surface-2);
+  color: var(--fg);
+}
+
+.gdpr-delete-page__cancel-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.gdpr-delete-page__confirm-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1.25rem;
+  border-radius: var(--radius-pill);
+  background-color: var(--border);
+  color: var(--fg-subtle);
+  border: none;
+  font-weight: 600;
+  font-family: var(--font-body);
+  cursor: not-allowed;
+  transition: background-color var(--dur-fast), color var(--dur-fast);
+}
+
+.gdpr-delete-page__confirm-btn:not(:disabled) {
+  background-color: var(--destructive);
+  color: #0f172a;
+  cursor: pointer;
+}
+
+.gdpr-delete-page__confirm-btn:not(:disabled):hover {
+  opacity: 0.9;
+}
+
+.gdpr-delete-page__cancel-btn:focus-visible,
+.gdpr-delete-page__confirm-btn:focus-visible {
+  outline: 2px solid var(--ring-strong);
+  outline-offset: 2px;
+}
+
+@media (max-width: 480px) {
+  .gdpr-delete-page__modal-actions {
+    flex-direction: column-reverse;
+  }
+  .gdpr-delete-page__cancel-btn,
+  .gdpr-delete-page__confirm-btn {
+    width: 100%;
+    justify-content: center;
+  }
+  .gdpr-delete-page__submit {
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gdpr-delete-page__submit,
+  .gdpr-delete-page__cancel-btn,
+  .gdpr-delete-page__confirm-btn,
+  .gdpr-delete-page__input {
+    transition: none;
+  }
+  .gdpr-delete-page__submit:hover {
+    transform: none;
+  }
+}

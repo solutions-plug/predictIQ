@@ -6,7 +6,7 @@
   padding: 0.3rem 0.6rem;
   border-radius: var(--radius-pill);
   border: 1px solid var(--border);
-  background: var(--surface-glass);
+  background: var(--surface);
   font-family: var(--font-body);
   font-size: var(--text-xs);
 }

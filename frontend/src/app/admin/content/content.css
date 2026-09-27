@@ -1,0 +1,23 @@
+.content-loading {
+  padding: 4rem;
+  text-align: center;
+  color: var(--fg-muted);
+}
+.content-loading__spinner {
+  margin-bottom: 1rem;
+}
+.content-loading__text {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.content-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 1rem;
+  margin-top: 1.5rem;
+  padding: 1rem;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}

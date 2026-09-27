@@ -1,5 +1,5 @@
 import React from 'react';
-import './MarketStatusBadge.css';
+import { Badge, type BadgeVariant } from '../ui/Badge';
 
 interface MarketStatusBadgeProps {
   status?: string | null;
@@ -9,7 +9,7 @@ interface MarketStatusBadgeProps {
 type StatusConfig = {
   label: string;
   icon: string;
-  colorClass: string;
+  variant: BadgeVariant;
   ariaLabel: string;
 };
 
@@ -17,31 +17,31 @@ const STATUS_MAP: Record<string, StatusConfig> = {
   Active: {
     label: 'Active',
     icon: '●',
-    colorClass: 'status-active',
+    variant: 'success',
     ariaLabel: 'Market is active',
   },
   PendingResolution: {
     label: 'Pending Resolution',
     icon: '⧗',
-    colorClass: 'status-pending',
+    variant: 'warning',
     ariaLabel: 'Market is pending resolution',
   },
   Disputed: {
     label: 'Disputed',
     icon: '⚡',
-    colorClass: 'status-disputed',
+    variant: 'info',
     ariaLabel: 'Market is disputed',
   },
   Resolved: {
     label: 'Resolved',
     icon: '✓',
-    colorClass: 'status-resolved',
+    variant: 'neutral',
     ariaLabel: 'Market is resolved',
   },
   Cancelled: {
     label: 'Cancelled',
     icon: '✕',
-    colorClass: 'status-cancelled',
+    variant: 'danger',
     ariaLabel: 'Market is cancelled',
   },
 };
@@ -49,7 +49,7 @@ const STATUS_MAP: Record<string, StatusConfig> = {
 const UNKNOWN_STATUS: StatusConfig = {
   label: 'Unknown',
   icon: '?',
-  colorClass: 'status-unknown',
+  variant: 'neutral',
   ariaLabel: 'Market status is unknown',
 };
 
@@ -60,15 +60,14 @@ export const MarketStatusBadge: React.FC<MarketStatusBadgeProps> = ({
   const config = status && STATUS_MAP[status] ? STATUS_MAP[status] : UNKNOWN_STATUS;
 
   return (
-    <div
-      className={`market-status-badge ${config.colorClass} ${className}`}
+    <Badge
+      variant={config.variant}
+      icon={config.icon}
+      className={className}
       role="status"
       aria-label={config.ariaLabel}
     >
-      <span className="status-icon" aria-hidden="true">
-        {config.icon}
-      </span>
-      <span className="status-label">{config.label}</span>
-    </div>
+      {config.label}
+    </Badge>
   );
 };

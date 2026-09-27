@@ -8,7 +8,8 @@
  * disabled states are handled consistently instead of ad hoc per form.
  * Styling follows the existing Button in components/admin/Form.tsx (the
  * closest prior art), generalized here to be usable outside the admin
- * section too.
+ * section too. Styled via classNames (src/styles/ui.css) — see that
+ * file's header comment for why inline `style` props don't work here.
  */
 
 import React from 'react';
@@ -22,27 +23,9 @@ export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElemen
   rightIcon?: React.ReactNode;
 }
 
-function variantStyles(variant: ButtonVariant): React.CSSProperties {
-  switch (variant) {
-    case 'primary':
-      return { backgroundColor: 'var(--gold)', color: 'var(--on-primary)', border: 'none', fontWeight: 600 };
-    case 'danger':
-      return { backgroundColor: 'var(--destructive)', color: '#ffffff', border: 'none', fontWeight: 600 };
-    case 'secondary':
-      return {
-        backgroundColor: 'var(--surface-2)',
-        color: 'var(--fg)',
-        border: '1px solid var(--border-strong)',
-        fontWeight: 500,
-      };
-    case 'ghost':
-      return { backgroundColor: 'transparent', color: 'var(--fg-muted)', border: 'none', fontWeight: 500 };
-  }
-}
-
 export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   (
-    { variant = 'primary', isLoading = false, leftIcon, rightIcon, children, disabled, className = '', style, ...props },
+    { variant = 'primary', isLoading = false, leftIcon, rightIcon, children, disabled, className = '', ...props },
     ref
   ) => {
     const isDisabled = disabled || isLoading;
@@ -55,38 +38,9 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
         aria-disabled={isDisabled}
         aria-busy={isLoading || undefined}
         className={`ui-btn ui-btn--${variant} ${className}`}
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: '0.5rem',
-          padding: '0.65rem 1.25rem',
-          fontSize: 'var(--text-sm)',
-          fontFamily: 'inherit',
-          borderRadius: 'var(--radius-sm)',
-          cursor: isDisabled ? 'not-allowed' : 'pointer',
-          opacity: isDisabled ? 0.6 : 1,
-          transition: 'all var(--dur-fast)',
-          textDecoration: 'none',
-          ...variantStyles(variant),
-          ...style,
-        }}
         {...props}
       >
-        {isLoading && (
-          <span
-            aria-hidden="true"
-            style={{
-              display: 'inline-block',
-              width: '14px',
-              height: '14px',
-              border: '2px solid currentColor',
-              borderTopColor: 'transparent',
-              borderRadius: '50%',
-              animation: 'spin 0.8s linear infinite',
-            }}
-          />
-        )}
+        {isLoading && <span aria-hidden="true" className="ui-btn__spinner" />}
         {!isLoading && leftIcon}
         <span>{children}</span>
         {!isLoading && rightIcon}

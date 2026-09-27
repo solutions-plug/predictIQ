@@ -11,7 +11,7 @@
   font-size: var(--text-sm);
   font-weight: 600;
   color: var(--fg);
-  background: var(--surface-glass);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   cursor: pointer;

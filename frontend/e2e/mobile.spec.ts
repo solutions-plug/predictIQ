@@ -1,5 +1,11 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { randomUUID } from 'crypto';
+
+// Below the 860px breakpoint, section links live inside the collapsed
+// nav-menu panel (#12) — open it via the toggle before interacting with them.
+async function openMobileNav(page: Page) {
+  await page.getByRole('button', { name: /menu|navigation/i }).click();
+}
 
 test.describe('Mobile Navigation', () => {
   test.use({ viewport: { width: 375, height: 667 } });
@@ -13,10 +19,12 @@ test.describe('Mobile Navigation', () => {
 
   test('should navigate between sections on mobile', async ({ page }) => {
     await page.goto('/');
-    
+
+    await openMobileNav(page);
     await page.getByRole('link', { name: /features/i }).click();
     await expect(page.locator('#features')).toBeInViewport();
-    
+
+    await openMobileNav(page);
     await page.getByRole('link', { name: /about/i }).click();
     await expect(page.locator('#about')).toBeInViewport();
   });
@@ -32,10 +40,11 @@ test.describe('Mobile Navigation', () => {
 
   test('should handle touch interactions', async ({ page }) => {
     await page.goto('/');
-    
+
+    await page.getByRole('button', { name: /menu|navigation/i }).tap();
     const featuresLink = page.getByRole('link', { name: /features/i });
     await featuresLink.tap();
-    
+
     await expect(page.locator('#features')).toBeInViewport();
   });
 });
@@ -139,17 +148,10 @@ test.describe('Touch Target Sizes', () => {
 test.describe('Mobile Nav Toggle', () => {
   test.use({ viewport: { width: 375, height: 667 } });
 
-  // The mobile nav toggle (#12) is feature-detected: this suite should keep
-  // passing before it ships and start exercising it the moment it does.
   test('should open and close the mobile nav menu via the toggle', async ({ page }) => {
     await page.goto('/');
 
     const navToggle = page.getByRole('button', { name: /menu|navigation/i });
-    if ((await navToggle.count()) === 0) {
-      test.skip(true, 'Mobile nav toggle (#12) not yet implemented');
-      return;
-    }
-
     await expect(navToggle).toHaveAttribute('aria-expanded', 'false');
     await navToggle.tap();
     await expect(navToggle).toHaveAttribute('aria-expanded', 'true');
@@ -191,6 +193,7 @@ test.describe('Mobile Core Journeys', () => {
 
     // Browse: real UI, mobile viewport
     await page.goto('/');
+    await page.getByRole('button', { name: /menu|navigation/i }).tap();
     await page.getByRole('link', { name: /how it works/i }).tap();
     await expect(page.locator('#how-it-works')).toBeInViewport();
     await expect(page.getByRole('heading', { name: /place bets/i })).toBeVisible();
@@ -351,6 +354,7 @@ test.describe('Touch Gesture – Tap to Select Outcome', () => {
   test('tap on navigation link should navigate to the target section', async ({ page }) => {
     await page.goto('/');
 
+    await page.getByRole('button', { name: /menu|navigation/i }).tap();
     const featuresLink = page.getByRole('link', { name: /features/i });
     await featuresLink.tap();
 
@@ -394,6 +398,7 @@ test.describe('Touch Gesture – Long Press', () => {
   test('long press on navigation link should not break navigation', async ({ page }) => {
     await page.goto('/');
 
+    await page.getByRole('button', { name: /menu|navigation/i }).tap();
     const featuresLink = page.getByRole('link', { name: /features/i });
     const box = await featuresLink.boundingBox();
 

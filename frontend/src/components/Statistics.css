@@ -3,24 +3,10 @@
   max-width: var(--container);
   margin: 0 auto;
   padding: clamp(2rem, 4vw, 3rem);
-  background: linear-gradient(135deg, var(--surface) 0%, var(--surface-2) 100%);
+  background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow);
+  border-radius: var(--radius);
   position: relative;
-  overflow: hidden;
-  transition: opacity var(--dur) var(--ease-expo);
-}
-.statistics::after {
-  content: '';
-  position: absolute;
-  top: -40%;
-  right: -10%;
-  width: 320px;
-  height: 320px;
-  background: radial-gradient(closest-side, rgba(139, 92, 246, 0.25), transparent 70%);
-  filter: blur(20px);
-  pointer-events: none;
 }
 
 .statistics > h2 {
@@ -38,15 +24,13 @@
 
 .stat-item {
   text-align: center;
-  padding: 1.75rem 1rem;
-  background: var(--surface-glass);
-  backdrop-filter: blur(6px);
+  padding: 1.5rem 1rem;
+  background: var(--surface-2);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  transition: transform var(--dur) var(--ease-expo), border-color var(--dur);
+  border-radius: var(--radius-sm);
+  transition: border-color var(--dur-fast);
 }
 .stat-item:hover {
-  transform: translateY(-4px);
   border-color: var(--border-strong);
 }
 
@@ -61,15 +45,12 @@
 }
 
 .stat-value {
-  font-family: var(--font-display);
+  font-family: var(--font-mono);
   font-size: clamp(1.9rem, 1.4rem + 2vw, 2.75rem);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   margin: 0;
-  background: var(--grad-brand);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--primary);
 }
 
 .stat-item > span {
@@ -83,10 +64,6 @@
   color: var(--destructive);
 }
 
-.retry-button:hover {
-  transform: translateY(-2px) scale(1.01);
-}
-
 .loading-overlay {
   position: absolute;
   inset: 0;
@@ -95,9 +72,8 @@
   align-items: center;
   justify-content: center;
   gap: 0.75rem;
-  border-radius: var(--radius-lg);
-  background: color-mix(in srgb, var(--surface) 72%, transparent);
-  backdrop-filter: blur(3px);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
   z-index: 10;
 }
 

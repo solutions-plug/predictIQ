@@ -15,6 +15,11 @@
  * GDPR deletion (#102) — can migrate to this without rewriting how they
  * open/close the dialog; only the two legacy Modal.tsx files are
  * superseded.
+ *
+ * Styled via classNames (src/styles/ui.css) — see that file's header
+ * comment for why inline `style` props don't work here. `maxWidth` maps
+ * to a small fixed set of width modifier classes rather than an inline
+ * style for the same reason.
  */
 
 import React, { useCallback, useEffect, useId, useRef } from 'react';
@@ -39,9 +44,10 @@ export function Modal({
   children,
   disableBackdropDismiss = false,
   disableEscapeKey = false,
-  maxWidth = '560px',
+  maxWidth,
   className = '',
 }: ModalProps) {
+  const widthClass = maxWidth === '540px' ? 'ui-modal--w-540' : '';
   const dialogRef = useRef<HTMLDivElement>(null);
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
   const generatedId = useId();
@@ -109,21 +115,7 @@ export function Modal({
   };
 
   return (
-    <div
-      role="presentation"
-      onClick={handleBackdropClick}
-      style={{
-        position: 'fixed',
-        inset: 0,
-        backgroundColor: 'rgba(5, 10, 20, 0.85)',
-        backdropFilter: 'blur(8px)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 9999,
-        padding: '1rem',
-      }}
-    >
+    <div role="presentation" onClick={handleBackdropClick} className="ui-modal-backdrop">
       <div
         ref={dialogRef}
         role="dialog"
@@ -131,89 +123,28 @@ export function Modal({
         aria-labelledby={titleId}
         aria-describedby={description ? descId : undefined}
         tabIndex={-1}
-        className={`ui-modal ${className}`}
-        style={{
-          width: '100%',
-          maxWidth,
-          backgroundColor: 'var(--surface)',
-          border: '1px solid var(--border-strong)',
-          borderRadius: 'var(--radius)',
-          boxShadow: 'var(--shadow), 0 0 30px rgba(0, 0, 0, 0.6)',
-          color: 'var(--fg)',
-          display: 'flex',
-          flexDirection: 'column',
-          overflow: 'hidden',
-          outline: 'none',
-        }}
+        className={`ui-modal ${widthClass} ${className}`}
         onClick={(event) => event.stopPropagation()}
       >
-        <div
-          style={{
-            padding: '1.25rem 1.5rem',
-            borderBottom: '1px solid var(--border)',
-            display: 'flex',
-            alignItems: 'flex-start',
-            justifyContent: 'space-between',
-            gap: '1rem',
-          }}
-        >
+        <div className="ui-modal__header">
           <div>
-            <h2
-              id={titleId}
-              style={{
-                margin: 0,
-                fontSize: '1.25rem',
-                fontFamily: 'var(--font-display)',
-                fontWeight: 600,
-                color: 'var(--fg)',
-              }}
-            >
+            <h2 id={titleId} className="ui-modal__title">
               {title}
             </h2>
             {description && (
-              <p
-                id={descId}
-                style={{
-                  margin: '0.35rem 0 0',
-                  fontSize: 'var(--text-sm)',
-                  color: 'var(--fg-muted)',
-                  lineHeight: 1.4,
-                }}
-              >
+              <p id={descId} className="ui-modal__desc">
                 {description}
               </p>
             )}
           </div>
           {!disableBackdropDismiss && (
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label="Close dialog"
-              style={{
-                background: 'transparent',
-                border: 'none',
-                color: 'var(--fg-muted)',
-                cursor: 'pointer',
-                padding: '0.25rem',
-                fontSize: '1.25rem',
-                lineHeight: 1,
-                borderRadius: 'var(--radius-sm)',
-              }}
-            >
+            <button type="button" onClick={onClose} aria-label="Close dialog" className="ui-modal__close">
               ×
             </button>
           )}
         </div>
 
-        <div
-          style={{
-            padding: '1.5rem',
-            overflowY: 'auto',
-            maxHeight: 'calc(80vh - 120px)',
-          }}
-        >
-          {children}
-        </div>
+        <div className="ui-modal__body">{children}</div>
       </div>
     </div>
   );

@@ -25,17 +25,13 @@ body {
   overflow-x: hidden;
 }
 
-/* Ambient atmosphere behind everything */
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  background:
-    radial-gradient(60vw 55vh at 15% -5%, rgba(245, 158, 11, 0.14), transparent 60%),
-    radial-gradient(55vw 55vh at 100% 0%, rgba(139, 92, 246, 0.18), transparent 55%),
-    radial-gradient(50vw 45vh at 50% 105%, rgba(139, 92, 246, 0.1), transparent 60%);
+/* Numeric/tabular data — prices, odds, volumes, timestamps, addresses -
+   always renders in the mono face with tabular figures, never the display
+   or body font. */
+.mono,
+.tabular-nums {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 
 h1,
@@ -75,39 +71,41 @@ main > section > h2 {
   margin-bottom: 0.75em;
 }
 
-/* Eyebrow tag reused across sections */
+/* Eyebrow tag reused across sections — a flat status tag, not a decorative
+   glass pill: a live-state dot plus label, the way a terminal marks a feed
+   as connected. */
 .eyebrow {
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
-  font-family: var(--font-display);
+  font-family: var(--font-mono);
   font-size: var(--text-xs);
   font-weight: 600;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--gold-soft);
-  padding: 0.4rem 0.85rem;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-pill);
-  background: var(--surface-glass);
-  backdrop-filter: blur(8px);
+  color: var(--fg-muted);
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
 }
 .eyebrow::before {
   content: '';
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: var(--gold);
-  box-shadow: 0 0 10px 1px var(--gold);
+  background: var(--success);
 }
 
-/* ============================================================= HEADER */
-header[role='banner'] {
+/* ============================================================= HEADER
+   Scoped to .landing-page: this file loads globally (imported once in
+   the root layout), and a bare `header[role='banner']` would otherwise
+   also match — and mis-style — AppShell's header on every other route. */
+.landing-page header[role='banner'] {
   position: sticky;
   top: 0;
   z-index: 100;
-  background: color-mix(in srgb, var(--bg) 72%, transparent);
-  backdrop-filter: blur(14px);
+  background: var(--bg);
   border-bottom: 1px solid var(--border);
 }
 
@@ -160,7 +158,7 @@ header[role='banner'] {
   width: 100%;
   height: 2px;
   border-radius: 2px;
-  background: var(--grad-brand);
+  background: var(--primary);
   transform: scaleX(0);
   transform-origin: left;
   transition: transform var(--dur) var(--ease-expo);
@@ -197,6 +195,30 @@ header[role='banner'] {
   transform: translateY(-1px);
 }
 
+.nav-menu-toggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0;
+  font-size: 1.2rem;
+  line-height: 1;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--dur-fast);
+}
+.nav-menu-toggle:hover {
+  background: var(--surface-2);
+}
+.nav-menu-toggle:focus-visible {
+  outline: 2px solid var(--ring-strong);
+  outline-offset: 2px;
+}
+
 .language-selector select {
   min-height: 44px;
   padding: 0 2rem 0 0.9rem;
@@ -216,57 +238,132 @@ header[role='banner'] {
   background-repeat: no-repeat;
 }
 
-/* ============================================================= HERO */
+/* ============================================================= HERO
+   Two columns on wide viewports: copy + CTAs on the left, a live markets
+   ticker (real fetched data, not decoration) on the right. Single column,
+   ticker below the fold copy, on narrow viewports. */
 .hero {
-  position: relative;
   max-width: var(--container);
   margin-inline: auto;
-  text-align: center;
-  padding-block: clamp(4rem, 8vw, 7rem) var(--space-section) !important;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
+  padding-block: clamp(3rem, 6vw, 5.5rem) var(--space-section);
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr;
+  gap: clamp(2rem, 5vw, 4rem);
+  align-items: start;
 }
 
-.hero-glow {
-  position: absolute;
-  top: -10%;
-  left: 50%;
-  translate: -50% 0;
-  width: min(720px, 90vw);
-  height: 420px;
-  z-index: -1;
-  pointer-events: none;
-  background: radial-gradient(closest-side, rgba(245, 158, 11, 0.22), transparent 70%);
-  filter: blur(30px);
+.hero-copy {
+  min-width: 0;
 }
 
 .hero .eyebrow {
-  margin-bottom: 1.75rem;
+  margin-bottom: 1.5rem;
 }
 
 #hero-heading {
   font-size: var(--text-hero);
-  max-width: 15ch;
+  max-width: 16ch;
   margin: 0 0 1.25rem;
-  background: linear-gradient(180deg, var(--fg) 30%, color-mix(in srgb, var(--fg) 62%, var(--purple)) 100%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--fg);
 }
 
 .hero-description {
   font-size: var(--text-lg);
   color: var(--fg-muted);
-  max-width: 58ch;
-  margin: 0 auto 2.5rem;
+  max-width: 52ch;
+  margin: 0 0 2rem;
+}
+
+/* ---- Live markets ticker (hero, right column) ---- */
+.live-ticker {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.live-ticker__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.85rem 1.1rem;
+  border-bottom: 1px solid var(--border);
+}
+.live-ticker__heading {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+.live-ticker__view-all {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--gold-soft);
+}
+.live-ticker__status {
+  padding: 1.5rem 1.1rem;
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+}
+.live-ticker__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.live-ticker__row {
+  border-bottom: 1px solid var(--border);
+}
+.live-ticker__row:last-child {
+  border-bottom: none;
+}
+.live-ticker__row-link {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1.1rem;
+  color: var(--fg);
+  transition: background-color var(--dur-fast);
+}
+.live-ticker__row-link:hover,
+.live-ticker__row-link:focus-visible {
+  background: var(--surface-2);
+  color: var(--fg);
+}
+.live-ticker__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+}
+.live-ticker__tag {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.live-ticker__tag--active {
+  color: var(--success);
+}
+.live-ticker__tag--closing-soon {
+  color: var(--primary);
+}
+.live-ticker__tag--resolved {
+  color: var(--fg-subtle);
+}
+.live-ticker__volume {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--fg);
+  text-align: right;
 }
 
 /* ---- CTA form ---- */
 .hero form {
   width: 100%;
-  max-width: 640px;
-  margin-inline: auto;
+  max-width: 480px;
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
@@ -291,13 +388,12 @@ header[role='banner'] {
 .hero input[type='email'] {
   width: 100%;
   min-width: 0;
-  min-height: 54px;
-  padding: 0 1.1rem;
+  min-height: 44px;
+  padding: 0 1rem;
   color: var(--fg);
-  background: var(--surface-glass);
-  backdrop-filter: blur(8px);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   font-family: var(--font-body);
   font-size: var(--text-base);
   transition: border-color var(--dur-fast), box-shadow var(--dur-fast);
@@ -314,42 +410,38 @@ header[role='banner'] {
 /* Primary CTA — shared button base */
 .hero button[type='submit'],
 .retry-button {
-  min-height: 54px;
-  padding: 0 1.4rem;
+  min-height: 44px;
+  padding: 0 1.25rem;
   white-space: nowrap;
-  font-family: var(--font-display);
+  font-family: var(--font-body);
   font-size: var(--text-sm);
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
   color: var(--on-primary);
-  background: var(--grad-brand);
+  background: var(--primary);
   border: none;
-  border-radius: var(--radius);
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  box-shadow: var(--shadow-glow-gold);
-  transition: transform var(--dur-fast) var(--ease-expo), box-shadow var(--dur);
+  transition: background var(--dur-fast), transform var(--dur-fast);
 }
 .hero button[type='submit'] {
   flex: 0 0 auto;
 }
 .hero button[type='submit']:hover:not(:disabled):not([aria-disabled='true']),
 .retry-button:hover {
-  transform: translateY(-2px) scale(1.01);
-  box-shadow: var(--shadow-glow-gold), 0 14px 30px -12px rgba(139, 92, 246, 0.5);
+  background: var(--gold-soft);
 }
 .hero button[type='submit']:active:not(:disabled):not([aria-disabled='true']) {
-  transform: translateY(0) scale(0.98);
+  transform: translateY(1px);
 }
 .hero button[type='submit']:disabled,
 .hero button[type='submit'][aria-disabled='true'] {
   cursor: not-allowed;
   opacity: 0.6;
-  box-shadow: none;
 }
 
 .hero .error-message {
   flex-basis: 100%;
-  justify-content: center;
   color: var(--destructive);
   font-size: var(--text-sm);
   margin-top: 0.35rem;
@@ -369,43 +461,24 @@ header[role='banner'] {
 
 .feature-card {
   position: relative;
-  padding: 2rem 1.75rem;
+  padding: 1.75rem;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  overflow: hidden;
-  transition: transform var(--dur) var(--ease-expo), border-color var(--dur),
-    box-shadow var(--dur);
-}
-.feature-card::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  padding: 1px;
-  border-radius: inherit;
-  background: linear-gradient(135deg, rgba(245, 158, 11, 0.5), transparent 40%);
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  opacity: 0;
-  transition: opacity var(--dur) var(--ease-expo);
+  border-radius: var(--radius);
+  transition: border-color var(--dur-fast), background-color var(--dur-fast);
 }
 .feature-card:hover {
-  transform: translateY(-6px);
   border-color: var(--border-strong);
-  box-shadow: var(--shadow);
-}
-.feature-card:hover::before {
-  opacity: 1;
+  background: var(--surface-2);
 }
 
 .feature-card img {
-  width: 52px;
-  height: 52px;
-  padding: 12px;
+  width: 44px;
+  height: 44px;
+  padding: 10px;
   margin-bottom: 1.25rem;
-  border-radius: var(--radius);
-  background: linear-gradient(135deg, rgba(245, 158, 11, 0.16), rgba(139, 92, 246, 0.16));
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
   border: 1px solid var(--border-strong);
 }
 .feature-card h3 {
@@ -432,23 +505,19 @@ header[role='banner'] {
 #how-it-works .steps-list li {
   counter-increment: step;
   position: relative;
-  padding: 2rem 1.5rem 1.5rem;
-  background: var(--surface-glass);
-  backdrop-filter: blur(6px);
+  padding: 1.75rem 1.5rem 1.5rem;
+  background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius);
 }
 #how-it-works .steps-list li::before {
   content: counter(step, decimal-leading-zero);
   display: block;
-  font-family: var(--font-display);
-  font-size: 1.6rem;
+  font-family: var(--font-mono);
+  font-size: 1.4rem;
   font-weight: 700;
   margin-bottom: 0.75rem;
-  background: var(--grad-brand);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--primary);
 }
 #how-it-works .steps-list h3 {
   font-size: var(--text-lg);
@@ -471,8 +540,9 @@ header[role='banner'] {
   font-size: var(--text-lg);
 }
 
-/* ============================================================= FOOTER */
-footer[role='contentinfo'] {
+/* ============================================================= FOOTER
+   Scoped to .landing-page for the same reason as the header rule above. */
+.landing-page footer[role='contentinfo'] {
   border-top: 1px solid var(--border);
   background: var(--bg-deep);
   padding: var(--space-section) clamp(1.25rem, 5vw, 3rem) 2rem;
@@ -525,15 +595,53 @@ footer[role='contentinfo'] {
 
 /* ============================================================= RESPONSIVE */
 @media (max-width: 860px) {
-  .nav-menu {
-    display: none;
+  .hero {
+    grid-template-columns: 1fr;
   }
   .nav-container {
     justify-content: space-between;
+    flex-wrap: wrap;
   }
   .header-controls {
     margin-left: auto;
   }
+  .nav-menu-toggle {
+    display: inline-flex;
+  }
+
+  /* Collapsed by default; the toggle in LandingPage.tsx adds/removes
+     nav-menu--open to swap this for a dropdown panel below the header. */
+  .nav-menu {
+    display: none;
+  }
+  .nav-menu--open {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    margin: 0;
+    padding: 0.5rem;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    box-shadow: var(--shadow);
+  }
+  .nav-menu--open a {
+    display: block;
+    padding: 0.85rem 1rem;
+    border-radius: var(--radius-sm);
+  }
+  .nav-menu--open a:hover,
+  .nav-menu--open a:focus-visible {
+    background: var(--surface-2);
+    color: var(--fg);
+  }
+  .nav-menu--open a::after {
+    display: none;
+  }
+
   .footer-content {
     grid-template-columns: 1fr 1fr;
   }
@@ -587,7 +695,6 @@ footer[role='contentinfo'] {
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
-  justify-content: center;
   margin-block: 1.75rem 2.5rem;
   animation: rise var(--dur-slow) var(--ease-expo) both;
   animation-delay: 150ms;
@@ -595,21 +702,19 @@ footer[role='contentinfo'] {
 .hero-cta {
   display: inline-flex;
   align-items: center;
-  padding: 0.85rem 1.6rem;
-  border-radius: var(--radius-pill);
+  padding: 0.75rem 1.4rem;
+  border-radius: var(--radius-sm);
   font-weight: 600;
   font-size: var(--text-base);
   text-decoration: none;
-  transition: transform var(--dur) var(--ease-expo), background-color var(--dur),
-    border-color var(--dur);
+  transition: background-color var(--dur-fast), border-color var(--dur-fast);
 }
 .hero-cta--primary {
-  background: var(--grad-brand);
+  background: var(--primary);
   color: var(--on-primary);
-  box-shadow: var(--shadow-glow-gold);
 }
 .hero-cta--primary:hover {
-  transform: translateY(-2px);
+  background: var(--gold-soft);
 }
 .hero-cta--secondary {
   background: transparent;
@@ -618,6 +723,7 @@ footer[role='contentinfo'] {
 }
 .hero-cta--secondary:hover {
   border-color: var(--gold);
+  color: var(--gold);
 }
 
 /* === Feature card as a link (#1344) === */

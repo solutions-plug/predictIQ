@@ -16,3 +16,23 @@
   padding: 0.5rem 0.75rem;
   border-bottom: 1px solid var(--border-color, #e5e7eb);
 }
+
+.outcome-list__label {
+  font-size: var(--text-sm, 0.9375rem);
+  color: var(--fg, inherit);
+}
+
+.outcome-list__odds {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--text-sm, 0.9375rem);
+  font-weight: 600;
+  color: var(--fg, inherit);
+  white-space: nowrap;
+}
+
+.outcome-list--empty {
+  padding: 1rem 0.75rem;
+  font-size: var(--text-sm, 0.9375rem);
+  color: var(--fg-muted, #6b7280);
+  text-align: center;
+}

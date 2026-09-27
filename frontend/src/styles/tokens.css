@@ -1,14 +1,18 @@
 /**
  * PredictIQ Design Tokens
- * Style direction: Modern Dark (cinematic) — deep navy surfaces, gold trust +
- * purple tech accents, ambient glow, glassmorphism. Dark is the brand default;
- * a disciplined light variant is provided for the manual toggle.
+ * Style direction: Trading terminal — dense, data-forward, deep navy
+ * surfaces, flat 1px borders, near-zero blur/glow. Color is reserved for
+ * functional signal (status, active state), not decoration. Numeric data
+ * (prices, odds, volumes, timestamps, addresses) renders in --font-mono
+ * with tabular figures, never the display/body face. Dark is the brand
+ * default; a disciplined light variant is provided for the manual toggle.
  */
 
 :root {
   /* ---- Type ---- */
   --font-display: 'Orbitron', ui-sans-serif, system-ui, sans-serif;
   --font-body: 'Exo 2', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
 
   --text-xs: 0.8125rem;
   --text-sm: 0.9375rem;
@@ -21,9 +25,9 @@
   /* ---- Spacing / rhythm ---- */
   --space-section: clamp(4rem, 3rem + 5vw, 8rem);
   --container: 1200px;
-  --radius-sm: 8px;
-  --radius: 14px;
-  --radius-lg: 22px;
+  --radius-sm: 4px;
+  --radius: 6px;
+  --radius-lg: 10px;
   --radius-pill: 999px;
 
   /* ---- Motion ---- */
@@ -37,14 +41,12 @@
   --gold-soft: #fbbf24;
   --purple: #8b5cf6;
   --purple-soft: #a78bfa;
-  --grad-brand: linear-gradient(135deg, var(--gold) 0%, var(--gold-soft) 45%, var(--purple) 100%);
 
   /* ---- DARK (default brand palette) ---- */
   --bg: #0b1120;
   --bg-deep: #070b16;
   --surface: #111a2e;
   --surface-2: #16223b;
-  --surface-glass: rgba(17, 26, 46, 0.6);
   --border: #22304d;
   --border-strong: #33436a;
   --fg: #f8fafc;
@@ -62,8 +64,10 @@
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow: 0 18px 40px -18px rgba(0, 0, 0, 0.7);
   --shadow-lg: 0 30px 60px -20px rgba(0, 0, 0, 0.8);
-  --shadow-glow-gold: 0 0 0 1px rgba(245, 158, 11, 0.15), 0 20px 60px -20px rgba(245, 158, 11, 0.35);
-  --shadow-glow-purple: 0 24px 70px -24px rgba(139, 92, 246, 0.45);
+  /* Flat 1px ring only — no ambient blur/halo. Trading-terminal direction
+     reserves emphasis for a thin edge, not a glow. */
+  --shadow-glow-gold: 0 0 0 1px rgba(245, 158, 11, 0.4);
+  --shadow-glow-purple: 0 0 0 1px rgba(139, 92, 246, 0.4);
 
   /* Issue #1313: these were referenced elsewhere in the app only via
      `var(--x, <hardcoded fallback>)`, bypassing the centralized token
@@ -89,13 +93,11 @@
   --gold-soft: #fbbf24;
   --purple: #8b5cf6;
   --purple-soft: #a78bfa;
-  --grad-brand: linear-gradient(135deg, var(--gold) 0%, var(--gold-soft) 45%, var(--purple) 100%);
 
   --bg: #0b1120;
   --bg-deep: #070b16;
   --surface: #111a2e;
   --surface-2: #16223b;
-  --surface-glass: rgba(17, 26, 46, 0.6);
   --border: #22304d;
   --border-strong: #33436a;
   --fg: #f8fafc;
@@ -110,8 +112,10 @@
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow: 0 18px 40px -18px rgba(0, 0, 0, 0.7);
-  --shadow-glow-gold: 0 0 0 1px rgba(245, 158, 11, 0.15), 0 20px 60px -20px rgba(245, 158, 11, 0.35);
-  --shadow-glow-purple: 0 24px 70px -24px rgba(139, 92, 246, 0.45);
+  /* Flat 1px ring only — no ambient blur/halo. Trading-terminal direction
+     reserves emphasis for a thin edge, not a glow. */
+  --shadow-glow-gold: 0 0 0 1px rgba(245, 158, 11, 0.4);
+  --shadow-glow-purple: 0 0 0 1px rgba(139, 92, 246, 0.4);
 
   color-scheme: dark;
 }
@@ -123,7 +127,6 @@
   --bg-deep: #eef2f9;
   --surface: #ffffff;
   --surface-2: #f2f5fb;
-  --surface-glass: rgba(255, 255, 255, 0.72);
   --border: #e2e8f0;
   --border-strong: #cbd5e1;
   --fg: #0f172a;
@@ -137,8 +140,8 @@
 
   --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.08);
   --shadow: 0 24px 48px -24px rgba(15, 23, 42, 0.25);
-  --shadow-glow-gold: 0 0 0 1px rgba(245, 158, 11, 0.2), 0 20px 50px -24px rgba(245, 158, 11, 0.4);
-  --shadow-glow-purple: 0 24px 60px -28px rgba(139, 92, 246, 0.35);
+  --shadow-glow-gold: 0 0 0 1px rgba(245, 158, 11, 0.45);
+  --shadow-glow-purple: 0 0 0 1px rgba(139, 92, 246, 0.45);
 
   color-scheme: light;
 }
@@ -154,7 +157,6 @@
     --bg-deep: #eef2f9;
     --surface: #ffffff;
     --surface-2: #f2f5fb;
-    --surface-glass: rgba(255, 255, 255, 0.72);
     --border: #e2e8f0;
     --border-strong: #cbd5e1;
     --fg: #0f172a;
@@ -168,8 +170,8 @@
 
     --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.08);
     --shadow: 0 24px 48px -24px rgba(15, 23, 42, 0.25);
-    --shadow-glow-gold: 0 0 0 1px rgba(245, 158, 11, 0.2), 0 20px 50px -24px rgba(245, 158, 11, 0.4);
-    --shadow-glow-purple: 0 24px 60px -28px rgba(139, 92, 246, 0.35);
+    --shadow-glow-gold: 0 0 0 1px rgba(245, 158, 11, 0.45);
+    --shadow-glow-purple: 0 0 0 1px rgba(139, 92, 246, 0.45);
 
     color-scheme: light;
   }
