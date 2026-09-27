@@ -149,6 +149,15 @@ const translations: LocaleData = {
       apiKey: 'Admin API key',
       continue: 'Continue',
     },
+    errorBoundary: {
+      title: 'Something went wrong',
+      defaultMessage: 'An unexpected error occurred.',
+      sectionMessage: 'An error occurred in the {section} section.',
+      reloadButton: 'Reload Page',
+      reportButton: 'Report Issue',
+      reloadAriaLabel: 'Reload the page',
+      reportAriaLabel: 'Report this issue',
+    },
   },
 };
 

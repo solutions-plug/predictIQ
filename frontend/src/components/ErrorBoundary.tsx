@@ -1,6 +1,7 @@
 'use client';
 
 import React, { ReactNode, ReactElement } from 'react';
+import { i18n } from '../lib/i18n';
 
 type FallbackRenderer = (reset: () => void) => ReactElement;
 
@@ -51,16 +52,16 @@ export class ErrorBoundary extends React.Component<Props, State> {
 
       return (
         this.props.fallback || (
-          <div 
-            role="alert" 
+          <div
+            role="alert"
             className="error-boundary-fallback"
             aria-labelledby="error-title"
           >
-            <h2 id="error-title">Something went wrong</h2>
+            <h2 id="error-title">{i18n.t('errorBoundary.title')}</h2>
             <p>
-              {this.props.section 
-                ? `An error occurred in the ${this.props.section} section.` 
-                : 'An unexpected error occurred.'}
+              {this.props.section
+                ? i18n.t('errorBoundary.sectionMessage').replace('{section}', this.props.section)
+                : i18n.t('errorBoundary.defaultMessage')}
             </p>
             {this.state.error?.message && (
               <p className="error-details">
@@ -68,25 +69,25 @@ export class ErrorBoundary extends React.Component<Props, State> {
               </p>
             )}
             <div className="error-actions">
-              <button 
+              <button
                 type="button"
                 onClick={() => {
                   if (typeof window !== 'undefined') {
                     window.location.reload();
                   }
                 }}
-                aria-label="Reload the page"
+                aria-label={i18n.t('errorBoundary.reloadAriaLabel')}
               >
-                Reload Page
+                {i18n.t('errorBoundary.reloadButton')}
               </button>
               <a
                 href={reportUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                aria-label="Report this issue"
+                aria-label={i18n.t('errorBoundary.reportAriaLabel')}
                 className="report-issue-link"
               >
-                Report Issue
+                {i18n.t('errorBoundary.reportButton')}
               </a>
             </div>
           </div>
