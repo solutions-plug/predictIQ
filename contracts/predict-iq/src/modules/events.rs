@@ -143,6 +143,27 @@ pub fn emit_dispute_resolved(e: &Env, market_id: u64, resolver: Address, winning
     );
 }
 
+/// Emit MarketStateChanged event.
+///
+/// Published whenever a market transitions between statuses so that indexers
+/// can reconstruct the full state history without polling storage.
+///
+/// Indexer schema:
+///   topics: [mkt_state, market_id]
+///   data:   (version: u32, old_status: String, new_status: String, timestamp: u64)
+pub fn emit_market_state_changed(
+    e: &Env,
+    market_id: u64,
+    old_status: soroban_sdk::String,
+    new_status: soroban_sdk::String,
+    timestamp: u64,
+) {
+    e.events().publish(
+        (symbol_short!("mkt_state"), market_id),
+        (EVENT_VERSION, old_status, new_status, timestamp),
+    );
+}
+
 pub fn emit_market_cancelled(e: &Env, market_id: u64, admin: Address) {
     e.events().publish(
         (symbol_short!("mkt_cncl"), market_id, admin),

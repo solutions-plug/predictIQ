@@ -1,7 +1,7 @@
 use crate::errors::ErrorCode;
 use crate::modules::{markets, oracles, voting};
 use crate::types::MarketStatus;
-use soroban_sdk::{Env, Symbol};
+use soroban_sdk::Env;
 
 pub const DEFAULT_DISPUTE_WINDOW_SECONDS: u64 = 259_200; // 72 hours
 pub const MIN_DISPUTE_WINDOW_SECONDS: u64 = 3_600; // 1 hour
@@ -115,8 +115,10 @@ pub fn attempt_oracle_resolution(e: &Env, market_id: u64) -> Result<(), ErrorCod
             e.ledger().timestamp(),
         );
 
-        e.events().publish(
-            (Symbol::new(e, "oracle_resolved"), market_id),
+        crate::modules::events::emit_oracle_resolved(
+            e,
+            market_id,
+            e.current_contract_address(),
             oracle_outcome,
         );
 
@@ -164,8 +166,10 @@ pub fn finalize_resolution(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
                 e.ledger().timestamp(),
             );
 
-            e.events().publish(
-                (Symbol::new(e, "market_finalized"), market_id),
+            crate::modules::events::emit_market_finalized(
+                e,
+                market_id,
+                e.current_contract_address(),
                 winning_outcome,
             );
 
@@ -203,8 +207,10 @@ pub fn finalize_resolution(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
                 e.ledger().timestamp(),
             );
 
-            e.events().publish(
-                (Symbol::new(e, "dispute_resolved"), market_id),
+            crate::modules::events::emit_dispute_resolved(
+                e,
+                market_id,
+                e.current_contract_address(),
                 winning_outcome,
             );
 
