@@ -22,6 +22,41 @@ struct UnsupportedMediaTypeError {
     received: String,
 }
 
+/// Returns `true` when the given `Content-Type` header value denotes JSON.
+///
+/// The media type is compared case-insensitively (RFC 7231 §3.1.1.1) and any
+/// parameters (e.g. `charset=utf-8`) are ignored, so `application/json`,
+/// `Application/JSON`, and `application/json; charset=utf-8` are all accepted.
+/// Malformed values such as `application/json; charset=` or a bare
+/// `application/json;` are rejected.
+fn is_json_content_type(content_type: &str) -> bool {
+    let mut parts = content_type.split(';');
+    let media_type = parts.next().unwrap_or("").trim();
+
+    if !media_type.eq_ignore_ascii_case("application/json") {
+        return false;
+    }
+
+    // Validate any parameters that follow the media type. A trailing `;` with
+    // no parameter, or a parameter with an empty value, is malformed.
+    for param in parts {
+        let param = param.trim();
+        if param.is_empty() {
+            return false;
+        }
+        match param.split_once('=') {
+            Some((name, value)) => {
+                if name.trim().is_empty() || value.trim().is_empty() {
+                    return false;
+                }
+            }
+            None => return false,
+        }
+    }
+
+    true
+}
+
 pub async fn require_json_content_type(
     req: Request<Body>,
     next: Next,
@@ -36,7 +71,7 @@ pub async fn require_json_content_type(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
-    if !content_type.starts_with("application/json") {
+    if !is_json_content_type(content_type) {
         let body = UnsupportedMediaTypeError {
             error:    "unsupported_media_type",
             message:  "Content-Type must be application/json for POST, PUT, and PATCH requests. \
@@ -71,5 +106,70 @@ mod tests {
         assert!(JSON_REQUIRED_METHODS.contains(&Method::POST));
         assert!(JSON_REQUIRED_METHODS.contains(&Method::PUT));
         assert!(JSON_REQUIRED_METHODS.contains(&Method::PATCH));
+    }
+
+    #[test]
+    fn content_type_accept_reject_table() {
+        // (header value, expected accept)
+        let cases: &[(&str, bool)] = &[
+            // Plain JSON.
+            ("application/json", true),
+            // Case-insensitivity of the media type.
+            ("Application/JSON", true),
+            ("APPLICATION/JSON", true),
+            ("application/Json", true),
+            // Charset parameter variants.
+            ("application/json; charset=utf-8", true),
+            ("application/json;charset=utf-8", true),
+            ("application/json; charset=UTF-8", true),
+            ("application/json; charset=us-ascii", true),
+            ("application/json; charset=iso-8859-1", true),
+            ("application/json; charset=unknown-charset", true),
+            ("application/json; boundary=something", true),
+            ("application/json; charset=utf-8; boundary=x", true),
+            // Whitespace tolerance around the media type.
+            ("  application/json  ", true),
+            // Malformed charset parameters must be rejected.
+            ("application/json; charset=", false),
+            ("application/json; charset", false),
+            ("application/json;", false),
+            ("application/json; ", false),
+            ("application/json; charset=utf-8;", false),
+            // Wrong or missing media type.
+            ("application/xml", false),
+            ("text/plain", false),
+            ("application/json-patch+json", false),
+            ("application/jsonx", false),
+            ("", false),
+        ];
+
+        for (value, expected) in cases {
+            assert_eq!(
+                is_json_content_type(value),
+                *expected,
+                "unexpected decision for Content-Type {value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn case_insensitive_media_type_is_accepted() {
+        assert!(is_json_content_type("Application/JSON"));
+        assert!(is_json_content_type("APPLICATION/JSON; CHARSET=UTF-8"));
+    }
+
+    #[test]
+    fn empty_charset_value_is_rejected() {
+        assert!(!is_json_content_type("application/json; charset="));
+    }
+
+    #[test]
+    fn trailing_semicolon_is_rejected() {
+        assert!(!is_json_content_type("application/json;"));
+    }
+
+    #[test]
+    fn unknown_charset_is_accepted() {
+        assert!(is_json_content_type("application/json; charset=made-up"));
     }
 }
