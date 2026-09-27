@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import Link from 'next/link';
 import { api, ApiError } from '@/lib/api/public-client';
 import { LoadingSpinner } from '@/components/LoadingSpinner';
+import './export.css';
 
 type Step = 'request-token' | 'verify-and-export' | 'export-complete';
 
@@ -139,155 +140,46 @@ export default function GdprExportPage() {
   };
 
   return (
-    <main
-      className="gdpr-export-container"
-      style={{
-        maxWidth: '680px',
-        margin: '60px auto',
-        padding: '36px 28px',
-        borderRadius: 'var(--radius, 14px)',
-        backgroundColor: 'var(--surface, #111a2e)',
-        border: '1px solid var(--border, #22304d)',
-        boxShadow: 'var(--shadow-lg, 0 10px 25px -5px rgba(0, 0, 0, 0.5))',
-        color: 'var(--fg, #f8fafc)',
-        fontFamily: 'var(--font-body, system-ui, sans-serif)',
-      }}
-    >
-      <div style={{ marginBottom: '28px' }}>
-        <Link
-          href="/"
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '8px',
-            color: 'var(--fg-muted, #9fb0cc)',
-            textDecoration: 'none',
-            fontSize: 'var(--text-sm, 0.9375rem)',
-            marginBottom: '16px',
-          }}
-        >
+    <main className="gdpr-export-container">
+      <div className="gdpr-export__intro">
+        <Link href="/" className="gdpr-export__back-link">
           ← Back to PredictIQ
         </Link>
-        <h1
-          style={{
-            fontFamily: 'var(--font-display, Orbitron, sans-serif)',
-            fontSize: 'var(--text-2xl, 1.75rem)',
-            margin: '0 0 10px',
-            color: 'var(--fg, #f8fafc)',
-          }}
-        >
-          GDPR Data Export
-        </h1>
-        <p
-          style={{
-            color: 'var(--fg-muted, #9fb0cc)',
-            fontSize: 'var(--text-base, 1rem)',
-            lineHeight: 1.5,
-            margin: 0,
-          }}
-        >
+        <h1 className="gdpr-export__title">GDPR Data Export</h1>
+        <p className="gdpr-export__desc">
           Request an export of all newsletter and account data stored with PredictIQ under GDPR /
           privacy regulations.
         </p>
       </div>
 
       {/* Progress Indicators */}
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          marginBottom: '28px',
-          paddingBottom: '16px',
-          borderBottom: '1px solid var(--border, #22304d)',
-        }}
-        aria-label="Progress steps"
-      >
+      <div className="gdpr-export__progress" aria-label="Progress steps">
         <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            color:
-              step === 'request-token'
-                ? 'var(--primary, #f59e0b)'
-                : 'var(--fg-muted, #9fb0cc)',
-            fontWeight: step === 'request-token' ? 600 : 400,
-            fontSize: 'var(--text-sm, 0.9375rem)',
-          }}
+          className={`gdpr-export__progress-step ${step === 'request-token' ? 'gdpr-export__progress-step--active' : ''}`}
         >
           <span>1. Request Code</span>
         </div>
         <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            color:
-              step === 'verify-and-export'
-                ? 'var(--primary, #f59e0b)'
-                : 'var(--fg-muted, #9fb0cc)',
-            fontWeight: step === 'verify-and-export' ? 600 : 400,
-            fontSize: 'var(--text-sm, 0.9375rem)',
-          }}
+          className={`gdpr-export__progress-step ${step === 'verify-and-export' ? 'gdpr-export__progress-step--active' : ''}`}
         >
           <span>2. Verify & Export</span>
         </div>
         <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            color:
-              step === 'export-complete'
-                ? 'var(--success, #34d399)'
-                : 'var(--fg-muted, #9fb0cc)',
-            fontWeight: step === 'export-complete' ? 600 : 400,
-            fontSize: 'var(--text-sm, 0.9375rem)',
-          }}
+          className={`gdpr-export__progress-step ${step === 'export-complete' ? 'gdpr-export__progress-step--success' : ''}`}
         >
           <span>3. Complete</span>
         </div>
       </div>
 
       {errorMessage && (
-        <div
-          role="alert"
-          aria-live="assertive"
-          style={{
-            padding: '16px',
-            backgroundColor: 'rgba(248, 113, 113, 0.1)',
-            border: '1px solid var(--destructive, #f87171)',
-            borderRadius: 'var(--radius-sm, 8px)',
-            marginBottom: '24px',
-            color: 'var(--fg, #f8fafc)',
-            fontSize: 'var(--text-sm, 0.9375rem)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '12px',
-          }}
-        >
+        <div role="alert" aria-live="assertive" className="gdpr-export__banner gdpr-export__banner--error">
           <span aria-hidden="true">⚠️</span>
           <span>{errorMessage}</span>
         </div>
       )}
 
       {statusMessage && (
-        <div
-          role="status"
-          aria-live="polite"
-          style={{
-            padding: '16px',
-            backgroundColor: 'rgba(52, 211, 153, 0.1)',
-            border: '1px solid var(--success, #34d399)',
-            borderRadius: 'var(--radius-sm, 8px)',
-            marginBottom: '24px',
-            color: 'var(--fg, #f8fafc)',
-            fontSize: 'var(--text-sm, 0.9375rem)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '12px',
-          }}
-        >
+        <div role="status" aria-live="polite" className="gdpr-export__banner gdpr-export__banner--success">
           <span aria-hidden="true">✉️</span>
           <span>{statusMessage}</span>
         </div>
@@ -296,17 +188,8 @@ export default function GdprExportPage() {
       {/* Step 1: Request Token Form */}
       {step === 'request-token' && (
         <form onSubmit={handleRequestToken} noValidate aria-busy={isLoading}>
-          <div style={{ marginBottom: '20px' }}>
-            <label
-              htmlFor="gdpr-email-input"
-              style={{
-                display: 'block',
-                fontSize: 'var(--text-sm, 0.9375rem)',
-                marginBottom: '8px',
-                color: 'var(--fg-muted, #9fb0cc)',
-                fontWeight: 500,
-              }}
-            >
+          <div className="gdpr-export__field">
+            <label htmlFor="gdpr-email-input" className="gdpr-export__label">
               Enter the email address associated with your subscription:
             </label>
             <input
@@ -323,54 +206,16 @@ export default function GdprExportPage() {
               disabled={isLoading}
               aria-invalid={!!validationError}
               aria-describedby={validationError ? 'gdpr-email-error' : undefined}
-              style={{
-                width: '100%',
-                padding: '12px 16px',
-                borderRadius: 'var(--radius-sm, 8px)',
-                backgroundColor: 'var(--surface-2, #16223b)',
-                border: validationError
-                  ? '1px solid var(--destructive, #f87171)'
-                  : '1px solid var(--border, #22304d)',
-                color: 'var(--fg, #f8fafc)',
-                fontSize: 'var(--text-base, 1rem)',
-                boxSizing: 'border-box',
-              }}
+              className={`gdpr-export__input ${validationError ? 'gdpr-export__input--error' : ''}`}
             />
             {validationError && (
-              <span
-                id="gdpr-email-error"
-                role="alert"
-                style={{
-                  display: 'block',
-                  marginTop: '6px',
-                  color: 'var(--destructive, #f87171)',
-                  fontSize: 'var(--text-xs, 0.8125rem)',
-                }}
-              >
+              <span id="gdpr-email-error" role="alert" className="gdpr-export__field-error">
                 {validationError}
               </span>
             )}
           </div>
 
-          <button
-            type="submit"
-            disabled={isLoading}
-            style={{
-              width: '100%',
-              padding: '12px 24px',
-              backgroundColor: 'var(--primary, #f59e0b)',
-              color: 'var(--on-primary, #0f172a)',
-              border: 'none',
-              borderRadius: 'var(--radius-sm, 8px)',
-              fontWeight: 600,
-              fontSize: 'var(--text-base, 1rem)',
-              cursor: isLoading ? 'not-allowed' : 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '8px',
-            }}
-          >
+          <button type="submit" disabled={isLoading} className="gdpr-export__submit">
             {isLoading ? (
               <LoadingSpinner size="small" aria-label="Sending verification code..." />
             ) : (
@@ -383,17 +228,8 @@ export default function GdprExportPage() {
       {/* Step 2: Verify Token and Download Form */}
       {step === 'verify-and-export' && (
         <form onSubmit={handleExportData} noValidate aria-busy={isLoading}>
-          <div style={{ marginBottom: '20px' }}>
-            <label
-              htmlFor="gdpr-token-input"
-              style={{
-                display: 'block',
-                fontSize: 'var(--text-sm, 0.9375rem)',
-                marginBottom: '8px',
-                color: 'var(--fg-muted, #9fb0cc)',
-                fontWeight: 500,
-              }}
-            >
+          <div className="gdpr-export__field">
+            <label htmlFor="gdpr-token-input" className="gdpr-export__label">
               Enter the verification code sent to your email:
             </label>
             <input
@@ -410,37 +246,16 @@ export default function GdprExportPage() {
               disabled={isLoading}
               aria-invalid={!!validationError}
               aria-describedby={validationError ? 'gdpr-token-error' : undefined}
-              style={{
-                width: '100%',
-                padding: '12px 16px',
-                borderRadius: 'var(--radius-sm, 8px)',
-                backgroundColor: 'var(--surface-2, #16223b)',
-                border: validationError
-                  ? '1px solid var(--destructive, #f87171)'
-                  : '1px solid var(--border, #22304d)',
-                color: 'var(--fg, #f8fafc)',
-                fontSize: 'var(--text-base, 1rem)',
-                boxSizing: 'border-box',
-                fontFamily: 'monospace',
-              }}
+              className={`gdpr-export__input gdpr-export__input--mono ${validationError ? 'gdpr-export__input--error' : ''}`}
             />
             {validationError && (
-              <span
-                id="gdpr-token-error"
-                role="alert"
-                style={{
-                  display: 'block',
-                  marginTop: '6px',
-                  color: 'var(--destructive, #f87171)',
-                  fontSize: 'var(--text-xs, 0.8125rem)',
-                }}
-              >
+              <span id="gdpr-token-error" role="alert" className="gdpr-export__field-error">
                 {validationError}
               </span>
             )}
           </div>
 
-          <div style={{ display: 'flex', gap: '12px' }}>
+          <div className="gdpr-export__actions">
             <button
               type="button"
               onClick={() => {
@@ -448,38 +263,11 @@ export default function GdprExportPage() {
                 setErrorMessage('');
               }}
               disabled={isLoading}
-              style={{
-                padding: '12px 20px',
-                backgroundColor: 'transparent',
-                color: 'var(--fg-muted, #9fb0cc)',
-                border: '1px solid var(--border, #22304d)',
-                borderRadius: 'var(--radius-sm, 8px)',
-                fontWeight: 500,
-                fontSize: 'var(--text-base, 1rem)',
-                cursor: 'pointer',
-              }}
+              className="gdpr-export__back-btn"
             >
               Back
             </button>
-            <button
-              type="submit"
-              disabled={isLoading}
-              style={{
-                flex: 1,
-                padding: '12px 24px',
-                backgroundColor: 'var(--primary, #f59e0b)',
-                color: 'var(--on-primary, #0f172a)',
-                border: 'none',
-                borderRadius: 'var(--radius-sm, 8px)',
-                fontWeight: 600,
-                fontSize: 'var(--text-base, 1rem)',
-                cursor: isLoading ? 'not-allowed' : 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: '8px',
-              }}
-            >
+            <button type="submit" disabled={isLoading} className="gdpr-export__submit gdpr-export__submit--flex">
               {isLoading ? (
                 <LoadingSpinner size="small" aria-label="Verifying token and exporting data..." />
               ) : (
@@ -493,97 +281,26 @@ export default function GdprExportPage() {
       {/* Step 3: Complete / Data Preview and Download */}
       {step === 'export-complete' && exportedData && (
         <div role="status" aria-live="polite">
-          <div
-            style={{
-              padding: '20px',
-              backgroundColor: 'rgba(52, 211, 153, 0.1)',
-              border: '1px solid var(--success, #34d399)',
-              borderRadius: 'var(--radius-sm, 8px)',
-              marginBottom: '24px',
-            }}
-          >
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '10px',
-                color: 'var(--success, #34d399)',
-                fontWeight: 600,
-                marginBottom: '8px',
-              }}
-            >
+          <div className="gdpr-export__complete-banner">
+            <div className="gdpr-export__complete-banner-title">
               <span>✅</span>
               <span>Data export generated successfully</span>
             </div>
-            <p
-              style={{
-                margin: 0,
-                color: 'var(--fg-muted, #9fb0cc)',
-                fontSize: 'var(--text-sm, 0.9375rem)',
-              }}
-            >
+            <p className="gdpr-export__complete-banner-copy">
               Your data has been compiled and is ready for inspection or download.
             </p>
           </div>
 
-          <div style={{ marginBottom: '24px' }}>
-            <h2
-              style={{
-                fontSize: 'var(--text-base, 1rem)',
-                margin: '0 0 8px',
-                color: 'var(--fg, #f8fafc)',
-              }}
-            >
-              Exported Data Record
-            </h2>
-            <pre
-              style={{
-                padding: '16px',
-                backgroundColor: 'var(--surface-2, #16223b)',
-                borderRadius: 'var(--radius-sm, 8px)',
-                border: '1px solid var(--border, #22304d)',
-                overflowX: 'auto',
-                fontSize: 'var(--text-xs, 0.8125rem)',
-                color: 'var(--fg, #f8fafc)',
-                maxHeight: '320px',
-              }}
-            >
-              {JSON.stringify(exportedData, null, 2)}
-            </pre>
+          <div className="gdpr-export__record">
+            <h2 className="gdpr-export__record-heading">Exported Data Record</h2>
+            <pre className="gdpr-export__record-pre">{JSON.stringify(exportedData, null, 2)}</pre>
           </div>
 
-          <div style={{ display: 'flex', gap: '12px' }}>
-            <button
-              type="button"
-              onClick={handleDownloadJson}
-              style={{
-                flex: 1,
-                padding: '12px 24px',
-                backgroundColor: 'var(--primary, #f59e0b)',
-                color: 'var(--on-primary, #0f172a)',
-                border: 'none',
-                borderRadius: 'var(--radius-sm, 8px)',
-                fontWeight: 600,
-                fontSize: 'var(--text-base, 1rem)',
-                cursor: 'pointer',
-              }}
-            >
+          <div className="gdpr-export__actions">
+            <button type="button" onClick={handleDownloadJson} className="gdpr-export__submit gdpr-export__submit--flex">
               Download JSON File
             </button>
-            <button
-              type="button"
-              onClick={handleReset}
-              style={{
-                padding: '12px 20px',
-                backgroundColor: 'transparent',
-                color: 'var(--fg-muted, #9fb0cc)',
-                border: '1px solid var(--border, #22304d)',
-                borderRadius: 'var(--radius-sm, 8px)',
-                fontWeight: 500,
-                fontSize: 'var(--text-base, 1rem)',
-                cursor: 'pointer',
-              }}
-            >
+            <button type="button" onClick={handleReset} className="gdpr-export__back-btn">
               New Request
             </button>
           </div>

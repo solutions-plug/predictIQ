@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { LoadingSpinner } from '@/components/LoadingSpinner';
 import { getEnvConfig } from '@/lib/env';
+import './unsubscribe.css';
 
 type UnsubscribeStatus = 'idle' | 'loading' | 'success' | 'already-unsubscribed' | 'error';
 
@@ -135,196 +136,75 @@ function UnsubscribeContent() {
   };
 
   return (
-    <main className="unsubscribe-page-container" style={{
-      maxWidth: '600px',
-      margin: '80px auto',
-      padding: '32px 24px',
-      borderRadius: 'var(--radius, 14px)',
-      backgroundColor: 'var(--surface, #111a2e)',
-      border: '1px solid var(--border, #22304d)',
-      boxShadow: 'var(--shadow-lg, 0 10px 25px -5px rgba(0, 0, 0, 0.5))',
-      color: 'var(--fg, #f8fafc)',
-      textAlign: 'center',
-      fontFamily: 'var(--font-body, system-ui, sans-serif)',
-    }}>
-      <div style={{ marginBottom: '24px' }}>
-        <Link href="/" style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: '8px',
-          color: 'var(--fg-muted, #9fb0cc)',
-          textDecoration: 'none',
-          fontSize: 'var(--text-sm, 0.9375rem)',
-          marginBottom: '16px',
-        }}>
+    <main className="unsubscribe-page-container">
+      <div className="unsubscribe-page__intro">
+        <Link href="/" className="unsubscribe-page__back-link">
           ← Back to PredictIQ
         </Link>
-        <h1 style={{
-          fontFamily: 'var(--font-display, Orbitron, sans-serif)',
-          fontSize: 'var(--text-xl, 1.5rem)',
-          margin: '0 0 8px',
-          color: 'var(--fg, #f8fafc)',
-        }}>
-          Newsletter Unsubscribe
-        </h1>
-        <p style={{
-          color: 'var(--fg-muted, #9fb0cc)',
-          fontSize: 'var(--text-sm, 0.9375rem)',
-          margin: 0,
-        }}>
-          Manage your PredictIQ newsletter subscription preferences
-        </p>
+        <h1 className="unsubscribe-page__title">Newsletter Unsubscribe</h1>
+        <p className="unsubscribe-page__desc">Manage your PredictIQ newsletter subscription preferences</p>
       </div>
 
       {status === 'loading' && (
-        <div role="status" aria-live="polite" style={{ padding: '32px 0' }}>
+        <div role="status" aria-live="polite" className="unsubscribe-page__loading">
           <LoadingSpinner size="large" aria-label="Processing your unsubscribe request" />
-          <p style={{ marginTop: '16px', color: 'var(--fg-muted, #9fb0cc)' }}>
-            Processing your unsubscribe request...
-          </p>
+          <p className="unsubscribe-page__loading-copy">Processing your unsubscribe request...</p>
         </div>
       )}
 
       {status === 'success' && (
-        <div
-          role="status"
-          aria-live="polite"
-          tabIndex={0}
-          style={{
-            padding: '24px',
-            backgroundColor: 'rgba(52, 211, 153, 0.1)',
-            border: '1px solid var(--success, #34d399)',
-            borderRadius: 'var(--radius-sm, 8px)',
-            marginBottom: '24px',
-          }}
-        >
-          <div style={{ fontSize: '2.5rem', marginBottom: '12px' }} aria-hidden="true">
+        <div role="status" aria-live="polite" tabIndex={0} className="unsubscribe-page__panel unsubscribe-page__panel--success">
+          <div className="unsubscribe-page__icon" aria-hidden="true">
             ✅
           </div>
-          <h2 style={{ fontSize: 'var(--text-lg, 1.25rem)', margin: '0 0 8px', color: 'var(--fg, #f8fafc)' }}>
-            Unsubscribed Successfully
-          </h2>
-          <p style={{ margin: '0 0 16px', color: 'var(--fg-muted, #9fb0cc)', lineHeight: 1.5 }}>
+          <h2 className="unsubscribe-page__panel-heading">Unsubscribed Successfully</h2>
+          <p className="unsubscribe-page__panel-copy">
             {message || 'You have been successfully unsubscribed from PredictIQ newsletter updates.'}
           </p>
-          <p style={{ fontSize: 'var(--text-xs, 0.8125rem)', color: 'var(--fg-subtle, #6b7c9c)', margin: '0 0 20px' }}>
+          <p className="unsubscribe-page__panel-subcopy">
             You will no longer receive promotional and newsletter emails from us.
           </p>
-          <Link
-            href="/"
-            style={{
-              display: 'inline-block',
-              padding: '10px 20px',
-              backgroundColor: 'var(--primary, #f59e0b)',
-              color: 'var(--on-primary, #0f172a)',
-              borderRadius: 'var(--radius-pill, 999px)',
-              textDecoration: 'none',
-              fontWeight: 600,
-              fontSize: 'var(--text-sm, 0.9375rem)',
-            }}
-          >
+          <Link href="/" className="unsubscribe-page__cta unsubscribe-page__cta--primary">
             Return to Home
           </Link>
         </div>
       )}
 
       {status === 'already-unsubscribed' && (
-        <div
-          role="status"
-          aria-live="polite"
-          tabIndex={0}
-          style={{
-            padding: '24px',
-            backgroundColor: 'rgba(139, 92, 246, 0.1)',
-            border: '1px solid var(--accent, #8b5cf6)',
-            borderRadius: 'var(--radius-sm, 8px)',
-            marginBottom: '24px',
-          }}
-        >
-          <div style={{ fontSize: '2.5rem', marginBottom: '12px' }} aria-hidden="true">
+        <div role="status" aria-live="polite" tabIndex={0} className="unsubscribe-page__panel unsubscribe-page__panel--info">
+          <div className="unsubscribe-page__icon" aria-hidden="true">
             ℹ️
           </div>
-          <h2 style={{ fontSize: 'var(--text-lg, 1.25rem)', margin: '0 0 8px', color: 'var(--fg, #f8fafc)' }}>
-            Already Unsubscribed
-          </h2>
-          <p style={{ margin: '0 0 16px', color: 'var(--fg-muted, #9fb0cc)', lineHeight: 1.5 }}>
+          <h2 className="unsubscribe-page__panel-heading">Already Unsubscribed</h2>
+          <p className="unsubscribe-page__panel-copy">
             {message || 'You are already unsubscribed from our newsletter list.'}
           </p>
-          <p style={{ fontSize: 'var(--text-xs, 0.8125rem)', color: 'var(--fg-subtle, #6b7c9c)', margin: '0 0 20px' }}>
-            No further emails will be sent to your address.
-          </p>
-          <Link
-            href="/"
-            style={{
-              display: 'inline-block',
-              padding: '10px 20px',
-              backgroundColor: 'var(--surface-2, #16223b)',
-              color: 'var(--fg, #f8fafc)',
-              border: '1px solid var(--border-strong, #33436a)',
-              borderRadius: 'var(--radius-pill, 999px)',
-              textDecoration: 'none',
-              fontWeight: 600,
-              fontSize: 'var(--text-sm, 0.9375rem)',
-            }}
-          >
+          <p className="unsubscribe-page__panel-subcopy">No further emails will be sent to your address.</p>
+          <Link href="/" className="unsubscribe-page__cta unsubscribe-page__cta--secondary">
             Return to Home
           </Link>
         </div>
       )}
 
       {status === 'error' && (
-        <div
-          role="alert"
-          aria-live="assertive"
-          style={{
-            padding: '24px',
-            backgroundColor: 'rgba(248, 113, 113, 0.1)',
-            border: '1px solid var(--destructive, #f87171)',
-            borderRadius: 'var(--radius-sm, 8px)',
-            marginBottom: '24px',
-          }}
-        >
-          <div style={{ fontSize: '2.5rem', marginBottom: '12px' }} aria-hidden="true">
+        <div role="alert" aria-live="assertive" className="unsubscribe-page__panel unsubscribe-page__panel--error">
+          <div className="unsubscribe-page__icon" aria-hidden="true">
             ⚠️
           </div>
-          <h2 style={{ fontSize: 'var(--text-lg, 1.25rem)', margin: '0 0 8px', color: 'var(--fg, #f8fafc)' }}>
-            Unsubscribe Notice
-          </h2>
-          <p style={{ margin: '0 0 20px', color: 'var(--fg-muted, #9fb0cc)', lineHeight: 1.5 }}>
-            {message}
-          </p>
-          <button
-            type="button"
-            onClick={() => setStatus('idle')}
-            style={{
-              padding: '8px 16px',
-              backgroundColor: 'transparent',
-              color: 'var(--fg, #f8fafc)',
-              border: '1px solid var(--border-strong, #33436a)',
-              borderRadius: 'var(--radius-sm, 8px)',
-              cursor: 'pointer',
-              fontWeight: 500,
-            }}
-          >
+          <h2 className="unsubscribe-page__panel-heading">Unsubscribe Notice</h2>
+          <p className="unsubscribe-page__panel-copy">{message}</p>
+          <button type="button" onClick={() => setStatus('idle')} className="unsubscribe-page__retry-btn">
             Enter Email Manually
           </button>
         </div>
       )}
 
       {status === 'idle' && (
-        <form onSubmit={handleManualSubmit} noValidate style={{ textAlign: 'left', marginTop: '20px' }}>
-          <label
-            htmlFor="unsubscribe-email"
-            style={{
-              display: 'block',
-              fontSize: 'var(--text-sm, 0.9375rem)',
-              marginBottom: '8px',
-              color: 'var(--fg-muted, #9fb0cc)',
-            }}
-          >
+        <form onSubmit={handleManualSubmit} noValidate className="unsubscribe-page__form">
+          <label htmlFor="unsubscribe-email" className="unsubscribe-page__label">
             Email address to unsubscribe:
           </label>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div className="unsubscribe-page__form-row">
             <input
               id="unsubscribe-email"
               type="email"
@@ -337,36 +217,14 @@ function UnsubscribeContent() {
               placeholder="you@example.com"
               aria-invalid={!!validationError}
               aria-describedby={validationError ? 'unsubscribe-val-error' : undefined}
-              style={{
-                width: '100%',
-                padding: '12px 16px',
-                borderRadius: 'var(--radius-sm, 8px)',
-                backgroundColor: 'var(--surface-2, #16223b)',
-                border: validationError ? '1px solid var(--destructive, #f87171)' : '1px solid var(--border, #22304d)',
-                color: 'var(--fg, #f8fafc)',
-                fontSize: 'var(--text-base, 1rem)',
-                boxSizing: 'border-box',
-              }}
+              className={`unsubscribe-page__input ${validationError ? 'unsubscribe-page__input--error' : ''}`}
             />
             {validationError && (
-              <span id="unsubscribe-val-error" role="alert" style={{ color: 'var(--destructive, #f87171)', fontSize: 'var(--text-xs, 0.8125rem)' }}>
+              <span id="unsubscribe-val-error" role="alert" className="unsubscribe-page__field-error">
                 {validationError}
               </span>
             )}
-            <button
-              type="submit"
-              style={{
-                padding: '12px 20px',
-                backgroundColor: 'var(--primary, #f59e0b)',
-                color: 'var(--on-primary, #0f172a)',
-                border: 'none',
-                borderRadius: 'var(--radius-sm, 8px)',
-                fontWeight: 600,
-                fontSize: 'var(--text-base, 1rem)',
-                cursor: 'pointer',
-                transition: 'opacity 0.2s',
-              }}
-            >
+            <button type="submit" className="unsubscribe-page__submit">
               Unsubscribe
             </button>
           </div>
@@ -380,7 +238,7 @@ export default function UnsubscribePage() {
   return (
     <Suspense
       fallback={
-        <div style={{ textAlign: 'center', padding: '100px 0' }}>
+        <div className="unsubscribe-page__suspense-fallback">
           <LoadingSpinner size="large" aria-label="Loading unsubscribe page" />
         </div>
       }

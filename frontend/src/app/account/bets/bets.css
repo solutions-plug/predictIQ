@@ -1,0 +1,131 @@
+.bet-history-page {
+  max-width: var(--container);
+  margin: 0 auto;
+  padding: clamp(2rem, 4vw, 3rem) 1.5rem;
+}
+
+.bet-history-page__heading {
+  font-family: var(--font-display);
+  font-size: var(--text-xl);
+  margin: 0 0 1.5rem;
+  color: var(--fg);
+}
+
+.bet-history-page__hint {
+  color: var(--fg-muted);
+  font-size: var(--text-base);
+}
+
+.bet-history-page__status {
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+}
+
+.bet-history-page__error {
+  color: var(--destructive);
+  font-size: var(--text-sm);
+  padding: 0.85rem 1.1rem;
+  background: rgba(248, 113, 113, 0.12);
+  border: 1px solid var(--destructive);
+  border-radius: var(--radius-sm);
+}
+
+.bet-history-page__table-wrapper {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow-x: auto;
+  margin-bottom: 1.5rem;
+}
+
+.bet-history-page__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.bet-history-page__table th,
+.bet-history-page__table td {
+  padding: 0.75rem 1rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.bet-history-page__table th {
+  background: var(--surface-2);
+  color: var(--fg-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: var(--text-xs);
+  letter-spacing: 0.05em;
+}
+
+.bet-history-page__table td {
+  color: var(--fg);
+}
+
+.bet-history-page__table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.bet-history-page__table tbody tr:hover td {
+  background: var(--surface-2);
+}
+
+.bet-history-page__pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+}
+
+.bet-history-page__pagination-btn {
+  min-height: 40px;
+  padding: 0 1.25rem;
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: border-color var(--dur-fast), background-color var(--dur-fast), transform var(--dur-fast) var(--ease-expo);
+}
+
+.bet-history-page__pagination-btn:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+  transform: translateY(-1px);
+}
+
+.bet-history-page__pagination-btn:focus-visible {
+  outline: 2px solid var(--ring-strong);
+  outline-offset: 2px;
+}
+
+.bet-history-page__pagination-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@media (max-width: 480px) {
+  .bet-history-page__pagination {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+
+  .bet-history-page__pagination-btn {
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bet-history-page__pagination-btn {
+    transition: none;
+  }
+  .bet-history-page__pagination-btn:hover:not(:disabled) {
+    transform: none;
+  }
+}

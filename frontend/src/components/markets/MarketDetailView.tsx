@@ -1,3 +1,5 @@
+'use client';
+
 import React from 'react';
 import { useAsync } from '../../lib/hooks/useAsync';
 import { api, ApiError, isMarketNotResolvedError } from '../../lib/api/public-client';

@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useState, useCallback } from 'react';
+import './bets.css';
 
 // TODO: replace with the shared wallet hook from #77 once merged. This local
 // stub exposes the same shape (connected address + change subscription) so
@@ -92,47 +93,65 @@ export default function BetHistoryPage() {
   if (!address) {
     return (
       <div className="bet-history-page">
-        <p>Connect your wallet to view your bet history.</p>
+        <p className="bet-history-page__hint">Connect your wallet to view your bet history.</p>
       </div>
     );
   }
 
   return (
     <div className="bet-history-page">
-      <h1>Bet History</h1>
-      {loading && <p role="status">Loading bets…</p>}
-      {error && <p role="alert">{error}</p>}
-      {!loading && !error && bets.length === 0 && <p>No bets found for this address.</p>}
+      <h1 className="bet-history-page__heading">Bet History</h1>
+      {loading && (
+        <p className="bet-history-page__status" role="status">
+          Loading bets…
+        </p>
+      )}
+      {error && (
+        <p className="bet-history-page__error" role="alert">
+          {error}
+        </p>
+      )}
+      {!loading && !error && bets.length === 0 && (
+        <p className="bet-history-page__hint">No bets found for this address.</p>
+      )}
 
       {bets.length > 0 && (
-        <table>
-          <thead>
-            <tr>
-              <th>Market</th>
-              <th>Outcome</th>
-              <th>Amount</th>
-              <th>Placed</th>
-            </tr>
-          </thead>
-          <tbody>
-            {bets.map((bet) => (
-              <tr key={bet.id}>
-                <td>{bet.market_id}</td>
-                <td>{bet.outcome}</td>
-                <td>{bet.amount}</td>
-                <td>{new Date(bet.placed_at).toLocaleString()}</td>
+        <div className="bet-history-page__table-wrapper">
+          <table className="bet-history-page__table">
+            <thead>
+              <tr>
+                <th>Market</th>
+                <th>Outcome</th>
+                <th>Amount</th>
+                <th>Placed</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {bets.map((bet) => (
+                <tr key={bet.id}>
+                  <td>{bet.market_id}</td>
+                  <td>{bet.outcome}</td>
+                  <td>{bet.amount}</td>
+                  <td>{new Date(bet.placed_at).toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
 
       <div className="bet-history-page__pagination">
-        <button type="button" disabled={page === 0 || loading} onClick={() => setPage((p) => Math.max(0, p - 1))}>
+        <button
+          type="button"
+          className="bet-history-page__pagination-btn"
+          disabled={page === 0 || loading}
+          onClick={() => setPage((p) => Math.max(0, p - 1))}
+        >
           Previous
         </button>
         <button
           type="button"
+          className="bet-history-page__pagination-btn"
           disabled={loading || bets.length < PAGE_SIZE}
           onClick={() => setPage((p) => p + 1)}
         >

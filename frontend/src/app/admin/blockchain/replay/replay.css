@@ -1,0 +1,194 @@
+.replay-permission-banner {
+  margin-bottom: 1.5rem;
+}
+.replay-permission-banner--denied {
+  background-color: rgba(248, 113, 113, 0.08);
+}
+.replay-permission-banner__inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+.replay-permission-banner__status-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+.replay-permission-banner__status-label {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-muted);
+  font-weight: 600;
+}
+.replay-permission-banner__desc {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+}
+.replay-permission-badge {
+  font-size: var(--text-xs);
+  font-weight: 700;
+  padding: 0.15rem 0.5rem;
+  border-radius: var(--radius-pill);
+}
+.replay-permission-badge--granted {
+  background-color: rgba(52, 211, 153, 0.15);
+  color: var(--success);
+}
+.replay-permission-badge--denied {
+  background-color: rgba(248, 113, 113, 0.15);
+  color: var(--destructive);
+}
+.replay-permission-toggle {
+  font-size: var(--text-xs);
+  padding: 0.35rem 0.65rem;
+  background-color: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.replay-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  gap: 1.5rem;
+  align-items: start;
+}
+@media (max-width: 860px) {
+  .replay-columns {
+    grid-template-columns: 1fr;
+  }
+}
+
+.replay-locked-notice {
+  background-color: rgba(248, 113, 113, 0.1);
+  border: 1px solid var(--destructive);
+  border-radius: var(--radius-sm);
+  padding: 0.85rem 1rem;
+  color: var(--destructive);
+  font-size: var(--text-sm);
+  margin-bottom: 1.25rem;
+  font-weight: 500;
+}
+
+.replay-submit-row {
+  margin-top: 1.75rem;
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+}
+
+.replay-notes {
+  margin-top: 2rem;
+  padding: 1rem;
+  background-color: var(--surface-2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  line-height: 1.5;
+}
+.replay-notes__title {
+  margin: 0 0 0.5rem;
+  font-size: var(--text-xs);
+  color: var(--fg);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.replay-notes ul {
+  margin: 0;
+  padding-left: 1.2rem;
+}
+
+.replay-history-count {
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+}
+.replay-history-empty {
+  font-size: var(--text-sm);
+  color: var(--fg-muted);
+  margin: 0;
+  text-align: center;
+  padding: 2rem 1rem;
+}
+.replay-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.replay-history-item {
+  background-color: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.75rem 1rem;
+  font-size: var(--text-xs);
+}
+.replay-history-item__row {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 0.25rem;
+}
+.replay-history-item__ledger {
+  font-weight: 600;
+  color: var(--fg);
+}
+.replay-history-item__count {
+  color: var(--success);
+  font-weight: 600;
+}
+.replay-history-item__meta {
+  color: var(--fg-muted);
+}
+
+.replay-warning-block {
+  background-color: rgba(248, 113, 113, 0.12);
+  border: 1px solid var(--destructive);
+  border-radius: var(--radius-sm);
+  padding: 1rem;
+  color: var(--fg);
+  margin-bottom: 1.25rem;
+}
+.replay-warning-block__title {
+  font-weight: 700;
+  color: var(--destructive);
+  margin-bottom: 0.4rem;
+  font-size: var(--text-sm);
+}
+.replay-warning-block p {
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
+
+.replay-confirm-field {
+  margin-bottom: 1.25rem;
+}
+.replay-confirm-field label {
+  display: block;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  margin-bottom: 0.4rem;
+}
+.replay-confirm-phrase {
+  color: var(--destructive);
+  font-family: var(--font-mono, monospace);
+  font-weight: 700;
+}
+.replay-confirm-error {
+  color: var(--destructive);
+  font-size: var(--text-xs);
+  margin-top: 0.35rem;
+  margin-bottom: 0;
+}
+
+.replay-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
