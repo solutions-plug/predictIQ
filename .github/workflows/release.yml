@@ -8,6 +8,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  actions: read
 
 jobs:
   validate-release:
@@ -47,7 +48,7 @@ jobs:
           fetch-depth: 0
 
       - name: Generate changelog with git-cliff
-        uses: orhun/git-cliff-action@b946ed27a675d653b308f29a7bbad813b85bf7aa # v3
+        uses: orhun/git-cliff-action@3d96a18cc4ec17e9dc69ddcc424ccafaf1f78ce2 # v4.9.0
         id: cliff
         with:
           config: cliff.toml
@@ -74,7 +75,7 @@ jobs:
           add-paths: CHANGELOG.md
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           body: ${{ steps.cliff.outputs.content }}
           tag_name: ${{ github.ref_name }}
@@ -97,51 +98,77 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+      - name: Download tested WASM artifact from contract-deployment
+        uses: dawidd6/action-download-artifact@v6
         with:
-          targets: wasm32-unknown-unknown
+          workflow: contract-deployment.yml
+          name: contract-wasm
+          path: wasm-artifact
+          commit: ${{ github.sha }}
+          if_no_artifact_found: fail
 
-      - name: Cache cargo dependencies
-        uses: actions/cache@v5
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Install Soroban CLI
-        run: cargo install --locked soroban-cli --features opt
-
-      - name: Build optimized WASM
-        run: cargo build --target wasm32-unknown-unknown --release
-        working-directory: contracts/predict-iq
-
-      - name: Optimize WASM
+      - name: Locate downloaded WASM
+        id: wasm
         run: |
-          soroban contract optimize \
-            --wasm target/wasm32-unknown-unknown/release/predict_iq.wasm \
-            --wasm-out target/wasm32-unknown-unknown/release/predict_iq_optimized.wasm
-        working-directory: contracts/predict-iq
+          WASM_FILE=$(find wasm-artifact -name '*.wasm' -type f | head -n 1)
+          if [ -z "$WASM_FILE" ]; then
+            echo "❌ No WASM file found in downloaded contract-wasm artifact"
+            exit 1
+          fi
+          echo "wasm_file=$WASM_FILE" >> $GITHUB_OUTPUT
+          echo "Using tested WASM artifact: $WASM_FILE"
 
       - name: Verify WASM size
         run: |
-          size=$(stat -c%s target/wasm32-unknown-unknown/release/predict_iq_optimized.wasm)
-          echo "Optimized WASM size: $size bytes"
+          size=$(stat -c%s "${{ steps.wasm.outputs.wasm_file }}")
+          echo "Tested WASM size: $size bytes"
           if [ $size -gt ${{ env.WASM_SIZE_LIMIT_BYTES }} ]; then
             echo "❌ WASM size $size exceeds limit of ${{ env.WASM_SIZE_LIMIT_BYTES }} bytes"
             exit 1
           fi
           echo "✅ WASM size check passed"
-        working-directory: contracts/predict-iq
         env:
           WASM_SIZE_LIMIT_BYTES: "65536"
 
+      - name: Verify WASM hash matches tested/deployed build
+        id: hash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          EXPECTED_HASH=$(gh run list \
+            --workflow contract-deployment.yml \
+            --commit "${{ github.sha }}" \
+            --status success \
+            --limit 1 \
+            --json databaseId \
+            --jq '.[0].databaseId' | \
+            xargs -I{} gh run view {} --json jobs \
+            --jq '.jobs[] | select(.name == "build-and-test") | .steps[] | select(.name == "Compute contract hash") | .outputs.contract-hash')
+          if [ -z "$EXPECTED_HASH" ] || [ "$EXPECTED_HASH" = "null" ]; then
+            echo "❌ Could not retrieve contract-hash from contract-deployment.yml for commit ${{ github.sha }}"
+            exit 1
+          fi
+          ACTUAL_HASH=$(sha256sum "${{ steps.wasm.outputs.wasm_file }}" | awk '{print $1}')
+          echo "Expected (tested/deployed) hash: $EXPECTED_HASH"
+          echo "Actual (release artifact) hash: $ACTUAL_HASH"
+          if [ "$EXPECTED_HASH" != "$ACTUAL_HASH" ]; then
+            echo "❌ SHA-256 mismatch: release WASM does not match the tested/deployed build"
+            exit 1
+          fi
+          echo "✅ SHA-256 matches the tested/deployed build"
+          echo "sha256=$ACTUAL_HASH" >> $GITHUB_OUTPUT
+
       - name: Upload WASM to GitHub Release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          files: contracts/predict-iq/target/wasm32-unknown-unknown/release/predict_iq_optimized.wasm
+          files: ${{ steps.wasm.outputs.wasm_file }}
           tag_name: ${{ github.ref_name }}
+          body: |
+            ${{ steps.cliff.outputs.content }}
+
+            ---
+            **Verified WASM artifact**
+            - SHA-256: `${{ steps.hash.outputs.sha256 }}`
+            - Source: `contract-deployment.yml` (`build-and-test` job, commit `${{ github.sha }}`)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

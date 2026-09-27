@@ -56,8 +56,9 @@ services/**/target/
 contracts/**/*.wasm
 contracts/**/*.d
 
-# Cargo lock (regenerated per environment)
-Cargo.lock
+# Cargo lock files are committed for binary crates (root workspace and services/api)
+# so CI caches, cargo-audit, cargo-deny, and Docker builds are reproducible.
+# Do not ignore Cargo.lock here.
 
 # Criterion benchmark output
 **/criterion/

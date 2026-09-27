@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { usePathname, useSearchParams } from 'next/navigation';
 
 /**
  * Referral-code capture (#1374).
@@ -126,10 +127,10 @@ export function attachReferralCode<T extends Record<string, unknown>>(
 }
 
 /**
- * React hook: captures a `ref` query param on mount (and whenever the
- * pathname/search the caller re-renders with changes), and exposes the
- * effective referral code plus an `attach` helper for building transaction
- * payloads (market creation, bet placement, signup, ...).
+ * React hook: captures a `ref` query param on mount and re-captures whenever
+ * the caller's route/search params change (client-side navigation), and
+ * exposes the effective referral code plus an `attach` helper for building
+ * transaction payloads (market creation, bet placement, signup, ...).
  */
 export function useReferral(): {
   referralCode: string | null;
@@ -137,10 +138,12 @@ export function useReferral(): {
   clear: () => void;
 } {
   const [referralCode, setReferralCode] = useState<string | null>(null);
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
 
   useEffect(() => {
     setReferralCode(captureReferralFromLocation());
-  }, []);
+  }, [pathname, searchParams]);
 
   return {
     referralCode,

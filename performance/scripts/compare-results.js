@@ -179,10 +179,21 @@ function compareResults(testName, currentResults) {
   const baseline = loadBaseline(testName, branch);
 
   if (!baseline) {
-    console.log(
-      `⚠️  No baseline found for branch '${branch}'. Skipping comparison.`,
+    const baselineFile = path.join(
+      BASELINES_DIR,
+      `${branch}-${testName}-baseline.json`,
     );
-    return { hasRegression: false, regressions: [] };
+    console.warn(
+      `\n⚠️  NO BASELINE TO COMPARE AGAINST for test '${testName}' on branch '${branch}'.`,
+    );
+    console.warn(`    Expected baseline file: ${baselineFile}`);
+    console.warn(
+      "    This is NOT a 'no regression' result — regression detection was skipped.",
+    );
+    console.warn(
+      "    Generate a baseline by running this script with --save-baseline on the target branch.",
+    );
+    return { hasRegression: false, regressions: [], noBaseline: true };
   }
 
   console.log(
@@ -303,107 +314,6 @@ function generateMarkdownReport(testResults) {
   Object.entries(testResults).forEach(([testName, result]) => {
     if (result.hasRegression) {
       hasAnyRegression = true;
-      result.regressions.forEach((r) => {
-        allRegressions.push({ test: testName, ...r });
-      });
     }
-  });
 
-  if (hasAnyRegression) {
-    markdown += "### ⚠️ Performance Regressions Detected\n\n";
-    markdown += "| Test | Metric | Baseline | Current | Change |\n";
-    markdown += "|------|--------|----------|---------|--------|\n";
-
-    allRegressions.forEach((r) => {
-      markdown += `| ${r.test} | ${r.metric} | ${r.baseline.toFixed(2)} | ${r.current.toFixed(2)} | ${formatChange(r.change)} |\n`;
-    });
-
-    markdown +=
-      "\n**Action Required:** Review the changes and consider optimizations.\n";
-  } else {
-    markdown += "### ✅ No Performance Regressions\n\n";
-    markdown += "All metrics are within acceptable thresholds.\n";
-  }
-
-  markdown += `\n**Threshold:** ${regressionThreshold}% | **Branch:** ${branch}\n`;
-
-  return markdown;
-}
-
-/**
- * Main execution
- */
-function main() {
-  console.log("🔍 Performance Regression Detection\n");
-
-  if (saveBaseline) {
-    console.log(
-      `💾 Saving current results as baseline for branch '${branch}'...\n`,
-    );
-
-    const testFiles = [
-      "load-test-summary.json",
-      "cache-test-summary.json",
-      "blockchain-load-test-summary.json",
-      "stress-test-summary.json",
-    ];
-
-    testFiles.forEach((file) => {
-      const testName = file.replace("-summary.json", "");
-      const results = loadResults(file);
-
-      if (results) {
-        saveAsBaseline(testName, branch, results);
-      }
-    });
-
-    console.log("\n✅ Baselines saved successfully");
-    process.exit(0);
-  }
-
-  // Compare mode
-  const testFiles = [
-    "load-test-summary.json",
-    "cache-test-summary.json",
-    "blockchain-load-test-summary.json",
-  ];
-
-  const testResults = {};
-  let hasAnyRegression = false;
-
-  testFiles.forEach((file) => {
-    const testName = file.replace("-summary.json", "");
-    const current = loadResults(file);
-
-    if (current) {
-      const result = compareResults(testName, current);
-      testResults[testName] = result;
-
-      if (result.hasRegression) {
-        hasAnyRegression = true;
-      }
-    } else {
-      console.log(`⚠️  Results file not found: ${file}`);
-    }
-  });
-
-  // Generate markdown report
-  const markdownReport = generateMarkdownReport(testResults);
-  const reportFile = path.join(REPORTS_DIR, "regression-report.md");
-  fs.writeFileSync(reportFile, markdownReport);
-  console.log(`\n📄 Regression report saved: ${reportFile}`);
-
-  // Display error budget trend
-  displayErrorBudgetTrend();
-
-  if (hasAnyRegression) {
-    console.log("\n❌ Performance regression detected!");
-    console.log("Review the changes and consider optimizations.\n");
-    process.exit(1);
-  } else {
-    console.log("\n✅ No significant performance regression detected.\n");
-    process.exit(0);
-  }
-}
-
-main();
+/* … truncated 2799 chars — edit only what you need near the top … */

@@ -18,6 +18,14 @@ import { isSupportedAsset } from '../assets';
 export const MIN_OUTCOMES = 2;
 export const MAX_OUTCOMES = 100;
 
+// Minimum lead time (in milliseconds) a market's close time must be in the
+// future at submission. A close time that's merely non-past can still elapse
+// while the user finishes the form, connects/signs a wallet transaction, and
+// waits for on-chain confirmation, causing a revert after gas has already
+// been spent (#1597). Requiring a 5-minute buffer keeps the timestamp valid
+// through that window.
+export const MIN_CLOSE_TIME_LEAD_MS = 5 * 60 * 1000;
+
 /**
  * Two outcome labels are considered duplicates if they're equal once
  * surrounding whitespace is trimmed and case is normalized — e.g. "Yes",
@@ -60,8 +68,8 @@ export const marketFormSchema = z.object({
     .min(1, 'Close time is required.')
     .refine((value) => !Number.isNaN(Date.parse(value)), 'Close time must be a valid date.')
     .refine(
-      (value) => Date.parse(value) > Date.now(),
-      'Close time must be in the future.'
+      (value) => Date.parse(value) >= Date.now() + MIN_CLOSE_TIME_LEAD_MS,
+      'Close time must be at least 5 minutes in the future.'
     ),
   // An asset that's technically valid on-chain but not on the platform's
   // supported list (see lib/assets.ts) must be rejected here, not left for

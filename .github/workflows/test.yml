@@ -307,7 +307,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload predict-iq LCOV to Codecov
-        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           files: coverage-reports/predict-iq.lcov
           flags: predict-iq
@@ -315,7 +315,7 @@ jobs:
           verbose: true
 
       - name: Upload predictiq-api LCOV to Codecov
-        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           files: coverage-reports/predictiq-api.lcov
           flags: predictiq-api
@@ -398,7 +398,7 @@ jobs:
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
 
       - name: Run TruffleHog
-        uses: trufflesecurity/trufflehog@9f0b97f1600cd5f51e5ecb8380087807acb790f9 # main
+        uses: trufflesecurity/trufflehog@4b7d1d3a6827691637eff750b6482042e06462d0 # main
         with:
           path: ./
           base: ${{ github.event.repository.default_branch }}
@@ -413,7 +413,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@314ff8b43182423b84c50b1670b0e10f858f2d98 # master
+        uses: aquasecurity/trivy-action@d2a0b60797ff03db6132bd4e2b293f9b37081297 # master
         with:
           scan-type: "fs"
           scan-ref: "."
@@ -456,7 +456,7 @@ jobs:
         run: docker build -t predictiq-api:${{ github.sha }} -f Dockerfile .
 
       - name: Scan API container with Trivy
-        uses: aquasecurity/trivy-action@314ff8b43182423b84c50b1670b0e10f858f2d98 # master
+        uses: aquasecurity/trivy-action@d2a0b60797ff03db6132bd4e2b293f9b37081297 # master
         with:
           image-ref: "predictiq-api:${{ github.sha }}"
           format: "sarif"
@@ -476,7 +476,7 @@ jobs:
         continue-on-error: true
 
       - name: Scan TTS container with Trivy
-        uses: aquasecurity/trivy-action@314ff8b43182423b84c50b1670b0e10f858f2d98 # master
+        uses: aquasecurity/trivy-action@d2a0b60797ff03db6132bd4e2b293f9b37081297 # master
         if: success()
         with:
           image-ref: "predictiq-tts:${{ github.sha }}"

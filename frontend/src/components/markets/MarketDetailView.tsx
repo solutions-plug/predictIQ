@@ -3,6 +3,7 @@
 import React from 'react';
 import { useAsync } from '../../lib/hooks/useAsync';
 import { api, ApiError, isMarketNotResolvedError } from '../../lib/api/public-client';
+import { useI18n } from '../../lib/hooks/useI18n';
 import { LoadingSpinner } from '../LoadingSpinner';
 import { ResolutionPendingNotice } from './ResolutionPendingNotice';
 import './MarketDetailView.css';
@@ -32,6 +33,7 @@ interface MarketDetailViewProps {
  * #1369). Any other failure is shown as a real error.
  */
 export const MarketDetailView: React.FC<MarketDetailViewProps> = ({ marketId }) => {
+  const { t } = useI18n();
   const fetchMarket = React.useCallback(
     (signal: AbortSignal) => api.getBlockchainMarket(marketId, signal),
     [marketId],
@@ -76,19 +78,19 @@ export const MarketDetailView: React.FC<MarketDetailViewProps> = ({ marketId }) 
 
   if (loading && !data) {
     return (
-      <section className="market-detail" aria-label="Market details">
-        <LoadingSpinner aria-label="Loading market" />
+      <section className="market-detail" aria-label={t('marketDetailView.ariaLabel')}>
+        <LoadingSpinner aria-label={t('marketDetailView.loadingAriaLabel')} />
       </section>
     );
   }
 
   if (error) {
     return (
-      <section className="market-detail" aria-label="Market details">
+      <section className="market-detail" aria-label={t('marketDetailView.ariaLabel')}>
         <div className="market-detail__error" role="alert">
-          <p>Failed to load this market. Please try again.</p>
+          <p>{t('marketDetailView.loadError')}</p>
           <button type="button" className="retry-button" onClick={() => retry()}>
-            Retry
+            {t('marketDetailView.retry')}
           </button>
         </div>
       </section>
@@ -96,7 +98,7 @@ export const MarketDetailView: React.FC<MarketDetailViewProps> = ({ marketId }) 
   }
 
   return (
-    <section className="market-detail" aria-label="Market details">
+    <section className="market-detail" aria-label={t('marketDetailView.ariaLabel')}>
       {data?.description != null && <h1 className="market-detail__title">{String(data.description)}</h1>}
 
       <div className="market-detail__payout">
@@ -106,7 +108,7 @@ export const MarketDetailView: React.FC<MarketDetailViewProps> = ({ marketId }) 
           onClick={handleViewPayoutDetails}
           disabled={payoutLoading}
         >
-          {payoutLoading ? 'Loading…' : 'View payout details'}
+          {payoutLoading ? t('marketDetailView.loading') : t('marketDetailView.viewPayoutDetails')}
         </button>
 
         {payoutState?.pending && <ResolutionPendingNotice className="market-detail__payout-notice" />}

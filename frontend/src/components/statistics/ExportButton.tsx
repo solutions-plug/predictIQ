@@ -1,4 +1,5 @@
 import React from 'react';
+import { useI18n } from '../../lib/hooks/useI18n';
 import './ExportButton.css';
 
 export interface ExportSection {
@@ -12,6 +13,13 @@ interface ExportButtonProps {
   filenamePrefix: string;
   disabled?: boolean;
 }
+
+/**
+ * UTF-8 byte order mark. Excel mis-detects the encoding of BOM-less UTF-8
+ * CSVs and can mangle non-ASCII characters (e.g. market titles) on open, so
+ * the CSV export is prefixed with this marker.
+ */
+const UTF8_BOM = '\uFEFF';
 
 /**
  * Formats a numeric CSV cell with a fixed `.` decimal separator and no
@@ -43,7 +51,7 @@ function sectionsToCsv(sections: ExportSection[]): string {
     }
     return lines.join('\n');
   });
-  return blocks.join('\n\n');
+  return UTF8_BOM + blocks.join('\n\n');
 }
 
 function sectionsToJson(sections: ExportSection[]): string {
@@ -67,6 +75,7 @@ function triggerDownload(filename: string, mimeType: string, content: string): v
 }
 
 export const ExportButton: React.FC<ExportButtonProps> = ({ sections, filenamePrefix, disabled }) => {
+  const { t } = useI18n();
   const isDisabled = disabled || sections.every((section) => section.rows.length === 0);
 
   const handleExportCsv = () => {
@@ -78,12 +87,12 @@ export const ExportButton: React.FC<ExportButtonProps> = ({ sections, filenamePr
   };
 
   return (
-    <div className="export-button-group" role="group" aria-label="Export statistics data">
+    <div className="export-button-group" role="group" aria-label={t('exportButton.groupAriaLabel')}>
       <button type="button" className="export-button" onClick={handleExportCsv} disabled={isDisabled}>
-        Export CSV
+        {t('exportButton.exportCsv')}
       </button>
       <button type="button" className="export-button" onClick={handleExportJson} disabled={isDisabled}>
-        Export JSON
+        {t('exportButton.exportJson')}
       </button>
     </div>
   );

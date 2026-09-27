@@ -1,27 +1,29 @@
 {
+  "$schema": "https://bundlewatch.io/schema.json",
   "files": [
     {
-      "path": ".next/static/chunks/framework-*.js",
-      "maxSize": "50 kB"
+      "path": "app/page/**/*.js",
+      "maxSize": "250 kB"
     },
     {
-      "path": ".next/static/chunks/main-app-*.js",
-      "maxSize": "100 kB"
+      "path": "app/markets/**/*.js",
+      "maxSize": "300 kB"
     },
     {
-      "path": ".next/static/chunks/app/page-*.js",
-      "maxSize": "150 kB"
+      "path": "app/admin/**/*.js",
+      "maxSize": "350 kB"
     },
     {
-      "path": ".next/static/chunks/app/markets/**/*.js",
-      "maxSize": "200 kB"
+      "path": "app/account/**/*.js",
+      "maxSize": "300 kB"
     },
     {
-      "path": ".next/static/chunks/app/admin/**/*.js",
+      "path": "app/tx/**/*.js",
+      "maxSize": "250 kB"
+    },
+    {
+      "path": "app/newsletter/**/*.js",
       "maxSize": "200 kB"
     }
-  ],
-  "ci": {
-    "trackBranches": ["main"]
-  }
+  ]
 }

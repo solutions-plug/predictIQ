@@ -2,6 +2,7 @@
 
 import React from 'react';
 import { SUPPORTED_ASSETS, type SupportedAsset } from '../../lib/assets';
+import { useI18n } from '../../lib/hooks/useI18n';
 import './TokenSelector.css';
 
 interface TokenSelectorProps {
@@ -18,6 +19,7 @@ interface TokenSelectorProps {
  * there is no free-text path to submit an unsupported or malformed asset id.
  */
 export function TokenSelector({ id, value, onChange, ...aria }: TokenSelectorProps) {
+  const { t } = useI18n();
   const [query, setQuery] = React.useState('');
   const [open, setOpen] = React.useState(false);
   const containerRef = React.useRef<HTMLDivElement>(null);
@@ -59,7 +61,7 @@ export function TokenSelector({ id, value, onChange, ...aria }: TokenSelectorPro
         aria-autocomplete="list"
         autoComplete="off"
         value={open ? query : selected?.label ?? ''}
-        placeholder="Search settlement asset…"
+        placeholder={t('tokenSelector.searchPlaceholder')}
         onFocus={() => setOpen(true)}
         onChange={(e) => {
           setQuery(e.target.value);
@@ -69,7 +71,7 @@ export function TokenSelector({ id, value, onChange, ...aria }: TokenSelectorPro
       />
       {open && (
         <ul id={`${id}-listbox`} role="listbox" className="token-selector__list">
-          {filtered.length === 0 && <li className="token-selector__empty">No matching assets</li>}
+          {filtered.length === 0 && <li className="token-selector__empty">{t('tokenSelector.noMatching')}</li>}
           {filtered.map((asset) => (
             <li key={asset.id}>
               <button
@@ -82,7 +84,7 @@ export function TokenSelector({ id, value, onChange, ...aria }: TokenSelectorPro
                 <span className="token-selector__code">{asset.code}</span>
                 <span className="token-selector__label">{asset.label}</span>
                 <span className="token-selector__kind">
-                  {asset.kind === 'soroban_token' ? 'Soroban token' : 'Classic asset'}
+                  {asset.kind === 'soroban_token' ? t('tokenSelector.sorobanToken') : t('tokenSelector.classicAsset')}
                 </span>
               </button>
             </li>

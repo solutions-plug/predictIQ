@@ -110,6 +110,24 @@ jobs:
           path: contracts/predict-iq/target/wasm32-unknown-unknown/release/predict_iq_optimized.wasm
           retention-days: 30
 
+      - name: Record contract hash for release verification
+        run: |
+          cat > contract-hash.json <<EOF
+          {
+            "commit": "${{ github.sha }}",
+            "contract_hash": "${{ steps.build.outputs.contract-hash }}",
+            "wasm_path": "${{ steps.build.outputs.wasm-path }}",
+            "timestamp": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          }
+          EOF
+
+      - name: Upload contract hash metadata
+        uses: actions/upload-artifact@v7
+        with:
+          name: contract-hash
+          path: contract-hash.json
+          retention-days: 90
+
   deploy-testnet:
     name: Deploy to Testnet
     needs: build-and-test
@@ -236,89 +254,17 @@ jobs:
           retention-days: 90
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: contract-${{ needs.build-and-test.outputs.contract-hash }}
-          name: Contract Deployment ${{ needs.build-and-test.outputs.contract-hash }}
+          name: Contract Release ${{ needs.build-and-test.outputs.contract-hash }}
           body: |
-            Mainnet deployment of PredictIQ contract
+            ## Contract Deployment
 
-            - Commit: ${{ github.sha }}
-            - Contract Hash: ${{ needs.build-and-test.outputs.contract-hash }}
-            - Timestamp: ${{ github.event.head_commit.timestamp }}
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            - **Commit:** ${{ github.sha }}
+            - **Contract Hash (SHA-256):** `${{ needs.build-and-test.outputs.contract-hash }}`
+            - **Environment:** mainnet
+            - **Deployed by:** ${{ github.actor }}
 
-  version-artifacts:
-    name: Version and Archive Artifacts
-    needs: build-and-test
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download WASM artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: contract-wasm
-          path: ./artifacts
-
-      - name: Create versioned artifact
-        run: |
-          VERSION=$(git describe --tags --always)
-          mkdir -p versioned-artifacts
-          cp ./artifacts/predict_iq_optimized.wasm versioned-artifacts/predict_iq_${VERSION}.wasm
-          
-          cat > versioned-artifacts/manifest.json <<EOF
-          {
-            "version": "${VERSION}",
-            "commit": "${{ github.sha }}",
-            "contract_hash": "${{ needs.build-and-test.outputs.contract-hash }}",
-            "build_timestamp": "$(date -u +'%Y-%m-%dT%H:%M:%SZ')",
-            "filename": "predict_iq_${VERSION}.wasm"
-          }
-          EOF
-
-      - name: Upload versioned artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: versioned-contract-artifacts
-          path: versioned-artifacts/
-          retention-days: 365
-
-  notify-deployment:
-    name: Notify Deployment Status
-    needs: [build-and-test, deploy-testnet]
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    if: always()
-    steps:
-      - name: Determine deployment status
-        run: |
-          if [ "${{ needs.deploy-testnet.result }}" == "success" ]; then
-            echo "DEPLOYMENT_STATUS=✅ Success" >> $GITHUB_ENV
-          else
-            echo "DEPLOYMENT_STATUS=❌ Failed" >> $GITHUB_ENV
-          fi
-
-      - name: Send Slack notification
-        if: vars.SLACK_WEBHOOK_URL != ''
-        uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c # v3.0.3
-        with:
-          payload: |
-            {
-              "text": "Contract Deployment ${{ env.DEPLOYMENT_STATUS }}",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "*Contract Deployment ${{ env.DEPLOYMENT_STATUS }}*\n*Commit:* ${{ github.sha }}\n*Contract Hash:* ${{ needs.build-and-test.outputs.contract-hash }}"
-                  }
-                }
-              ]
-            }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+            The WASM asset attached to this release is the exact artifact built, tested, and deployed by the `contract-deployment.yml` pipeline. Its SHA-256 is recorded above for auditability.
+          files: ./artifacts/predict_iq_optimized.wasm

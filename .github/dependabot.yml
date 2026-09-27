@@ -1,24 +1,48 @@
 version: 2
 updates:
-  - package-ecosystem: npm
-    directory: /frontend
+  - package-ecosystem: "cargo"
+    directory: "/"
     schedule:
-      interval: weekly
+      interval: "weekly"
     open-pull-requests-limit: 10
+    groups:
+      cargo-dependencies:
+        patterns:
+          - "*"
 
-  - package-ecosystem: npm
-    directory: /services/tts
+  - package-ecosystem: "github-actions"
+    directory: "/"
     schedule:
-      interval: weekly
+      interval: "weekly"
     open-pull-requests-limit: 10
+    groups:
+      github-actions:
+        patterns:
+          - "*"
 
-  - package-ecosystem: github-actions
-    directory: /
+  - package-ecosystem: "docker"
+    directory: "/"
     schedule:
-      interval: weekly
+      interval: "weekly"
     open-pull-requests-limit: 10
 
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+
+  # Tracks the pinned cargo-audit version used in CI (see CARGO_AUDIT_VERSION
+  # in .github/workflows/dependency-scan.yml and .github/workflows/test.yml).
+  # Bump the pin deliberately when Dependabot opens a PR here.
+  - package-ecosystem: cargo
+    directory: /ci/cargo-audit
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+

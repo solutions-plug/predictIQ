@@ -1,9 +1,9 @@
 'use client';
 
 /**
- * Modal — shared design-system dialog primitive (#1318).
+ * Modal — shared design-system dialog primitive (#1318, consolidated in #1596).
  *
- * Two ad-hoc Modal implementations already exist in this codebase
+ * Two ad-hoc Modal implementations already existed in this codebase
  * (components/Modal.tsx, components/admin/Modal.tsx), each built because
  * this shared primitive didn't exist yet — components/Modal.tsx's own
  * header comment says as much. This consolidates both: focus trap +
@@ -19,7 +19,10 @@
  * Styled via classNames (src/styles/ui.css) — see that file's header
  * comment for why inline `style` props don't work here. `maxWidth` maps
  * to a small fixed set of width modifier classes rather than an inline
- * style for the same reason.
+ * style for the same reason. Callers that previously relied on the
+ * legacy modals' own chrome (e.g. admin/market-specific styling) pass
+ * `className` to layer their styles on top of the shared primitive
+ * instead of reimplementing the dialog.
  */
 
 import React, { useCallback, useEffect, useId, useRef } from 'react';
@@ -34,6 +37,14 @@ export interface ModalProps {
   disableEscapeKey?: boolean;
   maxWidth?: string;
   className?: string;
+  /**
+   * Optional footer slot. The legacy components/Modal.tsx and
+   * components/admin/Modal.tsx rendered their action buttons in a
+   * dedicated footer region; callers migrating from those can pass the
+   * same buttons here so the shared primitive covers their surface area
+   * without a reimplementation.
+   */
+  footer?: React.ReactNode;
 }
 
 export function Modal({
@@ -46,6 +57,7 @@ export function Modal({
   disableEscapeKey = false,
   maxWidth,
   className = '',
+  footer,
 }: ModalProps) {
   const widthClass = maxWidth === '540px' ? 'ui-modal--w-540' : '';
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -145,6 +157,8 @@ export function Modal({
         </div>
 
         <div className="ui-modal__body">{children}</div>
+
+        {footer && <div className="ui-modal__footer">{footer}</div>}
       </div>
     </div>
   );

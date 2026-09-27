@@ -1,0 +1,12 @@
+{
+  "name": "handsoff",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Handsoff monorepo",
+  "scripts": {
+    "generate-api-spec": "node scripts/generate-api-spec.js"
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.0"
+  }
+}

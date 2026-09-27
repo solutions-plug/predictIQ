@@ -61,7 +61,7 @@ export interface WalletContextValue {
   error: string | null;
   /** Prompts the extension's connect UI and stores the resulting address. */
   connect: () => Promise<void>;
-  /** Clears local connection state (does not revoke extension access). */
+  /** Clears local connection state. Does not revoke extension-level access; the site remains authorized in Freighter. */
   disconnect: () => void;
   /** Signs an unsigned transaction XDR with the connected wallet. */
   signAndSubmit: (transactionXdr: string) => Promise<{ signedTxXdr: string }>;
@@ -222,23 +222,44 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // Poll for account/network changes made in the extension while connected.
+  // Pause polling while the tab is hidden to conserve battery/CPU.
   useEffect(() => {
     if (!address) return undefined;
 
-    pollRef.current = setInterval(async () => {
-      const api = getFreighter();
-      if (!api) {
-        setIsInstalled(false);
-        return;
+    const startPolling = () => {
+      pollRef.current = setInterval(async () => {
+        const api = getFreighter();
+        if (!api) {
+          setIsInstalled(false);
+          return;
+        }
+        const [nextAddress, nextNetwork] = await Promise.all([readAddress(api), readNetwork(api)]);
+        setAddress((prev) => (nextAddress !== prev ? nextAddress : prev));
+        setNetwork((prev) => (nextNetwork !== prev ? nextNetwork : prev));
+      }, ACCOUNT_POLL_INTERVAL_MS);
+    };
+
+    const stopPolling = () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
       }
-      const [nextAddress, nextNetwork] = await Promise.all([readAddress(api), readNetwork(api)]);
-      setAddress((prev) => (nextAddress !== prev ? nextAddress : prev));
-      setNetwork((prev) => (nextNetwork !== prev ? nextNetwork : prev));
-    }, ACCOUNT_POLL_INTERVAL_MS);
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        stopPolling();
+      } else {
+        startPolling();
+      }
+    };
+
+    startPolling();
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
-      pollRef.current = null;
+      stopPolling();
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [address]);
 

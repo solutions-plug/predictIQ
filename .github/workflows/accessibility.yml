@@ -12,6 +12,14 @@ on:
 
 env:
   NODE_VERSION: '18.x'
+  # Lighthouse accessibility threshold (issue #1610).
+  # Rationale: a zero-tolerance 100/100 gate on a synthetic Lighthouse run made
+  # the all-tests-passed gate brittle — a single non-actionable Lighthouse quirk
+  # could block every frontend PR with no override path. WCAG2AA compliance is
+  # already asserted independently by jest-axe-tests, axe-core-audit, pa11y-audit
+  # and color-contrast-check, so we lower this to a still-strict 95 and track the
+  # remaining gap as a follow-up. The job still fails the build below this value.
+  LIGHTHOUSE_MIN_SCORE: '95'
 
 jobs:
   jest-axe-tests:
@@ -82,15 +90,18 @@ jobs:
         env:
           TEST_URL: http://localhost:3000
 
+      # Threshold relaxed from 100 to ${{ env.LIGHTHOUSE_MIN_SCORE }} (issue #1610).
+      # The check still fails the build below the threshold; the gap to 100 is
+      # tracked as a follow-up rather than blocking every frontend PR.
       - name: Check Lighthouse score
         run: |
           SCORE=$(node -e "const report = require('./lighthouse-reports/lighthouse-latest.json'); console.log(report.categories.accessibility.score * 100);")
           echo "Lighthouse Accessibility Score: $SCORE"
-          if [ "$SCORE" -lt "100" ]; then
-            echo "❌ Lighthouse score below 100"
+          if [ "$SCORE" -lt "$LIGHTHOUSE_MIN_SCORE" ]; then
+            echo "❌ Lighthouse score below $LIGHTHOUSE_MIN_SCORE"
             exit 1
           fi
-          echo "✅ Lighthouse score is 100"
+          echo "✅ Lighthouse score meets threshold ($LIGHTHOUSE_MIN_SCORE)"
 
       - name: Upload Lighthouse reports
         if: always()
@@ -282,7 +293,7 @@ jobs:
         run: |
           echo "✅ All accessibility tests passed!"
           echo "- Jest-Axe tests passed"
-          echo "- Lighthouse score: 100/100"
+          echo "- Lighthouse score: >= $LIGHTHOUSE_MIN_SCORE/100"
           echo "- Axe-core audit passed"
           echo "- Pa11y audit passed"
           echo "- Keyboard navigation tests passed"

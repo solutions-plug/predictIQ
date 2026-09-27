@@ -35,6 +35,21 @@ export function useRateLimited(): RateLimitState {
     return () => clearInterval(id);
   }, [secondsRemaining]);
 
+  // Backgrounded tabs throttle setInterval, so the countdown can drift from the
+  // real cooldown. Recompute immediately whenever the tab becomes visible again
+  // instead of waiting for the next (possibly delayed) interval tick.
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        setSecondsRemaining(rateLimitRemainingSeconds());
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () =>
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, []);
+
   return { isRateLimited: secondsRemaining > 0, secondsRemaining };
 }
 

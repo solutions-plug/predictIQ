@@ -5,6 +5,7 @@ import { api, ApiError } from '../../lib/api/public-client';
 import { useWallet, WALLET_NOT_INSTALLED } from '../../lib/wallet/WalletProvider';
 import { fetchNativeBalance } from '../../lib/wallet/balance';
 import { INSUFFICIENT_BALANCE_MESSAGE, isInsufficientBalanceError } from '../../lib/wallet/errors';
+import { useI18n } from '../../lib/hooks/useI18n';
 import './PlaceBetForm.css';
 
 export interface MarketOutcome {
@@ -29,6 +30,7 @@ const TX_POLL_MAX_ATTEMPTS = 10;
 
 export const PlaceBetForm: React.FC<PlaceBetFormProps> = ({ market, onSubmitted }) => {
   const wallet = useWallet();
+  const { t } = useI18n();
   const [selectedOutcome, setSelectedOutcome] = React.useState<number | null>(
     market.outcomes[0]?.index ?? null
   );
@@ -37,6 +39,7 @@ export const PlaceBetForm: React.FC<PlaceBetFormProps> = ({ market, onSubmitted 
   const [formError, setFormError] = React.useState<string | null>(null);
   const [txHash, setTxHash] = React.useState<string | null>(null);
   const [txStatus, setTxStatus] = React.useState<string | null>(null);
+  const [txPollingExhausted, setTxPollingExhausted] = React.useState(false);
   const [insufficientBalance, setInsufficientBalance] = React.useState<{
     required: string;
     current: string | null;
@@ -60,6 +63,9 @@ export const PlaceBetForm: React.FC<PlaceBetFormProps> = ({ market, onSubmitted 
       }
       if (!cancelled && attempts < TX_POLL_MAX_ATTEMPTS) {
         timer = setTimeout(poll, TX_POLL_INTERVAL_MS);
+      } else if (!cancelled && attempts >= TX_POLL_MAX_ATTEMPTS) {
+        // Polling exhausted; mark so UI can show retry option.
+        setTxPollingExhausted(true);
       }
     };
 
@@ -71,10 +77,10 @@ export const PlaceBetForm: React.FC<PlaceBetFormProps> = ({ market, onSubmitted 
   }, [txHash, txStatus]);
 
   const validate = (): string | null => {
-    if (selectedOutcome === null) return 'Choose an outcome to bet on.';
+    if (selectedOutcome === null) return t('placeBetForm.validationOutcome');
     const parsed = Number(amount);
     if (!amount || Number.isNaN(parsed) || parsed <= 0) {
-      return 'Enter an amount greater than 0.';
+      return t('placeBetForm.validationAmount');
     }
     return null;
   };
@@ -99,6 +105,7 @@ export const PlaceBetForm: React.FC<PlaceBetFormProps> = ({ market, onSubmitted 
     setSubmitting(true);
     setTxHash(null);
     setTxStatus(null);
+    setTxPollingExhausted(false);
     setInsufficientBalance(null);
 
     try {
@@ -129,32 +136,38 @@ export const PlaceBetForm: React.FC<PlaceBetFormProps> = ({ market, onSubmitted 
 
   const isNotInstalled = !wallet.address && wallet.error === WALLET_NOT_INSTALLED;
 
+  const handleRetryStatus = async () => {
+    if (!txHash) return;
+    setTxPollingExhausted(false);
+    setTxStatus('pending');
+  };
+
   return (
     <form className="place-bet-form" aria-labelledby="place-bet-heading" onSubmit={handleSubmit}>
-      <h3 id="place-bet-heading">Place a bet</h3>
+      <h3 id="place-bet-heading">{t('placeBetForm.title')}</h3>
 
       {isNotInstalled && (
         <p className="place-bet-form__install-prompt" role="alert">
-          No Stellar wallet extension detected.{' '}
+          {t('placeBetForm.walletNotInstalled')}{' '}
           <a href="https://www.freighter.app/" target="_blank" rel="noreferrer">
-            Install Freighter
+            {t('placeBetForm.installFreighter')}
           </a>{' '}
           to place a bet.
         </p>
       )}
 
       {!wallet.address && !isNotInstalled && (
-        <p className="place-bet-form__hint">Connect your wallet to place a bet on this market.</p>
+        <p className="place-bet-form__hint">{t('placeBetForm.connectWalletHint')}</p>
       )}
 
       {wallet.address && (
         <p className="place-bet-form__connected">
-          Connected: {wallet.address.slice(0, 4)}…{wallet.address.slice(-4)}
+          {t('placeBetForm.connected').replace('{address}', `${wallet.address.slice(0, 4)}…${wallet.address.slice(-4)}`)}
         </p>
       )}
 
       <fieldset disabled={submitting}>
-        <legend>Outcome</legend>
+        <legend>{t('placeBetForm.heading')}</legend>
         <div className="place-bet-form__outcomes" role="radiogroup" aria-label="Outcome">
           {market.outcomes.map((outcome) => (
             <label key={outcome.index} className="place-bet-form__outcome">
@@ -171,7 +184,7 @@ export const PlaceBetForm: React.FC<PlaceBetFormProps> = ({ market, onSubmitted 
         </div>
 
         <label htmlFor="bet-amount" className="place-bet-form__amount-label">
-          Amount
+          {t('placeBetForm.amountLabel')}
         </label>
         <input
           id="bet-amount"
@@ -207,19 +220,34 @@ export const PlaceBetForm: React.FC<PlaceBetFormProps> = ({ market, onSubmitted 
       )}
 
       {txHash && (
-        <p className="place-bet-form__status" role="status">
-          Bet submitted ({txStatus ?? 'pending'}). Transaction: {txHash.slice(0, 10)}…
-        </p>
+        <>
+          <p className="place-bet-form__status" role="status">
+            {txPollingExhausted && txStatus === 'pending'
+              ? t('placeBetForm.betStillPending')
+              : t('placeBetForm.betSubmitted').replace('{status}', txStatus ?? 'pending')}
+            {' '}{t('placeBetForm.transactionLabel').replace('{hash}', txHash.slice(0, 10))}…
+          </p>
+          {txPollingExhausted && txStatus === 'pending' && (
+            <button
+              type="button"
+              onClick={handleRetryStatus}
+              className="place-bet-form__retry-btn"
+              disabled={submitting}
+            >
+              {t('placeBetForm.checkStatusAgain')}
+            </button>
+          )}
+        </>
       )}
 
       <button type="submit" disabled={submitting || wallet.isConnecting}>
         {!wallet.address
           ? wallet.isConnecting
-            ? 'Connecting…'
-            : 'Connect Wallet'
+            ? t('placeBetForm.connecting')
+            : t('placeBetForm.connectWallet')
           : submitting
-            ? 'Placing Bet…'
-            : 'Place Bet'}
+            ? t('placeBetForm.placingBet')
+            : t('placeBetForm.placeBet')}
       </button>
     </form>
   );

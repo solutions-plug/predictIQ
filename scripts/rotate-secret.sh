@@ -14,6 +14,16 @@
 #                 (recommended for large values to avoid shell history leakage).
 #   environment   Deployment environment: dev | staging | prod  (default: prod)
 #
+# Security note:
+#   The value is never passed to the AWS CLI as a command-line argument.  It is
+#   written to a mode-0600 temp file and handed to the CLI via
+#   "--secret-string file://<path>", so it does not appear in argv and is not
+#   visible to other users via `ps aux` or /proc/<pid>/cmdline.  The temp file
+#   is removed on exit (including on error) via a trap.  Note that passing the
+#   value as an argument (e.g. `./rotate-secret.sh hmac-key "$VALUE"`) still
+#   exposes it in your own shell's history and process listing, so prefer the
+#   stdin form (`-`) for sensitive values.
+#
 # Prerequisites:
 #   - AWS CLI v2 installed and configured with credentials that have:
 #       secretsmanager:PutSecretValue on the target secret
@@ -99,11 +109,22 @@ if [[ "$ENVIRONMENT" == "prod" ]]; then
   [[ "$CONFIRM" == "yes" ]] || { info "Aborted."; exit 0; }
 fi
 
+# ── stage the value in a private temp file ────────────────────────────────────
+# The value is handed to the AWS CLI via "file://<path>" so it never appears in
+# argv (and therefore not in `ps aux` or /proc/<pid>/cmdline).  The file is
+# created with mode 0600 and removed on exit, including on error.
+SECRET_TMP_FILE="$(mktemp "${TMPDIR:-/tmp}/rotate-secret.XXXXXX")"
+chmod 600 "$SECRET_TMP_FILE"
+cleanup() { rm -f "$SECRET_TMP_FILE"; }
+trap cleanup EXIT INT TERM
+printf '%s' "$NEW_VALUE" > "$SECRET_TMP_FILE"
+unset NEW_VALUE NEW_VALUE_ARG
+
 # ── update the secret ─────────────────────────────────────────────────────────
 info "Updating secret value in AWS Secrets Manager..."
 aws secretsmanager put-secret-value \
   --secret-id "${SECRET_PATH}" \
-  --secret-string "${NEW_VALUE}" \
+  --secret-string "file://${SECRET_TMP_FILE}" \
   --output json \
   | jq -r '"  Secret version ID: \(.VersionId)"' \
   || die "Failed to update secret '${SECRET_PATH}'"

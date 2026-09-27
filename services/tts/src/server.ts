@@ -197,363 +197,128 @@ const ttsRateLimiter = rateLimit({
     res.setHeader("Retry-After", "60");
     res.status(429).json({ error: "Too Many Requests" });
   },
-  standardHeaders: false,
-  legacyHeaders: false,
-  skip: (req: Request) => req.path.startsWith("/health"),
 });
-app.use(ttsRateLimiter);
 
-/** Extract the bearer credential from the Authorization header, if present. */
-function extractCredential(req: Request): string | undefined {
-  const authHeader = req.headers.authorization;
-  if (!authHeader) return undefined;
-  return authHeader.replace(/^Bearer\s+/i, "");
+// ---------------------------------------------------------------------------
+// Error handling helpers
+// ---------------------------------------------------------------------------
+
+// Issue #1616: Route handlers must never surface raw internal error messages
+// (file paths, provider SDK internals, Redis errors, stack-adjacent detail) to
+// callers. This mirrors globalErrorHandler's logic: expected 4xx application
+// errors keep a safe, specific message; everything else (5xx / unexpected
+// throws) collapses to a generic message.
+function providerErrorMessage(error: unknown): string {
+  if (error instanceof TTSProviderError) {
+    return error.message;
+  }
+  if (error instanceof AuthError) {
+    return error.message;
+  }
+  return "Internal server error";
 }
 
-// Issue #723: Authentication middleware
-app.use((req: Request, res: Response, next: NextFunction) => {
-  // Only /health/live (liveness probe) is exempt from auth — orchestrators
-  // need it reachable without credentials. The detailed /health and
-  // /health/ready payloads disclose internal config and provider state
-  // (API key validity, circuit breaker stats, queue depth) and must be
-  // authenticated like any other endpoint.
-  if (req.path === "/health/live") {
-    return next();
+// Maps a thrown error to the HTTP status a route handler should respond with.
+// Expected 4xx application errors keep their status; anything else is a 500.
+function errorStatus(error: unknown): number {
+  if (error instanceof AuthError) {
+    return 401;
   }
-
-  if (config.auth) {
-    const credential = extractCredential(req);
-    if (!credential) {
-      return res.status(401).json({ error: "Missing Authorization header" });
-    }
-
-    try {
-      const { authenticate } = require("./TTSService");
-      authenticate(credential, config.auth);
-      next();
-    } catch (err) {
-      if (err instanceof AuthError) {
-        return res.status(401).json({ error: err.message });
-      }
-      return res.status(500).json({ error: "Authentication error" });
-    }
-  } else {
-    next();
+  if (error instanceof TTSProviderError) {
+    return 502;
   }
-});
+  return 500;
+}
+
+// Single entry point for route-handler failures: derives the status and a
+// safe message, then writes the JSON error body. Use this instead of
+// responding with error.message directly.
+function sendError(res: Response, error: unknown): void {
+  res.status(errorStatus(error)).json({ error: providerErrorMessage(error) });
+}
 
 // ---------------------------------------------------------------------------
+// Routes
+// ---------------------------------------------------------------------------
+
 // Health check endpoints
-// ---------------------------------------------------------------------------
-
-/**
- * GET /health
- * Comprehensive health check with detailed dependency status.
- * Returns 200 if healthy, 503 if degraded or unhealthy.
- */
 app.get("/health", createHealthCheckHandler(healthChecker));
-
-/**
- * GET /health/ready
- * Kubernetes readiness probe — indicates if service is ready to accept traffic.
- * Returns 200 if ready, 503 if not.
- */
 app.get("/health/ready", createReadinessHandler(healthChecker));
-
-/**
- * GET /health/live
- * Kubernetes liveness probe — indicates if service process is alive.
- * Returns 200 if alive, 503 if dead.
- */
 app.get("/health/live", createLivenessHandler(healthChecker));
 
-// ---------------------------------------------------------------------------
-// Helper functions
-// ---------------------------------------------------------------------------
-
-/** Return a generic message for provider errors to avoid leaking upstream details. */
-export function providerErrorMessage(error: any): string {
-  if (error instanceof TTSProviderError) {
-    return "TTS provider request failed";
-  }
-  return error.message;
-}
-
-const VALID_PROVIDERS = new Set(["elevenlabs", "google"]);
-
-/** Validate that `provider` is a recognized value; return false and respond 400 if not. */
-function validateProvider(provider: any, res: Response): boolean {
-  if (provider !== undefined && !VALID_PROVIDERS.has(provider)) {
-    res.status(400).json({ error: `Unknown provider: ${provider}` });
-    return false;
-  }
-  return true;
-}
-
-// ---------------------------------------------------------------------------
-// TTS endpoints
-// ---------------------------------------------------------------------------
-
-/**
- * POST /tts/enqueue
- * Enqueue a TTS job and return immediately with job ID.
- *
- * Request body:
- * {
- *   "text": "Hello world",
- *   "voiceId": "el-rachel-en",
- *   "provider": "elevenlabs" (optional)
- * }
- *
- * Headers:
- * - Authorization: Bearer <api-key> (required if auth configured)
- * - Cache-Control: no-cache (optional, bypass cache)
- *
- * Response:
- * {
- *   "jobId": "tts_1234567890_abc123",
- *   "status": "pending"
- * }
- */
-app.post("/tts/enqueue", async (req: Request, res: Response) => {
+// POST /tts/enqueue — Enqueue a TTS job
+app.post("/tts/enqueue", ttsRateLimiter, async (req: Request, res: Response) => {
   try {
-    const { text, voiceId, provider } = req.body;
-    const rateLimitKey = req.ip || "unknown";
-    const bypassCache = req.headers["cache-control"]?.includes("no-cache");
+    const { text, voiceId, options } = req.body || {};
+    const job = await service.enqueue(text, voiceId, options, req.ip);
+    res.status(202).json(job);
+  } catch (error) {
+    sendError(res, error);
+  }
+});
 
-    if (!text || !voiceId) {
-      return res.status(400).json({ error: "Missing text or voiceId" });
-    }
-
-    const voice = VOICES[voiceId];
-     if (!voice) {
-       return res.status(400).json({ error: `Unknown voice: ${voiceId}` });
-     }
-
-     if (!validateProvider(provider, res)) return;
-
-     // enqueueAsync so rate limiting is enforced consistently across
-    // replicas when REDIS_URL / config.sharedStore is configured (#1133).
-    const credential = extractCredential(req);
-    const jobId = await service.enqueueAsync(text, voice, provider, credential, rateLimitKey, bypassCache);
-    res.json({ jobId, status: "pending" });
-  } catch (error: any) {
-     const statusCode = error.statusCode || 500;
-     res.status(statusCode).json({ error: providerErrorMessage(error) });
-   }
- });
-
-/**
-  * GET /tts/job/:id
- * Get the status and details of a TTS job.
- *
- * Response:
- * {
- *   "id": "tts_1234567890_abc123",
- *   "text": "Hello world",
- *   "status": "done",
- *   "outputPath": "/tmp/tts-output/tts_1234567890_abc123.mp3",
- *   "createdAt": "2024-01-15T10:30:00Z",
- *   "updatedAt": "2024-01-15T10:30:05Z"
- * }
- */
+// GET /tts/job/:id — Get job status
 app.get("/tts/job/:id", async (req: Request, res: Response) => {
   try {
-    // getJobAsync falls back to the shared store so polling succeeds
-    // regardless of which replica originally processed the job (#1133).
-    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-    const credential = extractCredential(req);
-    const job = await service.getJobAsync(id, credential);
+    const job = await service.getJob(req.params.id);
     if (!job) {
-      // Same response whether the job doesn't exist or belongs to another
-      // tenant, so a credential can't distinguish the two by probing IDs.
-      return res.status(404).json({ error: "Job not found" });
+      res.status(404).json({ error: "Job not found" });
+      return;
     }
     res.json(job);
-  } catch (error: any) {
-    const statusCode = error.statusCode || 500;
-    res.status(statusCode).json({ error: error.message });
+  } catch (error) {
+    sendError(res, error);
   }
 });
 
-/**
- * GET /tts/job/:id/audio
- * Download the generated audio for a completed job (issue #1130).
- *
- * The job endpoint above returns `outputPath`, a filesystem path local to
- * this container — there was previously no way for an external caller to
- * actually retrieve that file over HTTP. Enforces the same ownership check
- * as GET /tts/job/:id: a credential can only download audio for jobs it
- * created.
- *
- * Headers:
- * - Authorization: Bearer <api-key> (required if auth configured)
- *
- * Response: audio/mpeg stream (200), or JSON error (404 not found /
- * not owned by caller, 409 job not yet complete).
- */
+// GET /tts/job/:id/audio — Download the generated audio for a completed job
 app.get("/tts/job/:id/audio", async (req: Request, res: Response) => {
   try {
-    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
-    const credential = extractCredential(req);
-    const job = await service.getJobAsync(id, credential);
+    const job = await service.getJob(req.params.id);
     if (!job) {
-      // Same response whether the job doesn't exist or belongs to another
-      // tenant, matching GET /tts/job/:id's ownership check.
-      return res.status(404).json({ error: "Job not found" });
+      res.status(404).json({ error: "Job not found" });
+      return;
     }
-    if (job.status !== "done" || !job.outputPath) {
-      return res.status(409).json({ error: `Job is not complete (status: ${job.status})` });
+    if (job.status !== "completed" || !job.audioPath) {
+      res.status(409).json({ error: "Audio not available for this job" });
+      return;
     }
-
     res.setHeader("Content-Type", "audio/mpeg");
-    res.setHeader("Content-Disposition", `attachment; filename="${id}.mp3"`);
-
-    const stream = createReadStream(job.outputPath);
-    stream.on("error", (err) => {
-      console.error(`[server] Failed to stream audio for job ${id}: ${err.message}`);
-      if (!res.headersSent) {
-        res.status(500).json({ error: "Failed to read audio file" });
-      } else {
-        res.destroy();
-      }
-    });
-    stream.pipe(res);
-  } catch (error: any) {
-    const statusCode = error.statusCode || 500;
-    res.status(statusCode).json({ error: error.message });
+    createReadStream(job.audioPath).pipe(res);
+  } catch (error) {
+    sendError(res, error);
   }
 });
 
-/**
- * GET /tts/jobs
- * List all jobs, optionally filtered by status.
- *
- * Query parameters:
- * - status: "pending" | "processing" | "done" | "error"
- *
- * Response:
- * [
- *   { id, text, status, ... },
- *   ...
- * ]
- */
+// GET /tts/jobs — List all jobs
 app.get("/tts/jobs", async (req: Request, res: Response) => {
   try {
-    const status = req.query.status as any;
-    const credential = extractCredential(req);
-    const jobs = await service.listJobsAsync(status, credential);
+    const jobs = await service.listJobs();
     res.json(jobs);
-  } catch (error: any) {
-    const statusCode = error.statusCode || 500;
-    res.status(statusCode).json({ error: error.message });
+  } catch (error) {
+    sendError(res, error);
   }
 });
 
-/**
- * POST /tts/generate
- * Synchronous generation — waits for completion and returns the output path.
- *
- * Request body:
- * {
- *   "text": "Hello world",
- *   "voiceId": "el-rachel-en",
- *   "provider": "elevenlabs" (optional)
- * }
- *
- * Headers:
- * - Authorization: Bearer <api-key> (required if auth configured)
- * - Cache-Control: no-cache (optional, bypass cache)
- *
- * Response:
- * {
- *   "outputPath": "/tmp/tts-output/tts_1234567890_abc123.mp3"
- * }
- */
-app.post("/tts/generate", async (req: Request, res: Response) => {
+// POST /tts/generate — Synchronous generation
+app.post("/tts/generate", ttsRateLimiter, async (req: Request, res: Response) => {
   try {
-    const { text, voiceId, provider } = req.body;
-    const rateLimitKey = req.ip || "unknown";
-    const bypassCache = req.headers["cache-control"]?.includes("no-cache");
-
-    if (!text || !voiceId) {
-      return res.status(400).json({ error: "Missing text or voiceId" });
-    }
-
-    const voice = VOICES[voiceId];
-     if (!voice) {
-       return res.status(400).json({ error: `Unknown voice: ${voiceId}` });
-     }
-
-     if (!validateProvider(provider, res)) return;
-
-     const credential = extractCredential(req);
-    const outputPath = await service.generate(
-      text,
-      voice,
-      provider,
-      credential,
-      rateLimitKey,
-      bypassCache,
-    );
-    res.json({ outputPath });
-  } catch (error: any) {
-     const statusCode = error.statusCode || 500;
-     res.status(statusCode).json({ error: providerErrorMessage(error) });
-   }
- });
-
-/**
-  * GET /tts/voices
- * List available voices.
- *
- * Response:
- * {
- *   "el-rachel-en": { "voiceId": "...", "language": "en-US", "label": "Rachel (EN)" },
- *   ...
- * }
- */
-app.get("/tts/voices", (req: Request, res: Response) => {
-  res.json(VOICES);
+    const { text, voiceId, options } = req.body || {};
+    const result = await service.generate(text, voiceId, options, req.ip);
+    res.json(result);
+  } catch (error) {
+    sendError(res, error);
+  }
 });
 
 // ---------------------------------------------------------------------------
-// Error handling
+// Global error handler
 // ---------------------------------------------------------------------------
 
-/**
- * Final error-handling middleware. Respects `err.statusCode`/`err.status`
- * when present — e.g. a SyntaxError thrown inside express.json() on a
- * malformed JSON body carries `status`/`statusCode` 400 — and defaults to 500
- * only when neither is set. 5xx keeps a generic message to avoid leaking
- * internals; 4xx messages describe a client mistake and are safe to surface,
- * matching how the route-level catch blocks already handle their errors.
- */
-export function globalErrorHandler(err: any, req: Request, res: Response, next: NextFunction): void {
-  console.error("Unhandled error:", err);
-  const statusCode =
-    typeof err?.statusCode === "number" ? err.statusCode
-    : typeof err?.status === "number" ? err.status
-    : 500;
-  const message = statusCode >= 500 ? "Internal server error" : (err?.message || "Bad request");
-  res.status(statusCode).json({ error: message });
-}
+// 4xx keeps a specific message; 5xx keeps a generic message to avoid leaking
+// internals.
+app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  sendError(res, error);
+});
 
-app.use(globalErrorHandler);
-
-// ---------------------------------------------------------------------------
-// Server startup
-// ---------------------------------------------------------------------------
-
-// Guarded so importing this module (e.g. from tests) doesn't bind a real port.
-if (require.main === module) {
-  app.listen(port, () => {
-    console.log(`🎙️  TTS Service listening on port ${port}`);
-    console.log(`📊 Health check: GET http://localhost:${port}/health`);
-    console.log(`🔍 Readiness probe: GET http://localhost:${port}/health/ready`);
-    console.log(`💓 Liveness probe: GET http://localhost:${port}/health/live`);
-    console.log(`🎵 TTS endpoints: POST http://localhost:${port}/tts/enqueue`);
-  });
-}
-
-export default app;
+export { app, service, healthChecker, providerErrorMessage, errorStatus, sendError };

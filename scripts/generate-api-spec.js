@@ -16,6 +16,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const yaml = require('js-yaml');
 
 const args = process.argv.slice(2);
 const checkMode = args.includes('--check');
@@ -23,55 +24,30 @@ const outputIdx = args.indexOf('--output');
 const outputPath = outputIdx !== -1 ? args[outputIdx + 1] : path.join(__dirname, '../API_SPEC.md');
 const openApiPath = path.join(__dirname, '../services/api/openapi.yaml');
 
-/**
- * Simple YAML parser for basic structures
- */
-function parseYaml(content) {
-  const lines = content.split('\n');
-  const result = {};
-  let current = result;
-  const stack = [{ obj: result, indent: -1 }];
-  
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const match = line.match(/^(\s*)([^:]+):\s*(.*)/);
-    
-    if (!match) continue;
-    
-    const indent = match[1].length;
-    const key = match[2].trim();
-    const value = match[3].trim();
-    
-    // Pop stack if indent decreased
-    while (stack.length > 1 && indent <= stack[stack.length - 1].indent) {
-      stack.pop();
-    }
-    
-    const parent = stack[stack.length - 1].obj;
-    
-    if (value) {
-      parent[key] = value;
-    } else {
-      parent[key] = {};
-      stack.push({ obj: parent[key], indent });
-    }
-  }
-  
-  return result;
-}
+// Base URL shown in the generated docs. Sourced from config/env so it reflects
+// the real deployment bind address; defaults to the services/api default bind
+// address (0.0.0.0:8080).
+const baseUrl = process.env.API_BASE_URL || `http://0.0.0.0:${process.env.PORT || 8080}`;
+
+// HTTP methods defined by the OpenAPI 3.x specification for path items.
+const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'options', 'head', 'patch', 'trace'];
 
 /**
- * Load and parse OpenAPI spec
+ * Load and parse OpenAPI spec using a real YAML parser.
  */
 function loadOpenApiSpec() {
   try {
     const content = fs.readFileSync(openApiPath, 'utf8');
-    // For now, just read the raw content and extract key sections
+    const doc = yaml.load(content);
+    if (!doc || typeof doc !== 'object') {
+      throw new Error('OpenAPI document did not parse into an object');
+    }
+    const info = doc.info || {};
     return {
-      raw: content,
-      title: extractValue(content, 'title:'),
-      version: extractValue(content, 'version:'),
-      description: extractDescription(content),
+      doc,
+      title: info.title || '',
+      version: info.version || '',
+      description: typeof info.description === 'string' ? info.description.trim() : '',
     };
   } catch (e) {
     console.error(`Failed to load OpenAPI spec: ${e.message}`);
@@ -80,52 +56,25 @@ function loadOpenApiSpec() {
 }
 
 /**
- * Extract a simple key-value from YAML
+ * Extract endpoints by iterating the parsed `paths` object directly.
+ * Covers every HTTP method present in the document (including head/options).
  */
-function extractValue(content, key) {
-  const match = content.match(new RegExp(`${key}\\s+(.+)`));
-  return match ? match[1].trim().replace(/['"]/g, '') : '';
-}
-
-/**
- * Extract multi-line description
- */
-function extractDescription(content) {
-  const match = content.match(/description:\s*\|\s*([\s\S]*?)(?=\n\w+:|$)/);
-  if (match) {
-    return match[1].trim().split('\n').map(l => l.trim()).join('\n');
-  }
-  return '';
-}
-
-/**
- * Extract endpoints from OpenAPI
- */
-function extractEndpoints(content) {
+function extractEndpoints(doc) {
   const endpoints = [];
-  const pathMatch = content.match(/^paths:([\s\S]*?)(?=^[a-z]+:|$)/m);
-  
-  if (!pathMatch) return endpoints;
-  
-  const pathsSection = pathMatch[1];
-  const pathLines = pathsSection.split('\n');
-  
-  let currentPath = '';
-  for (const line of pathLines) {
-    const pathMatch = line.match(/^\s*\/[^:]*:/);
-    if (pathMatch) {
-      currentPath = pathMatch[0].trim().slice(0, -1);
-    }
-    
-    const methodMatch = line.match(/^\s+(get|post|put|delete|patch):/);
-    if (methodMatch && currentPath) {
-      endpoints.push({
-        path: currentPath,
-        method: methodMatch[1].toUpperCase(),
-      });
+  const paths = (doc && doc.paths) || {};
+
+  for (const [routePath, pathItem] of Object.entries(paths)) {
+    if (!pathItem || typeof pathItem !== 'object') continue;
+    for (const method of HTTP_METHODS) {
+      if (pathItem[method]) {
+        endpoints.push({
+          path: routePath,
+          method: method.toUpperCase(),
+        });
+      }
     }
   }
-  
+
   return endpoints;
 }
 
@@ -133,7 +82,7 @@ function extractEndpoints(content) {
  * Generate markdown from OpenAPI spec
  */
 function generateMarkdown(spec) {
-  const endpoints = extractEndpoints(spec.raw);
+  const endpoints = extractEndpoints(spec.doc);
   
   let md = `# ${spec.title} - API Specification
 
@@ -154,7 +103,7 @@ ${spec.description}
 ### Base URL
 
 \`\`\`
-http://0.0.0.0:8080
+${baseUrl}
 \`\`\`
 
 ### API Versioning
@@ -255,6 +204,14 @@ how many seconds to wait before retrying.
 }
 
 /**
+ * Strip the volatile generation timestamp line so content comparisons in
+ * --check mode are not defeated by a value that changes on every run.
+ */
+function normalizeForComparison(markdown) {
+  return markdown.replace(/^\*\*Last Updated:\*\*.*$/m, '**Last Updated:** <normalized>');
+}
+
+/**
  * Main execution
  */
 function main() {
@@ -264,10 +221,11 @@ function main() {
   const markdown = generateMarkdown(spec);
   
   if (checkMode) {
-    // Check if current file matches generated content
+    // Check if current file matches generated content, ignoring the
+    // generation timestamp which differs on every invocation.
     if (fs.existsSync(outputPath)) {
       const current = fs.readFileSync(outputPath, 'utf8');
-      if (current === markdown) {
+      if (normalizeForComparison(current) === normalizeForComparison(markdown)) {
         console.log('✅ API_SPEC.md is in sync with openapi.yaml');
         process.exit(0);
       } else {

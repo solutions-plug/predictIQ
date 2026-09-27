@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import Link from 'next/link';
 import { useAsync } from '../../lib/hooks/useAsync';
 import { api } from '../../lib/api/public-client';
 import type { components } from '../../lib/api/schema';
@@ -26,22 +27,60 @@ const STATUS_LABEL: Record<RowStatus, string> = {
   resolved: 'Resolved',
 };
 
-const volumeFormatter = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
+// Assets that are fiat-equivalent and can be rendered with a currency symbol.
+// Anything else (e.g. XLM or other supported tokens) falls back to a neutral
+// numeric format so we never show a misleading `$` value.
+const FIAT_CURRENCIES: Record<string, string> = {
+  USD: 'USD',
+  USDC: 'USD',
+  USDT: 'USD',
+};
+
+const currencyFormatters = new Map<string, Intl.NumberFormat>();
+
+function getCurrencyFormatter(currency: string): Intl.NumberFormat {
+  let formatter = currencyFormatters.get(currency);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency,
+      notation: 'compact',
+      maximumFractionDigits: 1,
+    });
+    currencyFormatters.set(currency, formatter);
+  }
+  return formatter;
+}
+
+const neutralFormatter = new Intl.NumberFormat('en-US', {
   notation: 'compact',
   maximumFractionDigits: 1,
 });
 
-function formatVolume(raw: string): string {
+function formatVolume(raw: string, asset?: string | null): string {
   const value = Number.parseFloat(raw);
-  return Number.isFinite(value) ? volumeFormatter.format(value) : raw;
+  if (!Number.isFinite(value)) {
+    return raw;
+  }
+  const currency = asset ? FIAT_CURRENCIES[asset.toUpperCase()] : undefined;
+  return currency ? getCurrencyFormatter(currency).format(value) : neutralFormatter.format(value);
 }
 
 export function LiveMarketsTicker() {
   const fetchMarkets = React.useCallback((signal: AbortSignal) => api.getFeaturedMarkets(signal), []);
   const { data, status, retry } = useAsync<FeaturedMarket[]>(fetchMarkets, { immediate: true });
   const markets = (Array.isArray(data) ? data : []).slice(0, MAX_ROWS);
+
+  // Guard against duplicate in-flight retries: while a retry is loading, the
+  // button is disabled and further clicks are no-ops, so a rapid double-click
+  // results in a single network call to getFeaturedMarkets.
+  const retryInFlight = status === 'loading';
+  const handleRetry = React.useCallback(() => {
+    if (retryInFlight) {
+      return;
+    }
+    retry();
+  }, [retry, retryInFlight]);
 
   return (
     // A plain div, not <aside>: it already sits inside the hero <section>,
@@ -53,9 +92,9 @@ export function LiveMarketsTicker() {
         <h2 id="live-ticker-heading" className="live-ticker__heading">
           Live Markets
         </h2>
-        <a href="/markets" className="live-ticker__view-all">
+        <Link href="/markets" className="live-ticker__view-all">
           View all
-        </a>
+        </Link>
       </div>
 
       {status === 'loading' && (
@@ -67,8 +106,14 @@ export function LiveMarketsTicker() {
       {status === 'error' && (
         <div className="live-ticker__status" role="alert" aria-live="assertive">
           <p>Unable to load live markets right now.</p>
-          <button type="button" className="retry-button" onClick={retry}>
-            Retry
+          <button
+            type="button"
+            className="retry-button"
+            onClick={handleRetry}
+            disabled={retryInFlight}
+            aria-busy={retryInFlight}
+          >
+            {retryInFlight ? 'Retrying…' : 'Retry'}
           </button>
         </div>
       )}
@@ -83,15 +128,15 @@ export function LiveMarketsTicker() {
             const rowStatus = deriveRowStatus(market);
             return (
               <li key={market.id} className="live-ticker__row">
-                <a href={`/markets/${market.id}`} className="live-ticker__row-link">
+                <Link href={`/markets/${market.id}`} className="live-ticker__row-link">
                   <span className="live-ticker__title">{market.title}</span>
                   <span className={`live-ticker__tag live-ticker__tag--${rowStatus}`}>
                     {STATUS_LABEL[rowStatus]}
                   </span>
                   <span className="live-ticker__volume mono tabular-nums">
-                    {formatVolume(market.volume)}
+                    {formatVolume(market.volume, market.settlement_asset)}
                   </span>
-                </a>
+                </Link>
               </li>
             );
           })}

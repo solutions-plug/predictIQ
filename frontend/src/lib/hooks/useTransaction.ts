@@ -33,6 +33,21 @@ export interface TransactionHandlers<T> {
   confirm?: (txHash: string) => Promise<void>;
 }
 
+/**
+ * Structured error codes/names wallets use to signal a user-declined
+ * signature. Checked first so detection doesn't depend on message wording.
+ */
+const REJECTION_CODES = [
+  'userrejected',
+  'userrejectedrequest',
+  'userdeclined',
+  'userdeclinedrequest',
+  'rejectedbyuser',
+  'declinedbyuser',
+  'actionrejected',
+  'requestrejected',
+];
+
 /** Error names/messages wallets commonly use for a user-declined signature. */
 const REJECTION_PATTERNS = [
   'user declined',
@@ -44,11 +59,31 @@ const REJECTION_PATTERNS = [
 
 /**
  * Best-effort detection of "the user rejected the signature prompt" versus a
- * genuine failure. Freighter and most Stellar wallets don't expose a
- * dedicated error type for this, so we match on the message text — this is
- * intentionally checked before anything is treated as a hard failure.
+ * genuine failure.
+ *
+ * Detection prefers a structured signal — an error `code` or `name` exposed
+ * by the wallet API (e.g. `UserRejectedRequestError`) — so it keeps working
+ * regardless of the message language or phrasing. Only when no such
+ * structured signal is present do we fall back to matching the message text
+ * against a fixed list of English substrings; that fallback is inherently
+ * brittle: a wallet that localizes its messages, or phrases rejection
+ * differently, will not be recognized and the cancel will be misclassified
+ * as a hard failure. This is intentionally checked before anything is
+ * treated as a hard failure.
  */
 export function isUserRejection(error: unknown): boolean {
+  if (error && typeof error === 'object') {
+    const { code, name } = error as { code?: unknown; name?: unknown };
+    const signals = [code, name]
+      .filter((value): value is string | number =>
+        typeof value === 'string' || typeof value === 'number',
+      )
+      .map((value) => String(value).toLowerCase());
+    if (signals.some((signal) => REJECTION_CODES.includes(signal))) {
+      return true;
+    }
+  }
+
   const message = error instanceof Error ? error.message : String(error);
   const normalized = message.toLowerCase();
   return REJECTION_PATTERNS.some((pattern) => normalized.includes(pattern));

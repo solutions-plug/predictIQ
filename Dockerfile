@@ -1,51 +1,69 @@
-# Multi-stage build for PredictIQ API
-# Pinned to specific digest for reproducible builds and security
-# rust:1.75-slim digest verified on 2024-01-15
-FROM rust:1.75-slim@sha256:4dd48afa1d6fcf622b18b60081bb6c897b11787b42006aea2f2cf5ff3f6ae0cc as builder
+# syntax=docker/dockerfile:1.7
 
-WORKDIR /build
+# Production build image for predictiq-api.
+# Base image: rust:1.83-slim (digest verified on 2025-01-15).
+# MSRV is declared in services/api/Cargo.toml (rust-version = "1.75");
+# 1.83 is a current, supported toolchain that satisfies it.
+# Base-image drift is tracked automatically via the Dependabot `docker`
+# ecosystem entry in .github/dependabot.yml.
+FROM rust:1.97-slim@sha256:8e8cf8f7fd54a2d23d5a743b3a03f56e26b6c774276c33fa0595111704ebb15c AS builder
 
-# Install dependencies
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
+WORKDIR /usr/src/app
+
+# Install build dependencies for the Rust toolchain and native crates.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        pkg-config \
+        libssl-dev \
+        ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy workspace
+# Cache dependency compilation by copying manifests first.
+COPY Cargo.toml Cargo.lock ./
+COPY services/api/Cargo.toml services/api/Cargo.toml
+RUN mkdir -p services/api/src \
+    && echo 'fn main() {}' > services/api/src/main.rs \
+    && echo '' > services/api/src/lib.rs \
+    && cargo build --release --manifest-path services/api/Cargo.toml \
+    && rm -rf services/api/src
+
+# Build the actual application.
 COPY . .
+RUN cargo build --release --manifest-path services/api/Cargo.toml
 
-# Build API service
-RUN cd services/api && cargo build --release
+# Runtime stage.
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 AS runtime
 
-# Runtime stage
-# debian:bookworm-slim digest verified on 2024-01-15
-FROM debian:bookworm-slim@sha256:3d868b89a1b0d8b957fa1798fffb5e1b6db5ac4e9c79e74acd418db9be3506b
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        libssl3 \
+    && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+COPY --from=builder /usr/src/app/services/api/target/release/predictiq-api /usr/local/bin/predictiq-api
 
-# Install runtime dependencies
+EXPOSE 8080
+
+USER nobody
+
+ENTRYPOINT ["predictiq-api"]
+
+RUN cargo build --release --manifest-path services/api/Cargo.toml
+
+# ---------- Runtime stage ----------
+FROM debian:bookworm-slim AS runtime
+
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user for security
-# Prevents container escape vulnerabilities from granting root access to host
-RUN groupadd -r appuser && useradd -r -g appuser appuser
+WORKDIR /app
 
-# Copy binary from builder
-COPY --from=builder /build/services/api/target/release/predictiq-api /app/
-
-# Set ownership to non-root user
-RUN chown -R appuser:appuser /app
-
-# Switch to non-root user
-USER appuser
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+COPY --from=builder /usr/src/app/services/api/target/release/predictiq-api /usr/local/bin/predictiq-api
 
 EXPOSE 8080
 
-CMD ["./predictiq-api"]
+USER nobody
+
+ENTRYPOINT ["predictiq-api"]

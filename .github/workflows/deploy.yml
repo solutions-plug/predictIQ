@@ -11,9 +11,18 @@ on:
     paths:
       - 'infrastructure/terraform/**'
 
+# Serialize deploy runs instead of cancelling: the apply job holds a DynamoDB
+# state lock, so a superseded run must finish rather than be cancelled mid-apply.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   AWS_REGION: us-east-1
-  TERRAFORM_VERSION: 1.5.0
+  # Single source of truth for the Terraform CLI version. Must match
+  # .github/workflows/terraform.yml so PR-time plans and merge-time applies
+  # run the same binary. Documented in infrastructure/README.md.
+  TERRAFORM_VERSION: 1.9.0
 
 jobs:
   validate-secrets:
@@ -60,7 +69,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Run Checkov
-        uses: bridgecrewio/checkov-action@7b972723c44fb3d256283fac96fae5d7c1894bb7 # v12
+        uses: bridgecrewio/checkov-action@f967808197a8d784d3e72919f38c3ff0cda7884e # v12
         with:
           directory: infrastructure/terraform
           framework: terraform
@@ -94,7 +103,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
 
@@ -167,7 +176,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
 
@@ -197,28 +206,17 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: tfplan-${{ matrix.environment }}
-          path: infrastructure/terraform
-
-      - name: Terraform Init
-        working-directory: infrastructure/terraform
-        run: terraform init -backend-config="${{ steps.backend.outputs.file }}"
-
-      - name: Terraform Apply
-        working-directory: infrastructure/terraform
-        run: terraform apply -lock=true -lock-timeout=5m -auto-approve tfplan-${{ matrix.environment }}
-
-      - name: Output infrastructure details
-        working-directory: infrastructure/terraform
+lve backend config
+        id: backend
         run: |
-          # Human-readable output still relies on Terraform's own `sensitive`
-          # redaction, so it's safe to print to the (already access-controlled) logs.
-          terraform output
-          # -json bypasses that redaction entirely, so strip the sensitive keys
-          # ourselves before anything touches disk / an uploaded artifact.
-          terraform output -json | jq 'del(.rds_endpoint, .redis_endpoint)' > /tmp/outputs-${{ matrix.environment }}.json
+          case "${{ matrix.environment }}" in
+            staging) echo "file=environments/staging/backend.hcl" >> $GITHUB_OUTPUT ;;
+            prod)    echo "file=environments/production/backend.hcl" >> $GITHUB_OUTPUT ;;
+            *)       echo "file=backend-config.hcl" >> $GITHUB_OUTPUT ;;
+          esac
 
-      - name: Upload outputs
-        uses: actions/upload-artifact@v7
+      - name: Download plan
+        uses: actions/download-artifact@v4
         with:
-          name: outputs-${{ matrix.environment }}
-          path: /tmp/outputs-${{ matrix.environment }}.json
+          name: tfplan-${{ matrix.environment }}
+
