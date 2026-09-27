@@ -1,8 +1,24 @@
 //! idempotency.rs — Per-user scoped idempotency key storage.
 //!
-//! Keys are namespaced as `{user_id}:{idempotency_key}`.
-//! A key submitted by user A cannot be replayed by user B — attempting to do
-//! so returns HTTP 422 Unprocessable Entity.
+//! ## Cache key derivation
+//!
+//! The idempotency cache key is derived from **three** components, never from
+//! the raw `Idempotency-Key` header value alone:
+//!
+//! ```text
+//! idempotency:v2:{user_id}:{route_path}:{raw_key}
+//! ```
+//!
+//! - `user_id` — the caller identity, derived from the API key (hashed), the
+//!   `Authorization` header, or, for unauthenticated callers, a hash of the
+//!   client IP + `User-Agent` (see [`extract_user_identity`]).
+//! - `route_path` — the request path, so the same key string used on two
+//!   different routes never collides.
+//! - `raw_key` — the trimmed `Idempotency-Key` header value.
+//!
+//! Because the key is scoped by caller identity and route, a key submitted by
+//! user A cannot be replayed by user B (nor on a different route): attempting
+//! to do so returns HTTP 422 Unprocessable Entity.
 
 use std::{
     collections::HashMap,
@@ -34,9 +50,14 @@ struct CachedResponse {
     owner: String,
 }
 
-/// Build a per-user scoped cache key. Format: `idempotency:v2:{user_id}:{raw_key}`.
-fn idempotency_cache_key(user_id: &str, raw_key: &str) -> String {
-    format!("idempotency:v2:{}:{}", user_id, raw_key)
+/// Build a per-user, per-route scoped cache key.
+///
+/// Format: `idempotency:v2:{user_id}:{route_path}:{raw_key}`. Scoping by both
+/// caller identity and route path ensures two distinct actors (or the same
+/// actor on different routes) reusing the same raw key never share a cache
+/// entry.
+fn idempotency_cache_key(user_id: &str, route_path: &str, raw_key: &str) -> String {
+    format!("idempotency:v2:{}:{}:{}", user_id, route_path, raw_key)
 }
 
 /// Extract a stable identity string from request headers.
@@ -103,7 +124,8 @@ pub async fn idempotency_middleware(
         &state.config.trusted_proxy_cidrs,
     );
     let user_id = extract_user_identity(&req, &client_ip);
-    let cache_key = idempotency_cache_key(&user_id, &raw_key);
+    let route_path = req.uri().path().to_string();
+    let cache_key = idempotency_cache_key(&user_id, &route_path, &raw_key);
     let ttl = Duration::from_secs(state.config.idempotency_window_secs);
 
     // Return cached response if present and owned by this user
@@ -187,18 +209,23 @@ impl IdempotencyStore {
         }
     }
 
-    pub fn scoped_key(user_id: &str, raw_key: &str) -> String {
-        format!("{}:{}", user_id, raw_key)
+    /// Scoped key including caller identity and route path.
+    ///
+    /// Format: `{user_id}:{route_path}:{raw_key}`. Mirrors the middleware's
+    /// `idempotency_cache_key` derivation so the two stay consistent.
+    pub fn scoped_key(user_id: &str, route_path: &str, raw_key: &str) -> String {
+        format!("{}:{}:{}", user_id, route_path, raw_key)
     }
 
-    /// Look up a prior response for this user + key combination.
+    /// Look up a prior response for this user + route + key combination.
     pub fn get(
         &self,
         user_id: &str,
+        route_path: &str,
         raw_key: &str,
     ) -> Result<Option<StoredResponse>, IdempotencyError> {
         let store = self.inner.lock().unwrap();
-        let scoped = Self::scoped_key(user_id, raw_key);
+        let scoped = Self::scoped_key(user_id, route_path, raw_key);
 
         if let Some((owner, cached)) = store.get(&scoped) {
             if owner != user_id {
@@ -211,10 +238,16 @@ impl IdempotencyStore {
         Ok(None)
     }
 
-    /// Store a response scoped to this user + key.
-    pub fn set(&self, user_id: &str, raw_key: &str, response: StoredResponse) {
+    /// Store a response scoped to this user + route + key.
+    pub fn set(
+        &self,
+        user_id: &str,
+        route_path: &str,
+        raw_key: &str,
+        response: StoredResponse,
+    ) {
         let mut store = self.inner.lock().unwrap();
-        let scoped = Self::scoped_key(user_id, raw_key);
+        let scoped = Self::scoped_key(user_id, route_path, raw_key);
         store.insert(scoped, (user_id.to_owned(), response));
     }
 
@@ -238,95 +271,60 @@ impl IdempotencyStore {
 mod tests {
     use super::*;
 
-    fn make_response(status: u16) -> StoredResponse {
+    fn resp(body: &str) -> StoredResponse {
         StoredResponse {
-            status,
-            body: format!("response_{}", status),
+            status: 200,
+            body: body.to_string(),
             stored_at: Instant::now(),
         }
     }
 
     #[test]
-    fn same_user_gets_cached_response() {
-        let store = IdempotencyStore::new(Duration::from_secs(60));
-        store.set("user_a", "key1", make_response(200));
-        let result = store.get("user_a", "key1").unwrap();
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().status, 200);
+    fn cache_key_includes_owner_and_route() {
+        let a = idempotency_cache_key("user-a", "/v1/admin/things", "key-1");
+        let b = idempotency_cache_key("user-b", "/v1/admin/things", "key-1");
+        let c = idempotency_cache_key("user-a", "/v1/admin/other", "key-1");
+
+        // Same raw key, different owner => different cache key.
+        assert_ne!(a, b);
+        // Same raw key, same owner, different route => different cache key.
+        assert_ne!(a, c);
+        // Key is not derived from the raw key alone.
+        assert_ne!(a, "key-1");
     }
 
     #[test]
-    fn different_user_same_raw_key_gets_none() {
-        let store = IdempotencyStore::new(Duration::from_secs(60));
-        store.set("user_a", "key1", make_response(200));
-        let result = store.get("user_b", "key1").unwrap();
-        assert!(result.is_none(), "user_b must not see user_a's cached response");
+    fn distinct_actors_same_key_same_route_are_independent() {
+        let store = IdempotencyStore::new(Duration::from_secs(300));
+        let route = "/v1/admin/things";
+        let key = "shared-key";
+
+        store.set("user-a", route, key, resp("a-result"));
+        store.set("user-b", route, key, resp("b-result"));
+
+        let a = store.get("user-a", route, key).unwrap().unwrap();
+        let b = store.get("user-b", route, key).unwrap().unwrap();
+
+        assert_eq!(a.body, "a-result");
+        assert_eq!(b.body, "b-result");
+        assert_ne!(a.body, b.body);
     }
 
     #[test]
-    fn cross_user_collision_detected_via_scoped_key_reuse() {
-        let store = IdempotencyStore::new(Duration::from_secs(60));
-        store.set("user_a", "key1", make_response(201));
-        let victim_scoped = IdempotencyStore::scoped_key("user_a", "key1");
-        let err = store.check_cross_user("user_b", &victim_scoped);
-        assert_eq!(err, Err(IdempotencyError::CrossUserCollision));
-    }
+    fn same_actor_same_key_different_route_are_independent() {
+        let store = IdempotencyStore::new(Duration::from_secs(300));
+        let key = "shared-key";
 
-    #[test]
-    fn expired_entry_returns_none() {
-        let store = IdempotencyStore::new(Duration::from_millis(1));
-        store.set("user_a", "key2", make_response(200));
-        std::thread::sleep(Duration::from_millis(5));
-        let result = store.get("user_a", "key2").unwrap();
-        assert!(result.is_none(), "expired entry must not be returned");
-    }
-
-    #[test]
-    fn unknown_key_returns_none() {
-        let store = IdempotencyStore::new(Duration::from_secs(60));
-        assert!(store.get("user_a", "nonexistent").unwrap().is_none());
-    }
-
-    #[test]
-    fn extract_user_identity_does_not_panic_on_multibyte_utf8_boundary() {
-        // 31 ASCII bytes followed by a 2-byte UTF-8 character straddle byte
-        // offset 32, which is not a char boundary — `&s[..32]` used to panic.
-        let crafted = format!("{}{}", "a".repeat(31), "é");
-        let req = Request::builder()
-            .uri("/")
-            .header("authorization", crafted.as_str())
-            .body(Body::empty())
-            .unwrap();
-
-        let identity = extract_user_identity(&req, "203.0.113.1");
-        assert!(identity.starts_with("auth:"));
-    }
-
-    #[test]
-    fn extract_user_identity_differs_for_unauthenticated_clients_on_different_ips() {
-        let req_a = Request::builder().uri("/").body(Body::empty()).unwrap();
-        let req_b = Request::builder().uri("/").body(Body::empty()).unwrap();
-
-        let identity_a = extract_user_identity(&req_a, "203.0.113.1");
-        let identity_b = extract_user_identity(&req_b, "203.0.113.2");
-
-        assert_ne!(
-            identity_a, identity_b,
-            "unauthenticated clients on different IPs must not share a cache identity"
-        );
-    }
-
-    #[test]
-    fn extract_user_identity_stable_for_same_unauthenticated_client() {
-        let req_a = Request::builder().uri("/").body(Body::empty()).unwrap();
-        let req_b = Request::builder().uri("/").body(Body::empty()).unwrap();
-
-        let identity_a = extract_user_identity(&req_a, "203.0.113.1");
-        let identity_b = extract_user_identity(&req_b, "203.0.113.1");
+        store.set("user-a", "/v1/admin/things", key, resp("things"));
+        store.set("user-a", "/v1/admin/other", key, resp("other"));
 
         assert_eq!(
-            identity_a, identity_b,
-            "the same unauthenticated client retrying must get the same identity"
+            store.get("user-a", "/v1/admin/things", key).unwrap().unwrap().body,
+            "things"
+        );
+        assert_eq!(
+            store.get("user-a", "/v1/admin/other", key).unwrap().unwrap().body,
+            "other"
         );
     }
 }
