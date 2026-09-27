@@ -144,8 +144,14 @@ pub fn require_not_paused_for_high_risk(e: &Env) -> Result<(), ErrorCode> {
 /// Governance: update the circuit breaker threshold (admin only).
 /// Issue #1544: emits a standardized event (old/new) so off-chain monitoring
 /// can observe threshold changes, matching other governance config setters.
+/// Issue #1543: rejects non-positive values — the threshold represents a max
+/// loss in stroops, so zero or negative values are not meaningful and would
+/// either permanently trip or permanently disable loss-based protection.
 pub fn set_threshold(e: &Env, threshold: i128) -> Result<(), ErrorCode> {
     admin::require_admin(e)?;
+    if threshold <= 0 {
+        return Err(ErrorCode::InvalidAmount);
+    }
     let old_threshold = get_threshold(e);
     e.storage()
         .instance()
@@ -223,4 +229,64 @@ mod threshold_tests {
         });
         assert!(found, "expected circuit breaker threshold_set event");
     }
-}
+
+    // ── Issue #1543: non-positive threshold rejection ──────────────────────────
+
+    /// Zero is not a valid threshold — it would trip the circuit breaker on
+    /// any loss (loss > 0 always exceeds it), effectively making every
+    /// operation fail.  Must return InvalidAmount without mutating storage.
+    #[test]
+    fn set_threshold_rejects_zero_and_does_not_mutate_storage() {
+        let e = Env::default();
+        e.mock_all_auths();
+        setup_admin(&e);
+
+        let err = set_threshold(&e, 0).unwrap_err();
+        assert_eq!(
+            err,
+            crate::errors::ErrorCode::InvalidAmount,
+            "zero threshold must return InvalidAmount"
+        );
+
+        // Storage must be untouched — default still returned.
+        assert_eq!(
+            get_threshold(&e),
+            DEFAULT_CIRCUIT_BREAKER_THRESHOLD,
+            "stored threshold must not change when validation fails"
+        );
+    }
+
+    /// Negative thresholds are meaningless as a maximum-loss bound and must be
+    /// rejected before the value reaches storage.
+    #[test]
+    fn set_threshold_rejects_negative_and_does_not_mutate_storage() {
+        let e = Env::default();
+        e.mock_all_auths();
+        setup_admin(&e);
+
+        for bad in [-1i128, -1_000, i128::MIN] {
+            let err = set_threshold(&e, bad).unwrap_err();
+            assert_eq!(
+                err,
+                crate::errors::ErrorCode::InvalidAmount,
+                "negative threshold {bad} must return InvalidAmount"
+            );
+            assert_eq!(
+                get_threshold(&e),
+                DEFAULT_CIRCUIT_BREAKER_THRESHOLD,
+                "stored threshold must not change for bad value {bad}"
+            );
+        }
+    }
+
+    /// Minimum valid threshold (1 stroop) must be accepted so the boundary is
+    /// not accidentally fenced off by an off-by-one error.
+    #[test]
+    fn set_threshold_accepts_one_stroop_minimum() {
+        let e = Env::default();
+        e.mock_all_auths();
+        setup_admin(&e);
+
+        set_threshold(&e, 1).unwrap();
+        assert_eq!(get_threshold(&e), 1);
+    }
