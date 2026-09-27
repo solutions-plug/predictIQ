@@ -32,7 +32,7 @@ COPY . .
 RUN cargo build --release --manifest-path services/api/Cargo.toml
 
 # Runtime stage.
-FROM debian:bookworm-slim@sha256:0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f AS runtime
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 AS runtime
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
