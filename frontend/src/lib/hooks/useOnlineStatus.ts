@@ -1,3 +1,5 @@
+'use client';
+
 import { useEffect, useRef, useState } from 'react';
 
 /** How long a connectivity change must hold before the UI reacts to it. */

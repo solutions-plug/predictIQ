@@ -25,6 +25,9 @@ describe('LandingPage Accessibility Tests', () => {
     jest
       .spyOn(api, 'getStatistics')
       .mockResolvedValue({ total_markets: 128, total_volume: 45000, active_markets: 512 });
+    // The hero also mounts a live-markets ticker that fetches independently
+    // on mount; stub it too so it doesn't consume the per-test fetch mock.
+    jest.spyOn(api, 'getFeaturedMarkets').mockResolvedValue([]);
   });
 
   afterEach(() => {

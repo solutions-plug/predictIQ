@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import { api, ApiError } from '@/lib/api/admin-client';
 import { Modal } from '@/components/admin/Modal';
 import { Form, FormField, Input, Button, StatusAlert } from '@/components/admin/Form';
+import './replay.css';
 
 interface ReplayResult {
   from_ledger?: number;
@@ -115,27 +116,16 @@ export default function BlockchainReplayPage() {
       </div>
 
       {/* Permission Tier Status Banner */}
-      <div className="admin-card" style={{ marginBottom: '1.5rem', backgroundColor: hasPermission ? 'var(--surface)' : 'rgba(248, 113, 113, 0.08)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
+      <div className={`admin-card replay-permission-banner ${!hasPermission ? 'replay-permission-banner--denied' : ''}`}>
+        <div className="replay-permission-banner__inner">
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
-              <span style={{ fontSize: 'var(--text-xs)', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--fg-muted)', fontWeight: 600 }}>
-                Authorization Status:
-              </span>
-              <span
-                style={{
-                  fontSize: 'var(--text-xs)',
-                  fontWeight: 700,
-                  padding: '0.15rem 0.5rem',
-                  borderRadius: 'var(--radius-pill)',
-                  backgroundColor: hasPermission ? 'rgba(52, 211, 153, 0.15)' : 'rgba(248, 113, 113, 0.15)',
-                  color: hasPermission ? 'var(--success)' : 'var(--destructive)',
-                }}
-              >
+            <div className="replay-permission-banner__status-row">
+              <span className="replay-permission-banner__status-label">Authorization Status:</span>
+              <span className={`replay-permission-badge ${hasPermission ? 'replay-permission-badge--granted' : 'replay-permission-badge--denied'}`}>
                 {hasPermission ? 'blockchain:replay GRANTED (Super Admin)' : 'ACCESS DENIED (Lacks permission)'}
               </span>
             </div>
-            <p style={{ margin: 0, fontSize: 'var(--text-xs)', color: 'var(--fg-muted)' }}>
+            <p className="replay-permission-banner__desc">
               {hasPermission
                 ? 'Your authenticated admin session holds the operational role required to initiate ledger state replays.'
                 : 'This action is fully disabled for sessions without explicit blockchain:replay authorization.'}
@@ -145,15 +135,7 @@ export default function BlockchainReplayPage() {
           <button
             type="button"
             onClick={() => setHasPermission(!hasPermission)}
-            style={{
-              fontSize: 'var(--text-xs)',
-              padding: '0.35rem 0.65rem',
-              backgroundColor: 'var(--surface-2)',
-              border: '1px solid var(--border)',
-              borderRadius: 'var(--radius-sm)',
-              color: 'var(--fg-muted)',
-              cursor: 'pointer',
-            }}
+            className="replay-permission-toggle"
             title="Toggle permission tier to test disabled edge case"
           >
             {hasPermission ? 'Simulate Lower Permission Tier' : 'Restore Admin Permissions'}
@@ -180,7 +162,7 @@ export default function BlockchainReplayPage() {
         />
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 380px', gap: '1.5rem', alignItems: 'start' }}>
+      <div className="replay-columns">
         {/* Left Column: Replay Request Form */}
         <div className="admin-card">
           <div className="admin-card-header">
@@ -188,19 +170,7 @@ export default function BlockchainReplayPage() {
           </div>
 
           {!hasPermission && (
-            <div
-              role="alert"
-              style={{
-                backgroundColor: 'rgba(248, 113, 113, 0.1)',
-                border: '1px solid var(--destructive)',
-                borderRadius: 'var(--radius-sm)',
-                padding: '0.85rem 1rem',
-                color: 'var(--destructive)',
-                fontSize: 'var(--text-sm)',
-                marginBottom: '1.25rem',
-                fontWeight: 500,
-              }}
-            >
+            <div role="alert" className="replay-locked-notice">
               🔒 <strong>Operational Action Locked:</strong> Your current admin session does not possess the <code>blockchain:replay</code> permission. The controls below are disabled.
             </div>
           )}
@@ -230,7 +200,7 @@ export default function BlockchainReplayPage() {
               />
             </FormField>
 
-            <div style={{ marginTop: '1.75rem', display: 'flex', gap: '1rem', alignItems: 'center' }}>
+            <div className="replay-submit-row">
               <Button
                 type="submit"
                 variant="danger"
@@ -243,22 +213,9 @@ export default function BlockchainReplayPage() {
           </Form>
 
           {/* Operational Notes */}
-          <div
-            style={{
-              marginTop: '2rem',
-              padding: '1rem',
-              backgroundColor: 'var(--surface-2)',
-              borderRadius: 'var(--radius-sm)',
-              border: '1px solid var(--border)',
-              fontSize: 'var(--text-xs)',
-              color: 'var(--fg-muted)',
-              lineHeight: 1.5,
-            }}
-          >
-            <h3 style={{ margin: '0 0 0.5rem', fontSize: 'var(--text-xs)', color: 'var(--fg)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              Operational Considerations
-            </h3>
-            <ul style={{ margin: 0, paddingLeft: '1.2rem' }}>
+          <div className="replay-notes">
+            <h3 className="replay-notes__title">Operational Considerations</h3>
+            <ul>
               <li>Replays bypass standard ingestion deduplication by design.</li>
               <li>Running overlapping replays concurrently can degrade database throughput.</li>
               <li>Always check Soroban RPC node rate limits prior to selecting large ledger spans.</li>
@@ -270,37 +227,20 @@ export default function BlockchainReplayPage() {
         <div className="admin-card">
           <div className="admin-card-header">
             <h3 className="admin-card-title">Recent Session Replays</h3>
-            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--fg-muted)' }}>
-              {auditLogs.length} logged
-            </span>
+            <span className="replay-history-count">{auditLogs.length} logged</span>
           </div>
 
           {auditLogs.length === 0 ? (
-            <p style={{ fontSize: 'var(--text-sm)', color: 'var(--fg-muted)', margin: 0, textAlign: 'center', padding: '2rem 1rem' }}>
-              No replays triggered in this session.
-            </p>
+            <p className="replay-history-empty">No replays triggered in this session.</p>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+            <div className="replay-history-list">
               {auditLogs.map((log, index) => (
-                <div
-                  key={index}
-                  style={{
-                    backgroundColor: 'var(--surface-2)',
-                    border: '1px solid var(--border)',
-                    borderRadius: 'var(--radius-sm)',
-                    padding: '0.75rem 1rem',
-                    fontSize: 'var(--text-xs)',
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
-                    <span style={{ fontWeight: 600, color: 'var(--fg)' }}>
-                      Ledger #{log.from_ledger}
-                    </span>
-                    <span style={{ color: 'var(--success)', fontWeight: 600 }}>
-                      {log.events_replayed} events
-                    </span>
+                <div key={index} className="replay-history-item">
+                  <div className="replay-history-item__row">
+                    <span className="replay-history-item__ledger">Ledger #{log.from_ledger}</span>
+                    <span className="replay-history-item__count">{log.events_replayed} events</span>
                   </div>
-                  <div style={{ color: 'var(--fg-muted)' }}>
+                  <div className="replay-history-item__meta">
                     {new Date(log.timestamp).toLocaleTimeString()} — {log.status}
                   </div>
                 </div>
@@ -334,30 +274,16 @@ export default function BlockchainReplayPage() {
       >
         <div>
           {/* High-severity warning block */}
-          <div
-            style={{
-              backgroundColor: 'rgba(248, 113, 113, 0.12)',
-              border: '1px solid var(--destructive)',
-              borderRadius: 'var(--radius-sm)',
-              padding: '1rem',
-              color: 'var(--fg)',
-              marginBottom: '1.25rem',
-            }}
-          >
-            <div style={{ fontWeight: 700, color: 'var(--destructive)', marginBottom: '0.4rem', fontSize: 'var(--text-sm)' }}>
-              WARNING: Irreversible Operation
-            </div>
-            <p style={{ margin: 0, fontSize: 'var(--text-xs)', lineHeight: 1.5 }}>
+          <div className="replay-warning-block">
+            <div className="replay-warning-block__title">WARNING: Irreversible Operation</div>
+            <p>
               You are about to reprocess blockchain events starting from ledger <strong>#{fromLedger}</strong>. This operational mutation will re-evaluate contract states in the database and cannot be undone.
             </p>
           </div>
 
-          <div style={{ marginBottom: '1.25rem' }}>
-            <label
-              htmlFor="confirm-phrase-input"
-              style={{ display: 'block', fontSize: 'var(--text-sm)', fontWeight: 600, marginBottom: '0.4rem' }}
-            >
-              Type <span style={{ color: 'var(--destructive)', fontFamily: 'monospace', fontWeight: 700 }}>{REQUIRED_CONFIRM_PHRASE}</span> to confirm:
+          <div className="replay-confirm-field">
+            <label htmlFor="confirm-phrase-input">
+              Type <span className="replay-confirm-phrase">{REQUIRED_CONFIRM_PHRASE}</span> to confirm:
             </label>
             <Input
               id="confirm-phrase-input"
@@ -372,15 +298,11 @@ export default function BlockchainReplayPage() {
               autoComplete="off"
               disabled={isExecuting}
             />
-            {confirmPhraseError && (
-              <p style={{ color: 'var(--destructive)', fontSize: 'var(--text-xs)', marginTop: '0.35rem', margin: 0 }}>
-                {confirmPhraseError}
-              </p>
-            )}
+            {confirmPhraseError && <p className="replay-confirm-error">{confirmPhraseError}</p>}
           </div>
 
           {/* Actions */}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '1.5rem' }}>
+          <div className="replay-modal-actions">
             <Button
               type="button"
               variant="secondary"

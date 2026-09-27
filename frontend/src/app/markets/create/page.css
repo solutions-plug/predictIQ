@@ -88,13 +88,17 @@
 }
 
 .market-create__submit {
-  background: var(--grad-brand);
+  background: var(--primary);
   color: var(--on-primary);
   border: none;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-sm);
   padding: 0.75rem 2rem;
   font-weight: 600;
   cursor: pointer;
+  transition: background-color var(--dur-fast);
+}
+.market-create__submit:hover:not(:disabled) {
+  background: var(--gold-soft);
 }
 
 .market-create__submit:disabled {

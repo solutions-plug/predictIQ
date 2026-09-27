@@ -33,10 +33,28 @@ describe('reportAccessibility', () => {
 
     expect(axeDefault).toHaveBeenCalledTimes(1);
     const [reactArg, domArg, timeout, cfg] = axeDefault.mock.calls[0];
-    expect(reactArg).toBe(fakeReact);
+    // A shallow copy, not the same reference — axe patches `createElement` in
+    // place, and Turbopack's client bundle hands us a frozen module namespace
+    // object for `react`, so the harness must pass a mutable copy instead.
+    expect(reactArg).not.toBe(fakeReact);
+    expect(reactArg).toEqual(fakeReact);
     expect(domArg.__isMockDOM).toBe(true);
     expect(timeout).toBe(1000);
     expect(cfg).toEqual(config);
+  });
+
+  it('does not throw when @axe-core/react fails to patch React', async () => {
+    const { reportAccessibility, axeDefault } = load();
+    jest.replaceProperty(process.env, 'NODE_ENV', 'development');
+    axeDefault.mockImplementation(() => {
+      throw new TypeError('Cannot set property createElement of [object Module] which has only a getter');
+    });
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await expect(reportAccessibility(fakeReact)).resolves.toBeUndefined();
+
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 
   it('only initializes once even when called multiple times', async () => {
