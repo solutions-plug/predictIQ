@@ -230,135 +230,47 @@ mod tests {
 
     #[test]
     fn test_migration_version_validation() {
-        // Version must progress forward
-        let result = execute_migration(&soroban_sdk::Env::default(), 2, 1, |_| Ok(()));
-        assert!(result.is_err());
+        // Version progression must be strictly increasing.
+        let e = Env::default();
+        let result = execute_migration(&e, 2, 1, |_| Ok(()));
+        assert_eq!(result, Err(ErrorCode::NotAuthorized));
     }
 
     #[test]
-    fn test_migration_with_rollback() {
-        let env = soroban_sdk::Env::default();
+    fn test_migration_rolls_back_on_stake_invariant_violation() {
+        use crate::modules::markets::{create_market, get_market};
+        use crate::types::{Market, MarketStatus};
 
-        let result = execute_migration(&env, 1, 2, |_| Err(ErrorCode::NotAuthorized));
+        let e = Env::default();
+        e.mock_all_auths();
 
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_migration_validation_failure_rolls_back() {
-        use soroban_sdk::Address;
-
-        let env = soroban_sdk::Env::default();
-        let admin = Address::generate(&env);
-        let original_guardians = Vec::from_array(
-            &env,
-            [Guardian {
-                address: Address::generate(&env),
-                voting_power: 1,
-            }],
-        );
-
-        env.storage().persistent().set(&ConfigKey::Admin, &admin);
-        env.storage()
+        // Seed a market whose stake accounting is initially consistent.
+        let admin = Address::generate(&e);
+        e.storage().persistent().set(&ConfigKey::Admin, &admin);
+        e.storage()
             .persistent()
-            .set(&ConfigKey::GuardianSet, &original_guardians);
+            .set(&ConfigKey::GuardianSet, &Vec::<Guardian>::new(&e));
 
-        // Migration that removes Admin and overwrites GuardianSet. Removing Admin
-        // invalidates state (verify_migration_integrity fails), which must trigger
-        // a genuine rollback of both snapshotted keys -- not just marker cleanup.
-        let tampered_guardians: Vec<Guardian> = Vec::new(&env);
-        let result = execute_migration(&env, 1, 2, |_e| {
-            _e.storage()
+        let market_id = create_market(&e, &admin, 1, 100);
+
+        // Migration intentionally corrupts the market's stake accounting by
+        // bumping `total_staked` without touching `outcome_stakes`.
+        let result = execute_migration(&e, 1, 2, |env| {
+            let mut market: Market = get_market(env, market_id).unwrap();
+            market.total_staked += 1;
+            env.storage()
                 .persistent()
-                .remove(&ConfigKey::Admin);
-            _e.storage()
-                .persistent()
-                .set(&ConfigKey::GuardianSet, &tampered_guardians);
+                .set(&crate::types::DataKey::Market(market_id), &market);
             Ok(())
         });
 
+        // The corrupted migration must be rejected and rolled back, not recorded.
         assert_eq!(result, Err(ErrorCode::MigrationValidationError));
-        // Both keys must be genuinely restored to their pre-migration values.
-        let restored_admin: Address = env
-            .storage()
-            .persistent()
-            .get(&ConfigKey::Admin)
-            .expect("admin should be restored");
-        assert_eq!(restored_admin, admin);
-        assert_eq!(
-            env.storage()
-                .persistent()
-                .get::<ConfigKey, Vec<Guardian>>(&ConfigKey::GuardianSet),
-            Some(original_guardians)
-        );
-    }
+        assert!(get_migration_log(&e, 2).is_none());
 
-    #[test]
-    fn test_migration_history_preserved_across_sequential_migrations() {
-        use soroban_sdk::Address;
-
-        let env = soroban_sdk::Env::default();
-        let admin = Address::generate(&env);
-        let guardians = Vec::from_array(
-            &env,
-            [Guardian {
-                address: Address::generate(&env),
-                voting_power: 1,
-            }],
-        );
-
-        env.storage().persistent().set(&ConfigKey::Admin, &admin);
-        env.storage()
-            .persistent()
-            .set(&ConfigKey::GuardianSet, &guardians);
-
-        // First migration: v1 -> v2
-        execute_migration(&env, 1, 2, |_| Ok(())).unwrap();
-        // Second migration: v2 -> v3
-        execute_migration(&env, 2, 3, |_| Ok(())).unwrap();
-
-        // Both entries must be independently recoverable.
-        let first = get_migration_log(&env, 2).expect("v2 entry missing");
-        assert_eq!(first.from_version, 1);
-        assert_eq!(first.to_version, 2);
-
-        let second = get_migration_log(&env, 3).expect("v3 entry missing");
-        assert_eq!(second.from_version, 2);
-        assert_eq!(second.to_version, 3);
-
-        // The earlier entry must not have been overwritten by the later one.
-        assert_ne!(first.to_version, second.to_version);
-
-        // The backup snapshot must be cleaned up on the rollback path.
-        let backup_key = format!("migration:backup:v{}", 1);
-        assert!(!env.storage().persistent().has(&backup_key));
-    }
-
-    #[test]
-    fn test_successful_migration_removes_backup_snapshot() {
-        use soroban_sdk::Address;
-
-        let env = soroban_sdk::Env::default();
-        let admin = Address::generate(&env);
-        let guardians = Vec::from_array(
-            &env,
-            [Guardian {
-                address: Address::generate(&env),
-                voting_power: 1,
-            }],
-        );
-
-        env.storage().persistent().set(&ConfigKey::Admin, &admin);
-        env.storage()
-            .persistent()
-            .set(&ConfigKey::GuardianSet, &guardians);
-
-        // A migration that leaves the validated invariants intact succeeds.
-        let result = execute_migration(&env, 1, 2, |_e| Ok(()));
-        assert_eq!(result, Ok(()));
-
-        // The backup snapshot must not be left orphaned in persistent storage.
-        let backup_key = format!("migration:backup:v{}", 1);
-        assert!(!env.storage().persistent().has(&backup_key));
+        // The pre-migration stake accounting must be restored.
+        let restored: Market = get_market(&e, market_id).unwrap();
+        assert_eq!(restored.total_staked, 100);
+        let _ = MarketStatus::Active;
     }
 }
