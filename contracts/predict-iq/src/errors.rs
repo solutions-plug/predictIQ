@@ -163,4 +163,10 @@ pub enum ErrorCode {
     ResolutionDeadlinePassed = 158,
     Overflow = 159,
     InvalidTimeRange = 160,
+
+    /// The removal target is not permitted to vote on their own removal proposal.
+    GuardianCannotVoteOnOwnRemoval = 161,
+
+    /// The operation would reduce the guardian set below the required minimum.
+    BelowMinimumGuardianCount = 162,
 }

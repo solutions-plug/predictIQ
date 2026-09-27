@@ -30,7 +30,12 @@ export class ErrorBoundary extends React.Component<Props, State> {
   }
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    console.error('Error caught by boundary:', error, errorInfo);
+    const isDevelopment = process.env.NODE_ENV === 'development';
+    if (isDevelopment) {
+      console.error('Error caught by boundary:', error, errorInfo);
+    } else {
+      console.error('Error caught by boundary (production):', errorInfo);
+    }
     this.props.onError?.(error, errorInfo);
   }
 
@@ -50,6 +55,9 @@ export class ErrorBoundary extends React.Component<Props, State> {
         this.props.reportIssueUrl ||
         'https://github.com/solutions-plug/predictIQ/issues/new';
 
+      const isDevelopment = process.env.NODE_ENV === 'development';
+      const shouldShowErrorMessage = isDevelopment && this.state.error?.message;
+
       return (
         this.props.fallback || (
           <div
@@ -63,9 +71,9 @@ export class ErrorBoundary extends React.Component<Props, State> {
                 ? i18n.t('errorBoundary.sectionMessage').replace('{section}', this.props.section)
                 : i18n.t('errorBoundary.defaultMessage')}
             </p>
-            {this.state.error?.message && (
+            {shouldShowErrorMessage && (
               <p className="error-details">
-                {this.state.error.message}
+                {this.state.error?.message}
               </p>
             )}
             <div className="error-actions">

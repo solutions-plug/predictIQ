@@ -3,6 +3,17 @@
 //! Only trusts X-Forwarded-For / X-Real-IP when the direct peer address
 //! falls within a configured set of trusted CIDR ranges.
 //! If the peer is untrusted, the peer address is used directly.
+//!
+//! ## Multi-hop `X-Forwarded-For` resolution
+//!
+//! `X-Forwarded-For` may contain a comma-separated chain of hops, e.g.
+//! `X-Forwarded-For: attacker-ip, real-proxy-ip`. Because the header is
+//! client-controllable, a client can prepend a spoofed leading value. When the
+//! direct peer is a trusted proxy, the *first* (left-most) entry is treated as
+//! the originating client and is used for rate limiting and audit logging; the
+//! remaining hops are ignored. When the direct peer is NOT trusted, the header
+//! is discarded entirely and the peer address is used, so spoofed leading IPs
+//! can never override the real client IP.
 
 use std::net::IpAddr;
 use std::str::FromStr;
@@ -145,5 +156,48 @@ mod tests {
         let peer = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 4));
         let ip = extract_client_ip(&peer, Some("not-an-ip"), None, &trusted());
         assert_eq!(ip, peer);
+    }
+
+    #[test]
+    fn multi_hop_xff_selects_originating_client() {
+        // A trusted proxy forwards a chain of hops. The left-most entry is the
+        // originating client and must be selected for rate limiting / audit.
+        let peer = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let ip = extract_client_ip(
+            &peer,
+            Some("203.0.113.7, 198.51.100.9, 10.0.0.1"),
+            None,
+            &trusted(),
+        );
+        assert_eq!(ip, IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7)));
+    }
+
+    #[test]
+    fn multi_hop_xff_ignores_spoofed_leading_ip_from_untrusted_peer() {
+        // An untrusted peer supplies a spoofed leading IP in a multi-hop header.
+        // The header must be ignored entirely and the peer address used, so the
+        // spoofed value cannot override the real client IP.
+        let peer = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
+        let ip = extract_client_ip(
+            &peer,
+            Some("203.0.113.7, 198.51.100.9"),
+            Some("203.0.113.7"),
+            &trusted(),
+        );
+        assert_eq!(ip, peer);
+    }
+
+    #[test]
+    fn multi_hop_xff_whitespace_is_trimmed() {
+        // Hops are commonly separated by ", " — surrounding whitespace on the
+        // selected entry must not prevent parsing.
+        let peer = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5));
+        let ip = extract_client_ip(
+            &peer,
+            Some("  203.0.113.8  , 10.0.0.1"),
+            None,
+            &trusted(),
+        );
+        assert_eq!(ip, IpAddr::V4(Ipv4Addr::new(203, 0, 113, 8)));
     }
 }

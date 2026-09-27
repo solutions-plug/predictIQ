@@ -14,6 +14,8 @@ const HORIZON_URLS: Record<string, string> = {
   FUTURENET: 'https://horizon-futurenet.stellar.org',
 };
 
+const HORIZON_REQUEST_TIMEOUT_MS = 10000;
+
 /**
  * Resolve the Horizon base URL for the given network.
  *
@@ -49,13 +51,24 @@ export function getNetworkPassphrase(network: string): string {
 export async function getBalance(
   publicKey: string,
   network: string = 'TESTNET'
-): Promise<string> {
-  const server = getHorizonServer(network);
-  const account = await server.loadAccount(publicKey);
-  const nativeBalance = account.balances.find(
-    (balance) => balance.asset_type === 'native'
-  );
-  return nativeBalance ? nativeBalance.balance : '0';
+): Promise<string | null> {
+  try {
+    const server = getHorizonServer(network);
+    const abortController = new AbortController();
+    const timeoutId = setTimeout(() => abortController.abort(), HORIZON_REQUEST_TIMEOUT_MS);
+
+    try {
+      const account = await server.loadAccount(publicKey);
+      const nativeBalance = account.balances.find(
+        (balance) => balance.asset_type === 'native'
+      );
+      return nativeBalance ? nativeBalance.balance : '0';
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  } catch {
+    return null;
+  }
 }
 
 export async function sendPayment(

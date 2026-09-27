@@ -3,7 +3,7 @@
  * Supports multiple locales with fallback to English.
  */
 
-export type Locale = 'en' | 'es' | 'fr' | 'de';
+export type Locale = 'en';
 
 interface Translations {
   [key: string]: string | Translations;

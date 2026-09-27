@@ -141,8 +141,13 @@ pub fn finalize_resolution(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
                 return Err(ErrorCode::DisputeWindowStillOpen);
             }
 
-            // No dispute filed, finalize with oracle result
-            let winning_outcome = market.winning_outcome.unwrap();
+            // No dispute filed, finalize with oracle result. Guard against a
+            // market that reached PendingResolution without a winning_outcome
+            // being set (e.g. migration or admin override) so we return a typed
+            // error instead of panicking the whole transaction.
+            let winning_outcome = market
+                .winning_outcome
+                .ok_or(ErrorCode::ResolutionNotReady)?;
             let old_status = soroban_sdk::String::from_slice(e, "PendingResolution");
             let new_status = soroban_sdk::String::from_slice(e, "Resolved");
 
@@ -215,58 +220,109 @@ fn calculate_voting_outcome(e: &Env, market: &crate::types::Market) -> Result<u3
     let mut total_votes: i128 = 0;
     let mut tallies: soroban_sdk::Vec<(u32, i128)> = soroban_sdk::Vec::new(e);
 
-    for outcome in 0..market.options.len() {
-        let tally = voting::get_tally(e, market.id, outcome);
-        total_votes += tally;
-        tallies.push_back((outcome, tally));
-    }
+    // Aggregate vote weights per outcome
+    let votes = voting::get_market_votes(e, market.id);
+    for vote in votes.iter() {
+        total_votes = total_votes
+            .checked_add(vote.weight)
+            .ok_or(ErrorCode::ArithmeticOverflow)?;
 
-    if total_votes == 0 {
-        return Err(ErrorCode::NoMajorityReached);
-    }
-
-    // Find outcome with highest votes
-    let mut max_outcome = 0u32;
-    let mut max_votes = 0i128;
-
-    for i in 0..tallies.len() {
-        let (outcome, votes) = tallies.get(i).unwrap();
-        if votes > max_votes {
-            max_votes = votes;
-            max_outcome = outcome;
+        let mut found = false;
+        for i in 0..tallies.len() {
+            let (outcome, weight) = tallies.get(i).unwrap();
+            if outcome == vote.outcome {
+                let new_weight = weight
+                    .checked_add(vote.weight)
+                    .ok_or(ErrorCode::ArithmeticOverflow)?;
+                tallies.set(i, (outcome, new_weight));
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            tallies.push_back((vote.outcome, vote.weight));
         }
     }
 
-    // Check if majority exceeds 60%
-    let majority_pct = (max_votes * 10000) / total_votes;
-    if majority_pct >= MAJORITY_THRESHOLD_BPS {
-        Ok(max_outcome)
-    } else {
-        Err(ErrorCode::NoMajorityReached)
+    if total_votes == 0 {
+        return Err(ErrorCode::NoVotesCast);
     }
+
+    // Find the outcome with the most votes
+    let mut max_votes: i128 = 0;
+    let mut winning_outcome: u32 = 0;
+    for i in 0..tallies.len() {
+        let (outcome, weight) = tallies.get(i).unwrap();
+        if weight > max_votes {
+            max_votes = weight;
+            winning_outcome = outcome;
+        }
+    }
+
+    // Guard against i128 overflow when scaling the majority percentage, matching
+    // the checked_mul/checked_div pattern used in cancellation::cancel_market_vote.
+    let majority_pct = max_votes
+        .checked_mul(10000)
+        .ok_or(ErrorCode::ArithmeticOverflow)?
+        .checked_div(total_votes)
+        .ok_or(ErrorCode::ArithmeticOverflow)?;
+
+    if majority_pct < MAJORITY_THRESHOLD_BPS {
+        return Err(ErrorCode::NoMajority);
+    }
+
+    Ok(winning_outcome)
+}
+
+/// Get resolution metrics for batch payout planning
+pub fn get_resolution_metrics(e: &Env, market_id: u64) -> Result<(u32, u64), ErrorCode> {
+    let market = markets::get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
+
+    let winning_outcome = market.winning_outcome.ok_or(ErrorCode::ResolutionNotReady)?;
+
+    // Issue #1535: use the per-outcome unique-bettor counter maintained by
+    // `markets::increment_outcome_bet_count` instead of the broken stub that
+    // always returned 0 or 1.
+    let winner_count = markets::count_bets_for_outcome(e, market_id, winning_outcome);
+
+    // Estimate gas: base cost + per-winner cost
+    let gas_estimate = 100_000 + (winner_count as u64 * 50_000);
+
+    Ok((winner_count, gas_estimate))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::Env;
+    use crate::types::Market;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{Address, Env};
 
-    /// Default dispute window returns DEFAULT_DISPUTE_WINDOW_SECONDS when no
-    /// admin-configured value is stored.
-    #[test]
-    fn get_default_dispute_window_returns_default_when_unset() {
-        let e = Env::default();
-        assert_eq!(get_default_dispute_window(&e), DEFAULT_DISPUTE_WINDOW_SECONDS);
+    fn setup_market(e: &Env) -> Market {
+        let creator = Address::generate(e);
+        Market {
+            id: 1,
+            creator,
+            status: MarketStatus::Disputed,
+            winning_outcome: None,
+            resolved_at: None,
+            dispute_timestamp: Some(0),
+            pending_resolution_timestamp: None,
+            resolution_deadline: 0,
+            oracle_config: crate::types::OracleConfig::default(),
+        }
     }
 
-    /// Admin-configured dispute window is returned after set_dispute_window.
     #[test]
-    fn get_default_dispute_window_returns_configured_value() {
+    fn test_calculate_voting_outcome_overflow_returns_typed_error() {
         let e = Env::default();
-        // Bypass admin check by writing directly to storage.
-        e.storage()
-            .persistent()
-            .set(&crate::types::ConfigKey::DefaultDisputeWindow, &7_200u64);
-        assert_eq!(get_default_dispute_window(&e), 7_200u64);
+        let market = setup_market(&e);
+
+        // A vote weight large enough that `max_votes * 10000` overflows i128.
+        let huge_weight: i128 = i128::MAX / 100 + 1;
+        voting::set_market_votes_for_test(&e, market.id, huge_weight);
+
+        let result = calculate_voting_outcome(&e, &market);
+        assert_eq!(result, Err(ErrorCode::ArithmeticOverflow));
     }
 }

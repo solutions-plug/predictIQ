@@ -2,6 +2,7 @@
  * Simple in-memory cache for API responses with TTL support.
  * Cache is invalidated on mutations (POST, DELETE).
  * Entries are marked stale on API errors so callers can show a visual indicator.
+ * Stale entries are evicted after MAX_STALE_AGE_MS to prevent unbounded memory growth.
  */
 
 interface CacheEntry<T> {
@@ -9,6 +10,7 @@ interface CacheEntry<T> {
   timestamp: number;
   ttl: number;
   stale: boolean;
+  staleTimestamp?: number;
   tags?: readonly string[];
 }
 
@@ -20,6 +22,7 @@ export interface CacheResult<T> {
 
 class ApiCache {
   private cache = new Map<string, CacheEntry<unknown>>();
+  private maxStaleAgeMs = 60 * 60 * 1000; // 1 hour: stale entries evicted after this duration
 
   /**
    * Get cached data if available. Returns stale data rather than null so
@@ -38,9 +41,17 @@ class ApiCache {
     const entry = this.cache.get(key) as CacheEntry<T> | undefined;
     if (!entry) return null;
 
-    const isExpired = Date.now() - entry.timestamp > entry.ttl;
-    // Stale entries are retained past TTL so users see data rather than nothing.
+    const now = Date.now();
+    const isExpired = now - entry.timestamp > entry.ttl;
+
+    // Delete if expired and not stale
     if (isExpired && !entry.stale) {
+      this.cache.delete(key);
+      return null;
+    }
+
+    // Delete if stale and past max stale age
+    if (entry.stale && entry.staleTimestamp && now - entry.staleTimestamp > this.maxStaleAgeMs) {
       this.cache.delete(key);
       return null;
     }
@@ -88,6 +99,7 @@ class ApiCache {
     const entry = this.cache.get(key);
     if (entry) {
       entry.stale = true;
+      entry.staleTimestamp = Date.now();
     }
   }
 
@@ -97,9 +109,11 @@ class ApiCache {
    */
   markStaleByPattern(pattern: string | RegExp): void {
     const regex = typeof pattern === 'string' ? new RegExp(pattern) : pattern;
+    const now = Date.now();
     for (const [key, entry] of this.cache.entries()) {
       if (regex.test(key)) {
         entry.stale = true;
+        entry.staleTimestamp = now;
       }
     }
   }

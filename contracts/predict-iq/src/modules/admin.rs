@@ -24,9 +24,23 @@ pub fn require_admin(e: &Env) -> Result<(), ErrorCode> {
     Ok(())
 }
 
+/// Separation of powers: the Admin and the Guardian must never be the same
+/// address. `governance::initialize_guardians` and `add_guardian` already
+/// reject a guardian that equals the current Admin; the admin-transfer path
+/// below enforces the symmetric check so a sitting guardian cannot become
+/// Admin (and vice versa) through `propose_admin`/`accept_admin`.
+fn ensure_not_guardian(e: &Env, candidate: &Address) -> Result<(), ErrorCode> {
+    if get_guardian(e).as_ref() == Some(candidate) {
+        return Err(ErrorCode::NotAuthorized);
+    }
+    Ok(())
+}
+
 /// Step 1: current admin proposes a new owner. The new owner must call `accept_admin` to complete.
+/// Rejects a `new_admin` that is currently in the guardian set (separation of powers).
 pub fn propose_admin(e: &Env, new_admin: Address) -> Result<(), ErrorCode> {
     require_admin(e)?;
+    ensure_not_guardian(e, &new_admin)?;
     e.storage()
         .persistent()
         .set(&ConfigKey::PendingAdmin, &new_admin);
@@ -35,6 +49,8 @@ pub fn propose_admin(e: &Env, new_admin: Address) -> Result<(), ErrorCode> {
 }
 
 /// Step 2: the pending admin accepts ownership, completing the transfer.
+/// Rejects the transfer if the incoming admin is currently in the guardian set
+/// (separation of powers), mirroring the guardian-addition checks in governance.rs.
 pub fn accept_admin(e: &Env, caller: Address) -> Result<(), ErrorCode> {
     caller.require_auth();
     let pending: Address = e
@@ -45,6 +61,7 @@ pub fn accept_admin(e: &Env, caller: Address) -> Result<(), ErrorCode> {
     if pending != caller {
         return Err(ErrorCode::NotPendingOwner);
     }
+    ensure_not_guardian(e, &pending)?;
     set_admin(e, pending);
     e.storage().persistent().remove(&ConfigKey::PendingAdmin);
     Ok(())
@@ -89,7 +106,9 @@ pub fn set_governance_token(e: &Env, token: Address) -> Result<(), ErrorCode> {
 
 #[cfg(test)]
 mod ownership_transfer_tests {
-    use super::{accept_admin, cancel_admin_transfer, get_admin, propose_admin, set_admin};
+    use super::{
+        accept_admin, cancel_admin_transfer, get_admin, propose_admin, set_admin, set_guardian,
+    };
     use crate::errors::ErrorCode;
     use soroban_sdk::{testutils::Address as _, Address, Env};
 
@@ -149,6 +168,45 @@ mod ownership_transfer_tests {
         let caller = Address::generate(&e);
         let err = accept_admin(&e, caller).unwrap_err();
         assert_eq!(err, ErrorCode::PendingTransferNotFound);
+    }
+
+    #[test]
+    fn propose_admin_rejects_current_guardian() {
+        let e = Env::default();
+        e.mock_all_auths();
+        let owner = Address::generate(&e);
+        set_admin(&e, owner.clone());
+
+        let guardian = Address::generate(&e);
+        set_guardian(&e, guardian.clone()).unwrap();
+
+        // A sitting guardian cannot be proposed as the incoming admin.
+        let err = propose_admin(&e, guardian).unwrap_err();
+        assert_eq!(err, ErrorCode::NotAuthorized);
+        assert_eq!(get_admin(&e), Some(owner));
+    }
+
+    #[test]
+    fn accept_admin_rejects_current_guardian() {
+        let e = Env::default();
+        e.mock_all_auths();
+        let owner = Address::generate(&e);
+        set_admin(&e, owner.clone());
+
+        let guardian = Address::generate(&e);
+        set_guardian(&e, guardian.clone()).unwrap();
+
+        // Simulate a pending transfer that bypassed propose_admin's check
+        // (e.g. guardian added after proposal) and confirm accept_admin still
+        // enforces the separation-of-powers invariant.
+        e.storage()
+            .persistent()
+            .set(&crate::types::ConfigKey::PendingAdmin, &guardian);
+
+        let err = accept_admin(&e, guardian).unwrap_err();
+        assert_eq!(err, ErrorCode::NotAuthorized);
+        // Admin unchanged and pending transfer left intact for cancellation.
+        assert_eq!(get_admin(&e), Some(owner));
     }
 }
 

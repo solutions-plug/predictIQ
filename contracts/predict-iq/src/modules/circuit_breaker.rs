@@ -142,11 +142,15 @@ pub fn require_not_paused_for_high_risk(e: &Env) -> Result<(), ErrorCode> {
 }
 
 /// Governance: update the circuit breaker threshold (admin only).
+/// Issue #1544: emits a standardized event (old/new) so off-chain monitoring
+/// can observe threshold changes, matching other governance config setters.
 pub fn set_threshold(e: &Env, threshold: i128) -> Result<(), ErrorCode> {
     admin::require_admin(e)?;
+    let old_threshold = get_threshold(e);
     e.storage()
         .instance()
         .set(&ConfigKey::CircuitBreakerThreshold, &threshold);
+    crate::modules::events::emit_circuit_breaker_threshold_set(e, old_threshold, threshold);
     Ok(())
 }
 
@@ -163,7 +167,7 @@ mod threshold_tests {
     use super::{get_threshold, set_threshold, DEFAULT_CIRCUIT_BREAKER_THRESHOLD};
     use crate::modules::admin;
     use crate::types::ConfigKey;
-    use soroban_sdk::{testutils::Address as _, Address, Env};
+    use soroban_sdk::{testutils::Address as _, testutils::Events as _, Address, Env, IntoVal, Symbol};
 
     fn setup_admin(e: &Env) -> Address {
         let admin = Address::generate(e);
@@ -197,5 +201,26 @@ mod threshold_tests {
             .instance()
             .get(&ConfigKey::CircuitBreakerThreshold);
         assert_eq!(stored, Some(42));
+    }
+
+    #[test]
+    fn set_threshold_emits_event_with_old_and_new_values() {
+        let e = Env::default();
+        e.mock_all_auths();
+        setup_admin(&e);
+
+        set_threshold(&e, 500_000_000).unwrap();
+
+        let expected_topics = (
+            Symbol::new(&e, "circuit_breaker"),
+            Symbol::new(&e, "threshold_set"),
+        );
+        let expected_data = (DEFAULT_CIRCUIT_BREAKER_THRESHOLD, 500_000_000i128);
+
+        let events = e.events().all();
+        let found = events.iter().any(|(_, topics, data)| {
+            topics == expected_topics.clone().into_val(&e) && data == expected_data.into_val(&e)
+        });
+        assert!(found, "expected circuit breaker threshold_set event");
     }
 }

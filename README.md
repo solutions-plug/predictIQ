@@ -10,3 +10,6 @@
 
 <!-- handsoff-issue-1621 -->
 - #1621: Performance baselines directory has no committed baseline files, silently disabling regression detection
+
+<!-- handsoff-issue-1534 -->
+- #1534: Add regression test ensuring metrics.rs worker_status gauges reset correctly after a worker restart

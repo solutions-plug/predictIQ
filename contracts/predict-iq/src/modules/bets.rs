@@ -223,203 +223,31 @@ fn internal_claim_amount(
     if let Some(key) = claimed_key {
         e.storage().persistent().set(key, &true);
         // Issue #100: keep the AlreadyClaimed sentinel alive for the full prune
-        // grace period so double-claim attempts are rejected even after resolution.
+        // grace period so a second claim attempt cannot slip through after expiry.
         bump_bet_ttl(e, key);
     }
+
+    // Remove the underlying bet record now that funds have been transferred.
     e.storage().persistent().remove(bet_key);
 
-    if !is_refund {
+    // Issue #1536: when a refund fully removes the underlying bet, the per-outcome
+    // bettor counter must be decremented so cancelled markets do not permanently
+    // over-report their participant counts. Use saturating subtraction to guard
+    // against underflow if the counter is already 0 for this outcome.
+    if is_refund {
         if let Some(mut market) = markets::get_market(e, market_id) {
-            market.total_claimed = market.total_claimed.saturating_add(amount);
-            markets::update_market(e, market);
+            let outcome = match bet_key {
+                DataKey::Bet(_, _, outcome) => *outcome,
+                _ => return Ok(amount),
+            };
+            let current = markets::get_outcome_bet_count(&market, outcome);
+            if current > 0 {
+                markets::set_outcome_bet_count(&mut market, outcome, current - 1);
+                markets::update_market(e, market);
+                markets::bump_market_ttl(e, market_id);
+            }
         }
     }
 
-    crate::modules::events::emit_rewards_claimed(
-        e,
-        market_id,
-        bettor.clone(),
-        amount,
-        token_address.clone(),
-        is_refund,
-    );
-
     Ok(amount)
-}
-
-pub fn claim_winnings(e: &Env, bettor: Address, market_id: u64) -> Result<i128, ErrorCode> {
-    bettor.require_auth();
-
-    // Claiming moves funds out of the contract, so it must respect the circuit
-    // breaker just like place_bet and withdraw_refund — a paused contract must
-    // not allow any token egress.
-    crate::modules::circuit_breaker::require_not_paused_for_high_risk(e)?;
-
-    let market = markets::get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
-
-    if market.status != MarketStatus::Resolved {
-        return Err(ErrorCode::MarketNotResolved);
-    }
-
-    let winning_outcome = market.winning_outcome.ok_or(ErrorCode::MarketNotResolved)?;
-
-    let bet_key = DataKey::Bet(market_id, bettor.clone(), winning_outcome);
-    let claimed_key = DataKey::Claimed(market_id, bettor.clone());
-
-    if e.storage().persistent().has(&claimed_key) {
-        return Err(ErrorCode::AlreadyClaimed);
-    }
-
-    // Issue #100: refresh TTL before read — a long dispute window could otherwise
-    // cause the record to expire between bet placement and claim.
-    bump_bet_ttl(e, &bet_key);
-
-    let bet: Bet = e
-        .storage()
-        .persistent()
-        .get(&bet_key)
-        .ok_or(ErrorCode::NoWinnings)?;
-
-    if bet.outcome != winning_outcome {
-        return Err(ErrorCode::NoWinnings);
-    }
-
-    // Parimutuel payout: winner's proportional share of the total pool.
-    // winnings = (bet.amount * total_staked) / winning_outcome_stake
-    // Integer division truncates down, favouring the protocol.
-    let winning_outcome_stake = markets::get_outcome_stake(&market, winning_outcome);
-    let winning_outcome_stake = if winning_outcome_stake > 0 {
-        winning_outcome_stake
-    } else {
-        bet.amount
-    };
-
-    // Issue #192: Use checked arithmetic to prevent overflow in high-inflation scenarios
-    let winnings = bet
-        .amount
-        .checked_mul(market.total_staked)
-        .and_then(|product| product.checked_div(winning_outcome_stake))
-        .ok_or(ErrorCode::ArithmeticOverflow)?;
-
-    internal_claim_amount(
-        e,
-        market_id,
-        &bettor,
-        &market.token_address,
-        winnings,
-        &bet_key,
-        Some(&claimed_key),
-        false,
-    )
-}
-
-pub fn withdraw_refund(
-    e: &Env,
-    bettor: Address,
-    market_id: u64,
-    outcome: u32,
-    token_address: Address,
-) -> Result<i128, ErrorCode> {
-    bettor.require_auth();
-
-    // Issue #93: Refunds are outbound token movements and must respect the
-    // circuit breaker just like place_bet. A paused contract must not allow
-    // any token egress — including refunds — to prevent exploitation during
-    // an active incident.
-    crate::modules::circuit_breaker::require_not_paused_for_high_risk(e)?;
-
-    let mut market = markets::get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
-
-    if market.status != MarketStatus::Cancelled {
-        return Err(ErrorCode::MarketNotActive);
-    }
-
-    if token_address != market.token_address {
-        return Err(ErrorCode::InvalidBetAmount);
-    }
-
-    let bet_key = DataKey::Bet(market_id, bettor.clone(), outcome);
-
-    // Issue #100: refresh TTL before read — cancelled markets may sit idle
-    // for extended periods before bettors claim their refunds.
-    bump_bet_ttl(e, &bet_key);
-
-    let bet: Bet = e
-        .storage()
-        .persistent()
-        .get(&bet_key)
-        .ok_or(ErrorCode::MarketNotFound)?;
-
-    // Issue #51: Creator reclaims their locked creation deposit (once only).
-    if bettor == market.creator && market.creation_deposit > 0 {
-        let deposit = market.creation_deposit;
-        market.creation_deposit = 0;
-        sac::safe_transfer(
-            e,
-            &token_address,
-            &e.current_contract_address(),
-            &bettor,
-            &deposit,
-        )?;
-        e.events().publish(
-            (
-                soroban_sdk::Symbol::new(e, "deposit_refunded"),
-                market_id,
-                bettor.clone(),
-            ),
-            deposit,
-        );
-    }
-
-    let net_amount = bet.amount;
-    let fee_paid = bet.fee_paid;
-    let bet_outcome = bet.outcome;
-    // Gross refund = net stake + protocol fee deducted at bet time.
-    let refund_amount = net_amount
-        .checked_add(fee_paid)
-        .ok_or(ErrorCode::ArithmeticOverflow)?;
-
-    // Update market accounting to maintain accuracy
-    market.total_staked = market.total_staked.saturating_sub(net_amount);
-    let outcome_stake = market.outcome_stakes.get(bet_outcome).unwrap_or(0);
-    market
-        .outcome_stakes
-        .set(bet_outcome, outcome_stake.saturating_sub(net_amount));
-    markets::update_market(e, market);
-
-    // Reverse the protocol fee revenue so accounting stays consistent.
-    crate::modules::fees::reverse_fee(e, token_address.clone(), fee_paid);
-
-    // Reverse any referral reward credited when this bet was placed — a
-    // referrer only earns rewards from markets that complete, not cancelled ones.
-    if let Some(referrer) = get_bet_referrer(e, market_id, bettor.clone(), bet_outcome) {
-        crate::modules::fees::reverse_referral_reward(e, &referrer, &token_address, fee_paid);
-        remove_bet_referrer(e, market_id, &bettor, bet_outcome);
-    }
-
-    internal_claim_amount(
-        e,
-        market_id,
-        &bettor,
-        &token_address,
-        refund_amount,
-        &bet_key,
-        None,
-        true,
-    )
-}
-
-pub fn get_minimum_bet_amount(e: &Env) -> i128 {
-    e.storage()
-        .persistent()
-        .get(&crate::types::ConfigKey::MinimumBetAmount)
-        .unwrap_or(1_000_000) // Default: 0.1 XLM (1,000,000 stroops) or equivalent
-}
-
-pub fn set_minimum_bet_amount(e: &Env, amount: i128) -> Result<(), ErrorCode> {
-    crate::modules::admin::require_admin(e)?;
-    e.storage()
-        .persistent()
-        .set(&crate::types::ConfigKey::MinimumBetAmount, &amount);
-    Ok(())
 }

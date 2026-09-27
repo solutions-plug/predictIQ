@@ -11,27 +11,64 @@ function AdminAuthGate({ children }: { children: React.ReactNode }) {
   const { t } = useI18n();
   const [key, setKey] = useState('');
   const [ok, setOk] = useState(false);
+  const [error, setError] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
     const k = sessionStorage.getItem('predictiq-admin-key');
     if (k) {
       setKey(k);
       fetch('/api/v1/admin/session', { headers: { 'X-API-Key': k } })
-        .then((r) => setOk(r.ok))
-        .catch(() => setOk(false));
+        .then((r) => {
+          if (r.ok) {
+            setOk(true);
+          } else {
+            sessionStorage.removeItem('predictiq-admin-key');
+            setKey('');
+            setError('Session expired. Please log in again.');
+          }
+        })
+        .catch(() => {
+          sessionStorage.removeItem('predictiq-admin-key');
+          setKey('');
+          setError('Failed to validate session.');
+        });
     }
   }, []);
 
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setIsLoading(true);
+
+    try {
+      const response = await fetch('/api/v1/admin/session', {
+        headers: { 'X-API-Key': key },
+      });
+
+      if (response.ok) {
+        sessionStorage.setItem('predictiq-admin-key', key);
+        setOk(true);
+      } else {
+        setError('Invalid API key. Please try again.');
+      }
+    } catch {
+      setError('Failed to validate API key. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleLogout = () => {
+    sessionStorage.removeItem('predictiq-admin-key');
+    setKey('');
+    setOk(false);
+    setError('');
+  };
+
   if (!ok) {
     return (
-      <form
-        className="admin-auth-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          sessionStorage.setItem('predictiq-admin-key', key);
-          setOk(true);
-        }}
-      >
+      <form className="admin-auth-form" onSubmit={handleSubmit}>
         <label>
           {t('admin.apiKey')}
           <input
@@ -39,14 +76,25 @@ function AdminAuthGate({ children }: { children: React.ReactNode }) {
             onChange={(e) => setKey(e.target.value)}
             required
             type="password"
+            disabled={isLoading}
           />
         </label>
-        <button type="submit">{t('admin.continue')}</button>
+        {error && <div className="admin-auth-error">{error}</div>}
+        <button type="submit" disabled={isLoading}>
+          {isLoading ? 'Validating...' : t('admin.continue')}
+        </button>
       </form>
     );
   }
 
-  return <>{children}</>;
+  return (
+    <div>
+      <button onClick={handleLogout} className="admin-logout-btn">
+        Logout
+      </button>
+      {children}
+    </div>
+  );
 }
 
 function AdminNavLink({ href, label }: { href: string; label: string }) {
