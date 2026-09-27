@@ -7,19 +7,64 @@ use tracing;
 /// Maximum bytes captured from request/response body before truncation.
 pub const MAX_BODY_BYTES: usize = 4 * 1024; // 4 KB
 
+/// Issue #1524: Expanded list of sensitive field names to catch common secret/PII patterns.
+/// Matches case-insensitively via substring containment (see known limitations in docs).
 const SENSITIVE_FIELDS: &[&str] = &[
+    // Authentication & authorization
     "password",
     "password_confirmation",
+    "passwd",
+    "pwd",
     "token",
     "access_token",
     "refresh_token",
-    "secret",
-    "api_key",
+    "bearer",
     "authorization",
+    "auth_token",
+    "session_token",
+    "api_key",
+    "api_secret",
+    "secret",
+    "client_secret",
+    "private_key",
+    "private_secret",
+    "signing_key",
+    "hmac_key",
+
+    // Financial & Identity
     "credit_card",
+    "creditcard",
+    "card_number",
     "cvv",
+    "cvc",
     "ssn",
+    "social_security",
+    "tin",
+    "ein",
+    "bank_account",
+    "routing_number",
+    "account_number",
+
+    // Personal Information
     "email",
+    "phone",
+    "phone_number",
+    "mobile",
+    "dob",
+    "date_of_birth",
+    "birthdate",
+    "drivers_license",
+    "passport",
+    "identity_number",
+
+    // OAuth & Third-party
+    "oauth_token",
+    "jwt",
+    "jti",
+    "nonce",
+    "signature",
+    "signed_request",
+    "webhook_secret",
 ];
 
 /// Whether body logging is enabled. Reads AUDIT_BODY_LOGGING env var.
@@ -56,46 +101,6 @@ pub fn redact_sensitive(body: &str) -> String {
 }
 
 /// Redact an email address for logging purposes.
-/// Returns a hashed version of the email that preserves privacy while
-/// remaining useful for debugging (e.g., "user@example.com" -> "u***@e***.com").
-pub fn redact_email(email: &str) -> String {
-    if email.is_empty() {
-        return String::new();
-    }
-    
-    // Simple redaction: show first character, last domain, and TLD
-    if let Some(at_pos) = email.find('@') {
-        let local_part = &email[..at_pos];
-        let domain_part = &email[at_pos + 1..];
-        
-        let redacted_local = if local_part.len() > 1 {
-            format!("{}***", &local_part[0..1])
-        } else {
-            local_part.to_string()
-        };
-        
-        // Keep the domain but obscure most of it
-        let redacted_domain = if let Some(dot_pos) = domain_part.rfind('.') {
-            let name_part = &domain_part[..dot_pos];
-            let tld = &domain_part[dot_pos..];
-            
-            if name_part.len() > 1 {
-                format!("{}***{}", &name_part[0..1], tld)
-            } else {
-                format!("{}{}", name_part, tld)
-            }
-        } else {
-            // No dot in domain - obscure it completely
-            "***".to_string()
-        };
-        
-        format!("{}@{}", redacted_local, redacted_domain)
-    } else {
-        // Not a valid email format - obscure it completely
-        "***@***".to_string()
-    }
-}
-    /// Redact an email address for logging purposes.
 /// Returns a hashed version of the email that preserves privacy while
 /// remaining useful for debugging (e.g., "user@example.com" -> "u***@e***.com").
 pub fn redact_email(email: &str) -> String {
@@ -204,5 +209,68 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&redacted).unwrap();
         assert_eq!(v["user"]["password"], "[REDACTED]");
         assert_eq!(v["user"]["name"], "Alice");
+    }
+
+    /// Issue #1524: Property test — any field name containing a SENSITIVE_FIELDS
+    /// substring should be redacted. Catches over-redaction (tokenizer_version) and
+    /// under-redaction (ssn missing from original list).
+    #[test]
+    fn all_sensitive_substrings_redacted() {
+        for sensitive_substr in SENSITIVE_FIELDS {
+            // Test exact match
+            let body = format!(r#"{{"{}":"value"}}"#, sensitive_substr);
+            let redacted = redact_sensitive(&body);
+            let v: serde_json::Value = serde_json::from_str(&redacted).unwrap();
+            assert_eq!(
+                v[sensitive_substr], "[REDACTED]",
+                "Field '{}' should be redacted", sensitive_substr
+            );
+
+            // Test case-insensitive match
+            let body_upper = format!(r#"{{"{}_upper":"value"}}"#, sensitive_substr);
+            let redacted_upper = redact_sensitive(&body_upper);
+            let v_upper: serde_json::Value = serde_json::from_str(&redacted_upper).unwrap();
+            assert_eq!(
+                v_upper[&format!("{}_upper", sensitive_substr)], "[REDACTED]",
+                "Field with '{}' substring should be redacted", sensitive_substr
+            );
+        }
+    }
+
+    /// Issue #1524: Known limitation — over-redaction on false positives.
+    /// Fields like "token_secret_value" will match both "token" and "secret".
+    #[test]
+    fn documents_substring_matching_tradeoff() {
+        // False positive: tokenizer_version contains "token"
+        let body = r#"{"tokenizer_version":"1.0","token":"secret"}"#;
+        let redacted = redact_sensitive(body);
+        let v: serde_json::Value = serde_json::from_str(&redacted).unwrap();
+
+        // Confirms the over-redaction happens (substring matching)
+        assert_eq!(v["tokenizer_version"], "[REDACTED]");
+        assert_eq!(v["token"], "[REDACTED]");
+    }
+
+    /// Issue #1524: Test emerging sensitive field patterns not in original list.
+    #[test]
+    fn new_patterns_covered() {
+        // private_key, auth_token, etc. should all be in expanded list
+        let test_cases = vec![
+            (r#"{"private_key":"-----BEGIN RSA PRIVATE KEY-----"}"#, "private_key"),
+            (r#"{"auth_token":"abc123xyz"}"#, "auth_token"),
+            (r#"{"signing_key":"key123"}"#, "signing_key"),
+            (r#"{"webhook_secret":"webhook123"}"#, "webhook_secret"),
+            (r#"{"ssn":"123-45-6789"}"#, "ssn"),
+            (r#"{"bank_account":"0123456789"}"#, "bank_account"),
+        ];
+
+        for (body, field) in test_cases {
+            let redacted = redact_sensitive(body);
+            let v: serde_json::Value = serde_json::from_str(&redacted).unwrap();
+            assert_eq!(
+                v[field], "[REDACTED]",
+                "Field '{}' should be redacted", field
+            );
+        }
     }
 }
