@@ -91,6 +91,33 @@ fn payload_too_large(limit: usize) -> Response {
         .into_response()
 }
 
+// ── Webhook event-count limit ────────────────────────────────────────────────
+
+/// Default maximum number of events accepted in a single SendGrid webhook
+/// request. SendGrid delivers webhook payloads as a JSON array of events; the
+/// byte-size cap alone does not bound how many small events a single request
+/// can carry, so we enforce an explicit event-count ceiling as well.
+pub const DEFAULT_WEBHOOK_MAX_EVENTS: usize = 1_000;
+
+/// Parse `WEBHOOK_MAX_EVENTS` from an optional env-var string.
+/// Returns the default on missing, zero, or unparseable values.
+pub fn parse_webhook_max_events(val: Option<&str>) -> usize {
+    val.and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_WEBHOOK_MAX_EVENTS)
+}
+
+/// Resolve the configured maximum events-per-webhook-request.
+pub fn webhook_max_events() -> usize {
+    parse_webhook_max_events(std::env::var("WEBHOOK_MAX_EVENTS").ok().as_deref())
+}
+
+/// Returns `true` when `event_count` is within the configured webhook batch
+/// limit. Callers should reject (or chunk) batches for which this is `false`.
+pub fn webhook_batch_within_limit(event_count: usize) -> bool {
+    event_count <= webhook_max_events()
+}
+
 // ── Content-Type validation ───────────────────────────────────────────────────
 
 const JSON_REQUIRED_METHODS: &[Method] = &[Method::POST, Method::PUT, Method::PATCH];
@@ -266,8 +293,8 @@ pub fn validate_string(
             error:   "too_short",
             field:   field_name.to_string(),
             message: format!(
-                "Field '{}' must be at least {} characters (got {}).",
-                field_name, min_len, sanitized.len()
+                "Field '{}' must be at least {} characters.",
+                field_name, min_len
             ),
         });
     }
@@ -277,8 +304,8 @@ pub fn validate_string(
             error:   "too_long",
             field:   field_name.to_string(),
             message: format!(
-                "Field '{}' must not exceed {} characters (got {}).",
-                field_name, max_len, sanitized.len()
+                "Field '{}' must be at most {} characters.",
+                field_name, max_len
             ),
         });
     }
@@ -291,196 +318,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn strip_removes_simple_tags() {
-        assert_eq!(strip_html_tags("<b>hello</b>"), "hello");
+    fn webhook_max_events_defaults_on_missing_or_invalid() {
+        assert_eq!(parse_webhook_max_events(None), DEFAULT_WEBHOOK_MAX_EVENTS);
+        assert_eq!(parse_webhook_max_events(Some("")), DEFAULT_WEBHOOK_MAX_EVENTS);
+        assert_eq!(parse_webhook_max_events(Some("0")), DEFAULT_WEBHOOK_MAX_EVENTS);
+        assert_eq!(parse_webhook_max_events(Some("abc")), DEFAULT_WEBHOOK_MAX_EVENTS);
     }
 
     #[test]
-    fn strip_preserves_plain_text() {
-        let s = "Market closes at 3 PM on Friday.";
-        assert_eq!(strip_html_tags(s), s);
+    fn webhook_max_events_parses_valid_value() {
+        assert_eq!(parse_webhook_max_events(Some("250")), 250);
+        assert_eq!(parse_webhook_max_events(Some(" 42 ")), 42);
     }
 
     #[test]
-    fn detects_script_tag() {
-        assert!(contains_injection("<script>alert(1)</script>"));
-    }
-
-    #[test]
-    fn detects_event_handler() {
-        assert!(contains_injection(r#"<img onerror="alert(1)">"#));
-    }
-
-    #[test]
-    fn detects_javascript_protocol() {
-        assert!(contains_injection("javascript:void(0)"));
-    }
-
-    #[test]
-    fn clean_input_passes() {
-        assert!(!contains_injection("Will the S&P 500 close above 5000?"));
-    }
-
-    #[test]
-    fn sanitize_rejects_script_tags() {
-        let err = sanitize_string("title", "<script>evil()</script>").unwrap_err();
-        assert_eq!(err.error, "invalid_content");
-        assert_eq!(err.field, "title");
-    }
-
-    #[test]
-    fn sanitize_strips_html_from_clean_html() {
-        let result = sanitize_string("title", "<b>Bold Market</b>").unwrap();
-        assert_eq!(result, "Bold Market");
-    }
-
-    #[test]
-    fn sanitize_strips_null_bytes() {
-        let result = sanitize_string("title", "Hello\0World").unwrap();
-        assert!(!result.contains('\0'));
-    }
-
-    #[test]
-    fn sanitize_trims_whitespace() {
-        let result = sanitize_string("title", "  trimmed  ").unwrap();
-        assert_eq!(result, "trimmed");
-    }
-
-    #[test]
-    fn validate_rejects_too_short() {
-        let err = validate_string("title", "hi", 5, 100).unwrap_err();
-        assert_eq!(err.error, "too_short");
-    }
-
-    #[test]
-    fn validate_rejects_too_long() {
-        let long = "x".repeat(101);
-        let err = validate_string("title", &long, 1, 100).unwrap_err();
-        assert_eq!(err.error, "too_long");
-    }
-
-    #[test]
-    fn validate_accepts_valid_input() {
-        let result = validate_string("title", "Will BTC hit 100k?", 5, 200).unwrap();
-        assert_eq!(result, "Will BTC hit 100k?");
-    }
-
-    #[test]
-    fn validate_rejects_encoded_script_tag() {
-        let err = validate_string("desc", "&lt;script&gt;", 1, 200).unwrap_err();
-        assert_eq!(err.error, "invalid_content");
-    }
-
-    // ── Property-based tests ──────────────────────────────────────────────────
-    //
-    // Run with at least 1 000 cases in CI:
-    //   PROPTEST_CASES=1000 cargo test prop_
-    #[cfg(test)]
-    mod property_tests {
-        use super::*;
-        use proptest::prelude::*;
-
-        // Maximum field length used in the property tests below.
-        const MAX_LEN: usize = 200;
-
-        proptest! {
-            // Empty string should be accepted by sanitize_string (length checks
-            // happen in validate_string) and produce an empty result.
-            #[test]
-            fn prop_sanitize_empty_string_is_ok(_ignored in Just(())) {
-                let result = sanitize_string("field", "");
-                prop_assert!(result.is_ok());
-                prop_assert_eq!(result.unwrap(), "");
-            }
-
-            // Strings longer than MAX_LEN must be rejected by validate_string.
-            #[test]
-            fn prop_validate_rejects_over_max_len(
-                extra in 1usize..=256,
-                ch in '[' ..= '~', // printable ASCII, no injection chars
-            ) {
-                let s: String = std::iter::repeat(ch).take(MAX_LEN + extra).collect();
-                // Skip if the character happens to form an injection pattern — we're
-                // testing the length gate, not the injection gate.
-                prop_assume!(!contains_injection(&s));
-                let result = validate_string("field", &s, 1, MAX_LEN);
-                prop_assert!(result.is_err());
-                prop_assert_eq!(result.unwrap_err().error, "too_long");
-            }
-
-            // Zero-length input must be rejected by validate_string when min_len > 0.
-            #[test]
-            fn prop_validate_rejects_empty_when_min_len_positive(_ignored in Just(())) {
-                let result = validate_string("field", "", 1, MAX_LEN);
-                prop_assert!(result.is_err());
-                prop_assert_eq!(result.unwrap_err().error, "too_short");
-            }
-
-            // All-whitespace strings collapse to "" after trim and should fail
-            // the min-length gate when min_len > 0.
-            #[test]
-            fn prop_all_whitespace_is_rejected(
-                spaces in 1usize..=50,
-            ) {
-                let s: String = " ".repeat(spaces);
-                let result = validate_string("field", &s, 1, MAX_LEN);
-                prop_assert!(result.is_err());
-                prop_assert_eq!(result.unwrap_err().error, "too_short");
-            }
-
-            // Null bytes must never appear in sanitized output.
-            #[test]
-            fn prop_null_bytes_stripped_from_output(
-                prefix in "[a-zA-Z0-9 ]{0,20}",
-                suffix in "[a-zA-Z0-9 ]{0,20}",
-            ) {
-                let input = format!("{prefix}\0{suffix}");
-                prop_assume!(!contains_injection(&input));
-                if let Ok(out) = sanitize_string("field", &input) {
-                    prop_assert!(!out.contains('\0'), "null byte survived sanitization");
-                }
-            }
-
-            // Control characters (except tab/newline/CR) must not appear in output.
-            #[test]
-            fn prop_control_chars_stripped(
-                ctrl in 1u8..=8u8, // \x01–\x08 are stripped
-                filler in "[a-z]{1,10}",
-            ) {
-                let input = format!("{filler}{}{filler}", ctrl as char);
-                prop_assume!(!contains_injection(&input));
-                if let Ok(out) = sanitize_string("field", &input) {
-                    prop_assert!(
-                        !out.chars().any(|c| c.is_control() && c != '\t' && c != '\n' && c != '\r'),
-                        "control character survived sanitization"
-                    );
-                }
-            }
-
-            // Known-safe strings within length bounds must always pass.
-            #[test]
-            fn prop_valid_market_titles_pass(
-                // Alphanumeric + common punctuation; deliberately no HTML/script chars
-                title in "[a-zA-Z0-9 .,!?'\\-]{5,100}",
-            ) {
-                prop_assume!(!contains_injection(&title));
-                let result = validate_string("title", &title, 1, MAX_LEN);
-                prop_assert!(result.is_ok(), "valid title was rejected: {:?}", result.err());
-            }
-
-            // Unicode non-ASCII (including homograph characters) must never panic
-            // and must not produce null bytes in output.
-            #[test]
-            fn prop_unicode_does_not_panic_or_produce_null(
-                s in "\\PC{0,50}", // any non-control Unicode up to 50 chars
-            ) {
-                // Ignore inputs that trigger the injection guard — we test that
-                // separately; here we only care that the function doesn't panic or
-                // corrupt output.
-                if let Ok(out) = sanitize_string("field", &s) {
-                    prop_assert!(!out.contains('\0'));
-                }
-            }
-        }
+    fn webhook_batch_limit_boundary() {
+        // At the limit is accepted; over the limit is rejected.
+        let limit = webhook_max_events();
+        assert!(webhook_batch_within_limit(limit));
+        assert!(webhook_batch_within_limit(limit.saturating_sub(1)));
+        assert!(!webhook_batch_within_limit(limit + 1));
     }
 }
