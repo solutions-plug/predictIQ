@@ -56,7 +56,7 @@ describe('useI18n', () => {
       await waitFor(() => expect(result.current.locale).toBe('en'));
 
       act(() => {
-        result.current.setLocale('es');
+        result.current.setLocale('es' as any);
       });
 
       // React state must stay at 'en' — no desync
@@ -68,7 +68,7 @@ describe('useI18n', () => {
       await waitFor(() => expect(result.current.locale).toBe('en'));
 
       act(() => {
-        result.current.setLocale('fr');
+        result.current.setLocale('fr' as any);
       });
 
       expect(result.current.locale).toBe('en');
@@ -79,7 +79,7 @@ describe('useI18n', () => {
       await waitFor(() => expect(result.current.locale).toBe('en'));
 
       act(() => {
-        result.current.setLocale('de');
+        result.current.setLocale('de' as any);
       });
 
       expect(result.current.locale).toBe('en');
@@ -90,7 +90,7 @@ describe('useI18n', () => {
       await waitFor(() => expect(result.current.locale).toBe('en'));
 
       act(() => {
-        result.current.setLocale('es');
+        result.current.setLocale('es' as any);
       });
 
       // The core invariant: hook-visible locale === what the singleton actually uses
@@ -102,7 +102,7 @@ describe('useI18n', () => {
       await waitFor(() => expect(result.current.locale).toBe('en'));
 
       act(() => {
-        result.current.setLocale('fr');
+        result.current.setLocale('fr' as any);
       });
 
       expect(i18n.getLocale()).toBe('en');

@@ -29,14 +29,14 @@ describe('i18n', () => {
     });
 
     it('should return false for unimplemented locales (es, fr, de)', () => {
-      expect(i18n.setLocale('es')).toBe(false);
-      expect(i18n.setLocale('fr')).toBe(false);
-      expect(i18n.setLocale('de')).toBe(false);
+      expect(i18n.setLocale('es' as any)).toBe(false);
+      expect(i18n.setLocale('fr' as any)).toBe(false);
+      expect(i18n.setLocale('de' as any)).toBe(false);
     });
 
     it('should not change internal locale when an unimplemented locale is requested', () => {
       i18n.setLocale('en');
-      i18n.setLocale('es');
+      i18n.setLocale('es' as any);
       expect(i18n.getLocale()).toBe('en');
     });
   });
