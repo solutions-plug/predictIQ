@@ -145,6 +145,11 @@ const MIGRATIONS: &[Migration] = &[
         name: "020_add_audit_log_actor_time_index",
         sql: include_str!("../database/migrations/020_add_audit_log_actor_time_index.sql"),
     },
+    Migration {
+        version: "022",
+        name: "022_add_audit_filter_time_indexes",
+        sql: include_str!("../database/migrations/022_add_audit_filter_time_indexes.sql"),
+    },
 ];
 
 // ---------------------------------------------------------------------------
