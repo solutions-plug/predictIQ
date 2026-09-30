@@ -6,6 +6,7 @@ This package contains the Handsoff web frontend.
 
 - [Styling conventions](../docs/styling.md) — CSP-safe styling rules and conventions for frontend contributors.
 - [Internationalization (i18n) guide](./I18N_GUIDE.md) — how to add and manage translations in the frontend.
+- [Design system](./docs/design-system.md) — design system guidelines and conventions for the frontend.
 - [`docs/`](./docs/) — additional frontend documentation.
 
 ## Styling conventions (CSP-safe, no inline styles)
