@@ -312,6 +312,10 @@ impl PredictIQ {
         crate::modules::circuit_breaker::pause(&e)
     }
 
+    pub fn guardian_pause(e: Env) -> Result<(), ErrorCode> {
+        crate::modules::circuit_breaker::guardian_pause(&e)
+    }
+
     pub fn unpause(e: Env) -> Result<(), ErrorCode> {
         crate::modules::circuit_breaker::unpause(&e)
     }
@@ -407,6 +411,10 @@ impl PredictIQ {
 
     pub fn initiate_upgrade(e: Env, wasm_hash: soroban_sdk::BytesN<32>) -> Result<(), ErrorCode> {
         crate::modules::governance::initiate_upgrade(&e, wasm_hash)
+    }
+
+    pub fn cancel_upgrade(e: Env) -> Result<(), ErrorCode> {
+        crate::modules::governance::cancel_upgrade(&e)
     }
 
     pub fn vote_for_upgrade(e: Env, voter: Address, vote_for: bool) -> Result<bool, ErrorCode> {

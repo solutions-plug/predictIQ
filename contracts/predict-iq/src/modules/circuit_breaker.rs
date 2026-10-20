@@ -113,23 +113,22 @@ pub fn require_closed(e: &Env) -> Result<(), ErrorCode> {
     }
 }
 
-/// Issue #50: Guardian majority can pause without Admin consent.
+/// Issue #1704: the admin can always pause, regardless of the guardian.
 pub fn pause(e: &Env) -> Result<(), ErrorCode> {
-    if let Some(guardian) = admin::get_guardian(e) {
-        guardian.require_auth();
-    } else {
-        admin::require_admin(e)?;
-    }
-
+    admin::require_admin(e)?;
     _set_state_internal(e, CircuitBreakerState::Paused)
 }
 
+/// Issue #1704: the guardian account may also pause (but never unpause).
+pub fn guardian_pause(e: &Env) -> Result<(), ErrorCode> {
+    admin::require_guardian(e)?;
+    _set_state_internal(e, CircuitBreakerState::Paused)
+}
+
+/// Issue #1704: only the admin can unpause, so a single guardian cannot undo
+/// an emergency pause triggered by the guardian-majority path.
 pub fn unpause(e: &Env) -> Result<(), ErrorCode> {
-    if let Some(guardian) = admin::get_guardian(e) {
-        guardian.require_auth();
-    } else {
-        admin::require_admin(e)?;
-    }
+    admin::require_admin(e)?;
 
     _set_state_internal(e, CircuitBreakerState::Closed)
 }

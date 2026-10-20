@@ -57,6 +57,7 @@ pub fn set_fee_admin(e: &Env, fee_admin: Address) -> Result<(), ErrorCode> {
         .persistent()
         .set(&ConfigKey::FeeAdmin, &fee_admin);
     bump_config_ttl(e, &ConfigKey::FeeAdmin);
+    crate::modules::events::emit_fee_admin_set(e, fee_admin);
     Ok(())
 }
 
