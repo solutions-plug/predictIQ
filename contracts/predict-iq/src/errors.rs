@@ -227,4 +227,7 @@ pub enum ErrorCode {
 
     /// A guardian removal proposal is already pending and has not expired or been rejected.
     RemovalAlreadyPending = 202,
+
+    /// The voting window for the pending upgrade has closed.
+    UpgradeVotingClosed = 203,
 }

@@ -335,3 +335,49 @@ pub fn emit_upgrade_voted(e: &Env, voter: Address, vote_for: bool) {
         (EVENT_VERSION, vote_for),
     );
 }
+
+fn emit_role(e: &Env, topic: soroban_sdk::Symbol, who: Address) {
+    e.events().publish((topic, who), (EVENT_VERSION,));
+}
+
+pub fn emit_admin_proposed(e: &Env, new_admin: Address) {
+    emit_role(e, symbol_short!("adm_prop"), new_admin);
+}
+
+pub fn emit_admin_accepted(e: &Env, new_admin: Address) {
+    emit_role(e, symbol_short!("adm_acpt"), new_admin);
+}
+
+pub fn emit_admin_transfer_cancelled(e: &Env) {
+    e.events()
+        .publish((symbol_short!("adm_canc"),), (EVENT_VERSION,));
+}
+
+pub fn emit_guardian_set(e: &Env, guardian: Address) {
+    emit_role(e, symbol_short!("grd_set"), guardian);
+}
+
+pub fn emit_fee_admin_set(e: &Env, fee_admin: Address) {
+    emit_role(e, symbol_short!("fee_adm"), fee_admin);
+}
+
+pub fn emit_governance_token_set(e: &Env, token: Address) {
+    emit_role(e, symbol_short!("gov_tok"), token);
+}
+
+pub fn emit_guardian_added(e: &Env, guardian: Address) {
+    emit_role(e, symbol_short!("grd_add"), guardian);
+}
+
+pub fn emit_guardian_removal_proposed(e: &Env, guardian: Address) {
+    emit_role(e, symbol_short!("grd_rmprp"), guardian);
+}
+
+pub fn emit_guardian_removed(e: &Env, guardian: Address) {
+    emit_role(e, symbol_short!("grd_rem"), guardian);
+}
+
+pub fn emit_upgrade_cancelled(e: &Env, wasm_hash: soroban_sdk::BytesN<32>) {
+    e.events()
+        .publish((symbol_short!("upg_canc"),), (EVENT_VERSION, wasm_hash));
+}

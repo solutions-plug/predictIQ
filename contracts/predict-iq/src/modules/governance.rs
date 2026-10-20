@@ -2,7 +2,7 @@ use crate::errors::ErrorCode;
 use crate::types::{
     ConfigKey, Guardian, PendingUpgrade, GUARDIAN_REMOVAL_VOTE_WINDOW, MAJORITY_THRESHOLD_PERCENT,
     TIMELOCK_DURATION, TIMELOCK_MAX_SECONDS, TIMELOCK_MIN_SECONDS, TTL_HIGH_THRESHOLD,
-    TTL_LOW_THRESHOLD, UPGRADE_COOLDOWN_DURATION,
+    TTL_LOW_THRESHOLD, UPGRADE_COOLDOWN_DURATION, UPGRADE_VOTE_WINDOW,
 };
 use soroban_sdk::{Address, BytesN, Env, Vec};
 
@@ -23,6 +23,32 @@ pub fn initialize_guardians(e: &Env, guardians: Vec<Guardian>) -> Result<(), Err
 
     if guardians.is_empty() {
         return Err(ErrorCode::NotAuthorized);
+    }
+
+    // Issue #1701: every guardian must have power > 0 and appear only once.
+    for i in 0..guardians.len() {
+        let gi = guardians.get(i).unwrap();
+        if gi.voting_power == 0 {
+            return Err(ErrorCode::InvalidAmount);
+        }
+        for j in (i + 1)..guardians.len() {
+            if guardians.get(j).unwrap().address == gi.address {
+                return Err(ErrorCode::NotAuthorized);
+            }
+        }
+    }
+
+    // Issue #1701: every guardian must have power > 0 and appear only once.
+    for i in 0..guardians.len() {
+        let gi = guardians.get(i).unwrap();
+        if gi.voting_power == 0 {
+            return Err(ErrorCode::InvalidAmount);
+        }
+        for j in (i + 1)..guardians.len() {
+            if guardians.get(j).unwrap().address == gi.address {
+                return Err(ErrorCode::NotAuthorized);
+            }
+        }
     }
 
     // Issue #19: None of the initial guardians may be the Admin.
@@ -60,6 +86,14 @@ pub fn add_guardian(e: &Env, guardian: Guardian) -> Result<(), ErrorCode> {
         }
     }
 
+    if guardian.voting_power == 0 {
+        return Err(ErrorCode::InvalidAmount);
+    }
+
+    if guardian.voting_power == 0 {
+        return Err(ErrorCode::InvalidAmount);
+    }
+
     let mut guardians = get_guardians(e);
 
     // Check if guardian already exists
@@ -69,11 +103,14 @@ pub fn add_guardian(e: &Env, guardian: Guardian) -> Result<(), ErrorCode> {
         }
     }
 
+    let added = guardian.address.clone();
+    let added = guardian.address.clone();
     guardians.push_back(guardian);
     e.storage()
         .persistent()
         .set(&ConfigKey::GuardianSet, &guardians);
     bump_gov_ttl(e, &ConfigKey::GuardianSet);
+    crate::modules::events::emit_guardian_added(e, added);
     Ok(())
 }
 
@@ -133,6 +170,7 @@ pub fn remove_guardian(e: &Env, address: Address) -> Result<(), ErrorCode> {
         .persistent()
         .remove(&ConfigKey::PendingGuardianRemovalPassedAt);
     bump_gov_ttl(e, &ConfigKey::PendingGuardianRemoval);
+    crate::modules::events::emit_guardian_removal_proposed(e, address);
     Ok(())
 }
 
@@ -263,6 +301,7 @@ pub fn execute_guardian_removal(e: &Env) -> Result<(), ErrorCode> {
         return Err(ErrorCode::GuardianNotSet);
     }
 
+    crate::modules::events::emit_guardian_removed(e, pending_removal.target_guardian.clone());
     e.storage()
         .persistent()
         .set(&ConfigKey::GuardianSet, &new_guardians);
@@ -299,9 +338,13 @@ pub fn initiate_upgrade(e: &Env, wasm_hash: BytesN<32>) -> Result<(), ErrorCode>
 
     require_no_upgrade_collision(e, &wasm_hash)?;
 
-    // Check if an upgrade is already pending
-    if e.storage().persistent().has(&ConfigKey::PendingUpgrade) {
-        return Err(ErrorCode::NotAuthorized);
+    // Issue #1702: a pending upgrade blocks a new one only until its voting
+    // window lapses; a stale proposal is dropped so it cannot block forever.
+    if let Some(existing) = get_pending_upgrade(e) {
+        if !upgrade_vote_window_lapsed(e, &existing) {
+            return Err(ErrorCode::NotAuthorized);
+        }
+        clear_pending_upgrade(e);
     }
 
     let current_time = e.ledger().timestamp();
@@ -325,6 +368,26 @@ pub fn initiate_upgrade(e: &Env, wasm_hash: BytesN<32>) -> Result<(), ErrorCode>
     let admin = crate::modules::admin::get_admin(e).unwrap_or(e.current_contract_address());
     crate::modules::events::emit_upgrade_initiated(e, admin, wasm_hash);
 
+    Ok(())
+}
+
+fn upgrade_vote_window_lapsed(e: &Env, pending: &PendingUpgrade) -> bool {
+    e.ledger().timestamp().saturating_sub(pending.initiated_at) > UPGRADE_VOTE_WINDOW
+}
+
+fn clear_pending_upgrade(e: &Env) {
+    e.storage().persistent().remove(&ConfigKey::PendingUpgrade);
+    e.storage()
+        .persistent()
+        .remove(&ConfigKey::PendingUpgradePassedAt);
+}
+
+/// Issue #1702: cancel the pending upgrade. Admin only.
+pub fn cancel_upgrade(e: &Env) -> Result<(), ErrorCode> {
+    crate::modules::admin::require_admin(e)?;
+    let pending = get_pending_upgrade(e).ok_or(ErrorCode::UpgradeNotInitiated)?;
+    clear_pending_upgrade(e);
+    crate::modules::events::emit_upgrade_cancelled(e, pending.wasm_hash);
     Ok(())
 }
 
@@ -392,6 +455,10 @@ pub fn vote_for_upgrade(e: &Env, voter: Address, vote_for: bool) -> Result<bool,
     // Get pending upgrade
     let mut pending_upgrade = get_pending_upgrade(e).ok_or(ErrorCode::UpgradeNotInitiated)?;
 
+    if upgrade_vote_window_lapsed(e, &pending_upgrade) {
+        return Err(ErrorCode::UpgradeVotingClosed);
+    }
+
     // Check if voter has already voted
     for v in pending_upgrade.votes_for.iter() {
         if v == voter {
@@ -411,8 +478,23 @@ pub fn vote_for_upgrade(e: &Env, voter: Address, vote_for: bool) -> Result<bool,
         pending_upgrade.votes_against.push_back(voter);
     }
 
-    if is_majority_met(e, &pending_upgrade) && get_upgrade_passed_at(e).is_none() {
-        set_upgrade_passed_at(e);
+    // Issue #1702: re-evaluate the outcome on every vote. A majority against
+    // rejects the proposal; otherwise passed_at tracks whether the majority holds.
+    if is_power_majority_met(e, &guardians, &pending_upgrade.votes_against) {
+        set_upgrade_rejected_at(e, &pending_upgrade.wasm_hash);
+        clear_pending_upgrade(e);
+        crate::modules::events::emit_upgrade_rejected(e, pending_upgrade.wasm_hash);
+        crate::modules::events::emit_upgrade_voted(e, voter, vote_for);
+        return Ok(true);
+    }
+    if is_majority_met(e, &pending_upgrade) {
+        if get_upgrade_passed_at(e).is_none() {
+            set_upgrade_passed_at(e);
+        }
+    } else {
+        e.storage()
+            .persistent()
+            .remove(&ConfigKey::PendingUpgradePassedAt);
     }
 
     e.storage()
@@ -467,9 +549,9 @@ fn is_power_majority_met(e: &Env, eligible: &Vec<Guardian>, votes: &Vec<Address>
     }
 
     // Sum total voting power across all eligible guardians
-    let mut total_power: u32 = 0;
+    let mut total_power: u64 = 0;
     for i in 0..eligible.len() {
-        total_power += eligible.get(i).unwrap().voting_power;
+        total_power += eligible.get(i).unwrap().voting_power as u64;
     }
 
     if total_power == 0 {
@@ -477,13 +559,13 @@ fn is_power_majority_met(e: &Env, eligible: &Vec<Guardian>, votes: &Vec<Address>
     }
 
     // Sum voting power of guardians who voted in favour
-    let mut power_for: u32 = 0;
+    let mut power_for: u64 = 0;
     for i in 0..votes.len() {
         let voter = votes.get(i).unwrap();
         for j in 0..eligible.len() {
             let g = eligible.get(j).unwrap();
             if g.address == voter {
-                power_for += g.voting_power;
+                power_for += g.voting_power as u64;
                 break;
             }
         }
@@ -491,7 +573,7 @@ fn is_power_majority_met(e: &Env, eligible: &Vec<Guardian>, votes: &Vec<Address>
 
     // Calculate percentage: (power_for / total_power) * 100
     let percentage = (power_for * 100) / total_power;
-    percentage >= MAJORITY_THRESHOLD_PERCENT
+    percentage >= MAJORITY_THRESHOLD_PERCENT as u64
 }
 
 /// Check if majority vote threshold has been met for the pending upgrade.
@@ -596,20 +678,20 @@ pub fn emergency_pause(e: &Env, voter: Address) -> Result<(), ErrorCode> {
     }
     votes.push_back(voter);
 
-    let mut total_power: u32 = 0;
-    let mut power_for: u32 = 0;
+    let mut total_power: u64 = 0;
+    let mut power_for: u64 = 0;
     for g in guardians.iter() {
-        total_power += g.voting_power;
+        total_power += g.voting_power as u64;
         for v in votes.iter() {
             if v == g.address {
-                power_for += g.voting_power;
+                power_for += g.voting_power as u64;
                 break;
             }
         }
     }
 
     // 2/3 majority, computed as an aggregate across all votes cast so far.
-    let threshold_met = total_power > 0 && (power_for as u64 * 3) >= (total_power as u64 * 2);
+    let threshold_met = total_power > 0 && (power_for * 3) >= (total_power * 2);
 
     if threshold_met {
         e.storage()

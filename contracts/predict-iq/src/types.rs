@@ -191,6 +191,7 @@ pub const TIMELOCK_DURATION: u64 = 48 * 60 * 60; // 48 hours in seconds
 pub const TIMELOCK_MIN_SECONDS: u64 = 24 * 60 * 60; // 24 hours minimum
 pub const TIMELOCK_MAX_SECONDS: u64 = 7 * 24 * 3600; // 7 days maximum
 pub const MAJORITY_THRESHOLD_PERCENT: u32 = 51; // 51% for majority
+pub const UPGRADE_VOTE_WINDOW: u64 = 7 * 24 * 3600; // 7 days to vote on an upgrade
 pub const UPGRADE_COOLDOWN_DURATION: u64 = 7 * 24 * 3600; // 7 days cooldown for rejected upgrades
 
 // Governance stats type for vote counting

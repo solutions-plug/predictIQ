@@ -56,6 +56,7 @@ pub fn propose_admin(e: &Env, new_admin: Address) -> Result<(), ErrorCode> {
         .persistent()
         .set(&ConfigKey::PendingAdmin, &new_admin);
     bump_gov_ttl(e, &ConfigKey::PendingAdmin);
+    crate::modules::events::emit_admin_proposed(e, new_admin);
     Ok(())
 }
 
@@ -73,8 +74,9 @@ pub fn accept_admin(e: &Env, caller: Address) -> Result<(), ErrorCode> {
         return Err(ErrorCode::NotPendingOwner);
     }
     ensure_not_guardian(e, &pending)?;
-    set_admin(e, pending);
+    set_admin(e, pending.clone());
     e.storage().persistent().remove(&ConfigKey::PendingAdmin);
+    crate::modules::events::emit_admin_accepted(e, pending);
     Ok(())
 }
 
@@ -85,6 +87,7 @@ pub fn cancel_admin_transfer(e: &Env) -> Result<(), ErrorCode> {
         return Err(ErrorCode::PendingTransferNotFound);
     }
     e.storage().persistent().remove(&ConfigKey::PendingAdmin);
+    crate::modules::events::emit_admin_transfer_cancelled(e);
     Ok(())
 }
 
@@ -94,6 +97,7 @@ pub fn set_guardian(e: &Env, guardian: Address) -> Result<(), ErrorCode> {
         .persistent()
         .set(&ConfigKey::GuardianAccount, &guardian);
     bump_gov_ttl(e, &ConfigKey::GuardianAccount);
+    crate::modules::events::emit_guardian_set(e, guardian);
     Ok(())
 }
 
@@ -112,6 +116,7 @@ pub fn set_governance_token(e: &Env, token: Address) -> Result<(), ErrorCode> {
     e.storage()
         .instance()
         .set(&ConfigKey::GovernanceToken, &token);
+    crate::modules::events::emit_governance_token_set(e, token);
     Ok(())
 }
 
