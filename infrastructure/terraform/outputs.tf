@@ -15,6 +15,11 @@ output "redis_endpoint" {
   sensitive   = true
 }
 
+output "redis_parameter_group_name" {
+  description = "Name of the managed ElastiCache parameter group attached to the Redis cluster"
+  value       = module.redis.parameter_group_name
+}
+
 output "ecs_cluster_name" {
   description = "ECS cluster name"
   value       = module.ecs.cluster_name

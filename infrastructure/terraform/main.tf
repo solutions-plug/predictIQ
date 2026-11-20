@@ -71,6 +71,38 @@ resource "aws_security_group_rule" "ecs_tasks_egress_https" {
   cidr_blocks       = ["0.0.0.0/0"]
 }
 
+# Managed ElastiCache parameter group so eviction behaviour is pinned per
+# environment instead of inheriting the account default. The API uses the cache
+# as a best-effort cache (see services/api/src/db.rs), so volatile-lru is the
+# right policy: only keys with a TTL are evicted, never persistent data.
+resource "aws_elasticache_parameter_group" "redis" {
+  name        = "predictiq-${var.environment}-redis7"
+  family      = "redis7"
+  description = "Managed parameter group for predictiq ${var.environment} Redis"
+
+  parameter {
+    name  = "maxmemory-policy"
+    value = "volatile-lru"
+  }
+
+  parameter {
+    name  = "timeout"
+    value = "300"
+  }
+
+  parameter {
+    name  = "tcp-keepalive"
+    value = "300"
+  }
+
+  tags = {
+    Name        = "predictiq-${var.environment}-redis7"
+    Project     = "predictiq"
+    Environment = var.environment
+    ManagedBy   = "terraform"
+  }
+}
+
 module "vpc" {
   source = "./modules/vpc"
 
@@ -104,6 +136,10 @@ module "redis" {
   engine_version     = var.redis_engine_version
   redis_auth_token   = var.redis_auth_token
   ecs_tasks_sg_id    = aws_security_group.ecs_tasks.id
+
+  parameter_group_name     = aws_elasticache_parameter_group.redis.name
+  snapshot_retention_limit = var.redis_snapshot_retention_limit
+  snapshot_window          = var.redis_snapshot_window
 }
 
 module "ecs" {
