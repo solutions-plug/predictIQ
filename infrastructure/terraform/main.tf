@@ -121,7 +121,7 @@ module "ecs" {
   api_cpu               = var.api_cpu
   api_memory            = var.api_memory
   db_host               = module.rds.address
-  db_port               = 5432
+  db_port               = module.rds.port
   db_name               = var.db_name
   db_user               = var.db_username
   db_password           = var.db_password

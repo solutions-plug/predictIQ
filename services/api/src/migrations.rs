@@ -236,6 +236,11 @@ const MIGRATIONS: &[Migration] = &[
         sql: include_str!("../database/migrations/023_reconcile_watched_transactions.sql"),
     },
     Migration {
+        version: "023b",
+        name: "023_hash_newsletter_confirmation_tokens",
+        sql: include_str!("../database/migrations/023_hash_newsletter_confirmation_tokens.sql"),
+    },
+    Migration {
         version: "024",
         name: "024_drop_audit_logs",
         sql: include_str!("../database/migrations/024_drop_audit_logs.sql"),
