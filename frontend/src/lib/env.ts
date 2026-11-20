@@ -59,6 +59,16 @@ export function getApiOrigin(): string {
   return env.NEXT_PUBLIC_API_URL.replace(/\/+$/, '');
 }
 
+/**
+ * Build an absolute API URL for a given path (e.g. `/api/v1/markets/1/claim`).
+ * Resolves against the configured API origin so requests never hit the
+ * Next.js host, and normalises the leading slash on the path.
+ */
+export function getApiUrl(path: string): string {
+  const normalised = path.startsWith('/') ? path : `/${path}`;
+  return `${getApiOrigin()}${normalised}`;
+}
+
 // Validate once at module load so any import of this file fails fast —
 // on the server during `next build` this surfaces missing vars as a build error.
 export const env = validateEnvironment();
