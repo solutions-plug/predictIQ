@@ -34,3 +34,13 @@ output "alb_dns_name" {
   description = "ALB DNS name"
   value       = module.ecs.alb_dns_name
 }
+
+output "logs_kms_key_arn" {
+  description = "ARN of the customer-managed KMS key used to encrypt CloudWatch log groups"
+  value       = aws_kms_key.logs.arn
+}
+
+output "secrets_kms_key_arn" {
+  description = "ARN of the customer-managed KMS key used to encrypt secrets"
+  value       = aws_kms_key.secrets.arn
+}

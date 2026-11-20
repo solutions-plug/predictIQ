@@ -24,6 +24,120 @@ provider "aws" {
   }
 }
 
+# ---------------------------------------------------------------------------
+# KMS customer-managed keys
+#
+# Two separate CMKs are used so that a compromise of the logs key does not
+# grant access to secret material (and vice versa). Key policies are scoped to
+# the relevant services only.
+# ---------------------------------------------------------------------------
+
+data "aws_caller_identity" "current" {}
+
+# CMK used to encrypt CloudWatch log groups.
+resource "aws_kms_key" "logs" {
+  description             = "predictiq-${var.environment} CloudWatch logs encryption key"
+  deletion_window_in_days = 30
+  enable_key_rotation     = true
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "EnableRootAccountAdmin"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowCloudWatchLogs"
+        Effect = "Allow"
+        Principal = {
+          Service = "logs.${var.aws_region}.amazonaws.com"
+        }
+        Action = [
+          "kms:Encrypt*",
+          "kms:Decrypt*",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:Describe*",
+        ]
+        Resource = "*"
+        Condition = {
+          ArnLike = {
+            "kms:EncryptionContext:aws:logs:arn" = "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:log-group:*"
+          }
+        }
+      },
+    ]
+  })
+
+  tags = {
+    Name        = "predictiq-${var.environment}-logs"
+    Project     = "predictiq"
+    Environment = var.environment
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_kms_alias" "logs" {
+  name          = "alias/predictiq-${var.environment}-logs"
+  target_key_id = aws_kms_key.logs.key_id
+}
+
+# CMK used to encrypt Secrets Manager secrets.
+resource "aws_kms_key" "secrets" {
+  description             = "predictiq-${var.environment} Secrets Manager encryption key"
+  deletion_window_in_days = 30
+  enable_key_rotation     = true
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "EnableRootAccountAdmin"
+        Effect = "Allow"
+        Principal = {
+          AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        }
+        Action   = "kms:*"
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowSecretsManager"
+        Effect = "Allow"
+        Principal = {
+          Service = "secretsmanager.amazonaws.com"
+        }
+        Action = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:CreateGrant",
+          "kms:DescribeKey",
+        ]
+        Resource = "*"
+      },
+    ]
+  })
+
+  tags = {
+    Name        = "predictiq-${var.environment}-secrets"
+    Project     = "predictiq"
+    Environment = var.environment
+    ManagedBy   = "terraform"
+  }
+}
+
+resource "aws_kms_alias" "secrets" {
+  name          = "alias/predictiq-${var.environment}-secrets"
+  target_key_id = aws_kms_key.secrets.key_id
+}
+
 # The ECS tasks SG is created at root level to break the circular dependency
 # between the ecs module (which needs the ALB SG to wire the ingress rule) and
 # rds/redis modules (which need this SG ID for their ingress rules).
@@ -180,6 +294,9 @@ module "ecs" {
   email_idempotency_secret   = var.email_idempotency_secret
   ecs_tasks_sg_id       = aws_security_group.ecs_tasks.id
   otlp_endpoint         = var.otlp_endpoint
+
+  # Encrypt secrets managed by the ECS module with the dedicated secrets CMK.
+  secrets_kms_key_arn = aws_kms_key.secrets.arn
 }
 
 module "monitoring" {
@@ -199,4 +316,7 @@ module "monitoring" {
 
   alert_email_endpoints = var.alert_email_endpoints
   alert_https_endpoints = var.alert_https_endpoints
+
+  # Encrypt every CloudWatch log group created by the monitoring module.
+  log_group_kms_key_arn = aws_kms_key.logs.arn
 }
