@@ -211,3 +211,16 @@ module "monitoring" {
   alert_email_endpoints = var.alert_email_endpoints
   alert_https_endpoints = var.alert_https_endpoints
 }
+
+# Subscribe a configurable endpoint to the alerts SNS topic so that CloudWatch
+# alarms actually page someone. The endpoint has no default; when it is unset
+# no subscription is created (see the count guard below).
+resource "aws_sns_topic_subscription" "alerts" {
+  count = var.alerts_subscription_endpoint == "" ? 0 : 1
+
+  topic_arn = module.monitoring.alerts_topic_arn
+  protocol  = var.alerts_subscription_protocol
+  endpoint  = var.alerts_subscription_endpoint
+
+  depends_on = [module.monitoring]
+}

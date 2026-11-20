@@ -239,6 +239,27 @@ variable "alb_latency_alarm_seconds" {
   default     = 1
 }
 
+variable "alerts_sns_endpoint" {
+  description = "Endpoint (e.g. email address or HTTPS URL) subscribed to the alerts SNS topic. No default; must be supplied to receive alarm notifications."
+  type        = string
+
+  validation {
+    condition     = length(trimspace(var.alerts_sns_endpoint)) > 0
+    error_message = "alerts_sns_endpoint must be a non-empty endpoint (e.g. an email address or HTTPS URL)."
+  }
+}
+
+variable "alerts_sns_protocol" {
+  description = "Protocol for the alerts SNS topic subscription (e.g. email, https, sqs, lambda)"
+  type        = string
+  default     = "email"
+
+  validation {
+    condition     = contains(["email", "email-json", "https", "http", "sqs", "lambda", "sms"], var.alerts_sns_protocol)
+    error_message = "alerts_sns_protocol must be one of: email, email-json, https, http, sqs, lambda, sms."
+  }
+}
+
 variable "api_cpu" {
   description = "API task CPU units"
   type        = number
@@ -272,33 +293,6 @@ variable "acm_certificate_arn" {
 }
 
 variable "hmac_key" {
-  description = "HMAC secret key used to sign API payloads and webhook signatures. Stored in AWS Secrets Manager."
-  type        = string
-  sensitive   = true
+  d
 
-  validation {
-    condition     = length(var.hmac_key) >= 32
-    error_message = "HMAC key must be at least 32 characters for adequate security."
-  }
-}
-
-variable "sendgrid_api_key" {
-  description = "SendGrid API key for transactional email. Stored in AWS Secrets Manager."
-  type        = string
-  sensitive   = true
-
-  validation {
-    condition     = can(regex("^SG\\.", var.sendgrid_api_key))
-    error_message = "SendGrid API key must start with 'SG.'."
-  }
-}
-
-variable "api_signing_key" {
-  description = "Private key used to sign API responses. Stored in AWS Secrets Manager."
-  type        = string
-  sensitive   = true
-
-  validation {
-    condition     = length(var.api_signin
-
-/* … truncated 1912 chars — edit only what you need near the top … */
+/* … truncated 915 chars — edit only what you need near the top … */
