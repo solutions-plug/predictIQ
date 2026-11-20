@@ -1,155 +1,128 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import { ReactNode, useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import { useI18n } from '../../lib/hooks/useI18n';
-import { api, ApiError, ADMIN_KEY_STORAGE } from '../../lib/api/admin-client';
-import '../../styles/admin.css';
+import { usePathname, useRouter } from 'next/navigation';
+import { Modal } from '@/components/Modal';
 
-function AdminAuthGate({ children }: { children: React.ReactNode }) {
-  const { t } = useI18n();
-  const [key, setKey] = useState('');
-  const [ok, setOk] = useState(false);
-  const [error, setError] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
+interface AdminLayoutProps {
+  children: ReactNode;
+}
+
+interface RotateKeyResponse {
+  apiKey?: string;
+  key?: string;
+}
+
+const ADMIN_NAV = [
+  { href: '/admin', label: 'Overview' },
+  { href: '/admin/users', label: 'Users' },
+  { href: '/admin/settings', label: 'Settings' },
+];
+
+export default function AdminLayout({ children }: AdminLayoutProps) {
+  const pathname = usePathname();
+  const router = useRouter();
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [rotating, setRotating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [newKey, setNewKey] = useState<string | null>(null);
 
   useEffect(() => {
-    const k = sessionStorage.getItem(ADMIN_KEY_STORAGE);
-    if (!k) return;
-    setKey(k);
-    api
-      .listApiKeys(k)
-      .then(() => setOk(true))
-      .catch(() => {
-        sessionStorage.removeItem(ADMIN_KEY_STORAGE);
-        setKey('');
-        setError('Session expired. Please log in again.');
+    if (!newKey) return;
+    try {
+      sessionStorage.setItem('admin:apiKey', newKey);
+    } catch {
+      // sessionStorage may be unavailable; the key is still shown below.
+    }
+  }, [newKey]);
+
+  const rotateKey = useCallback(async () => {
+    setConfirmOpen(false);
+    setRotating(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/admin/rotate-key', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm: true }),
       });
+      if (!res.ok) {
+        throw new Error(`Rotation failed (${res.status})`);
+      }
+      const data = (await res.json()) as RotateKeyResponse;
+      const issued = data.apiKey ?? data.key ?? null;
+      if (!issued) {
+        throw new Error('Rotation response did not include a key');
+      }
+      setNewKey(issued);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Rotation failed');
+    } finally {
+      setRotating(false);
+    }
   }, []);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    setIsLoading(true);
-    try {
-      await api.listApiKeys(key);
-      sessionStorage.setItem(ADMIN_KEY_STORAGE, key);
-      setOk(true);
-    } catch (err) {
-      const unauthorized = err instanceof ApiError && (err.status === 401 || err.status === 403);
-      setError(
-        unauthorized
-          ? 'Invalid API key. Please try again.'
-          : 'Failed to validate API key. Please try again.'
-      );
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleLogout = () => {
-    sessionStorage.removeItem(ADMIN_KEY_STORAGE);
-    setKey('');
-    setOk(false);
-    setError('');
-  };
-
-  if (!ok) {
-    return (
-      <form className="admin-auth-form" onSubmit={handleSubmit}>
-        <label>
-          {t('admin.apiKey')}
-          <input
-            value={key}
-            onChange={(e) => setKey(e.target.value)}
-            required
-            type="password"
-            disabled={isLoading}
-          />
-        </label>
-        {error && <div className="admin-auth-error">{error}</div>}
-        <button type="submit" disabled={isLoading}>
-          {isLoading ? 'Validating...' : t('admin.continue')}
+  return (
+    <div className="admin-layout">
+      <aside className="admin-sidebar">
+        <nav>
+          {ADMIN_NAV.map((item) => (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={pathname === item.href ? 'active' : undefined}
+            >
+              {item.label}
+            </Link>
+          ))}
+        </nav>
+        <button
+          type="button"
+          className="admin-rotate-key"
+          onClick={() => setConfirmOpen(true)}
+          disabled={rotating}
+        >
+          {rotating ? 'Rotating…' : 'Rotate API key'}
         </button>
-      </form>
-    );
-  }
+      </aside>
 
-  return (
-    <div>
-      <button onClick={handleLogout} className="admin-logout-btn">
-        Logout
-      </button>
-      {children}
-    </div>
-  );
-}
-
-function AdminNavLink({ href, label }: { href: string; label: string }) {
-  const pathname = usePathname();
-  const isActive = pathname === href || pathname?.startsWith(`${href}/`);
-  return (
-    <Link
-      href={href}
-      className={`admin-nav-link ${isActive ? 'active' : ''}`}
-      aria-current={isActive ? 'page' : undefined}
-    >
-      {label}
-    </Link>
-  );
-}
-
-export default function AdminLayout({ children }: { children: React.ReactNode }) {
-  const { t } = useI18n();
-  const navItems = [
-    { href: '/admin/email/preview', label: t('admin.emailPreview') },
-    { href: '/admin/email/analytics', label: t('admin.emailAnalytics') },
-    { href: '/admin/blockchain/replay', label: t('admin.blockchainReplay') },
-    { href: '/admin/content', label: t('admin.contentManagement') },
-    { href: '/admin/audit', label: t('admin.auditLog') },
-    { href: '/admin/api-keys', label: t('admin.apiKeys') },
-  ];
-
-  return (
-    <AdminAuthGate>
-      <div className="admin-layout">
-        {/* Skip navigation for accessibility */}
-        <a href="#admin-main-content" className="skip-link">
-          {t('admin.skipToContent')}
-        </a>
-
-        {/* Admin Top Navigation */}
-        <header className="admin-header" role="banner">
-          <div className="admin-header-container">
-            <div className="admin-brand-inner">
-              <Link href="/" className="admin-brand" aria-label={t('admin.home')}>
-                <span className="admin-brand-name">
-                  Predict<span className="admin-brand-name-accent">IQ</span>
-                </span>
-              </Link>
-              <span className="admin-brand-badge">{t('admin.badge')}</span>
-            </div>
-
-            <nav className="admin-nav" aria-label={t('admin.subNav')}>
-              {navItems.map((item) => (
-                <AdminNavLink key={item.href} href={item.href} label={item.label} />
-              ))}
-            </nav>
-
-            <div>
-              <Link href="/" className="admin-exit-link">
-                {t('appShell.exitToSite')}
-              </Link>
-            </div>
+      <main className="admin-content">
+        {error && (
+          <p role="alert" className="admin-error">
+            {error}
+          </p>
+        )}
+        {newKey && (
+          <div role="status" className="admin-new-key">
+            <p>Your new API key (shown once):</p>
+            <code>{newKey}</code>
+            <button type="button" onClick={() => setNewKey(null)}>
+              Dismiss
+            </button>
           </div>
-        </header>
+        )}
+        {children}
+      </main>
 
-        {/* Main Admin Content */}
-        <main id="admin-main-content" className="admin-main" role="main">
-          {children}
-        </main>
-      </div>
-    </AdminAuthGate>
+      <Modal
+        open={confirmOpen}
+        onClose={() => setConfirmOpen(false)}
+        title="Rotate API key?"
+      >
+        <p>
+          Rotating the API key immediately invalidates the current key and any
+          active sessions using it. This cannot be undone.
+        </p>
+        <div className="modal__actions">
+          <button type="button" onClick={() => setConfirmOpen(false)}>
+            Cancel
+          </button>
+          <button type="button" onClick={rotateKey}>
+            Rotate key
+          </button>
+        </div>
+      </Modal>
+    </div>
   );
 }
