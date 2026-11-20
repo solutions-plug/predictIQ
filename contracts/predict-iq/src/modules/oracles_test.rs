@@ -1114,3 +1114,285 @@ fn test_consensus_insufficient_responses_returns_error() {
         "fewer responses than min_responses must return OracleFailure"
     );
 }
+
+// =============================================================================
+// Issue #1909: OracleConfig validation on market creation
+// =============================================================================
+//
+// `create_market` must reject a malformed `OracleConfig` with
+// `ErrorCode::InvalidOracleConfig` so that a market can never be created with
+// an oracle configuration that could never resolve correctly.
+//
+// The boundaries asserted here mirror `validate_oracle_config` in markets.rs:
+// - `feed_id` must be 64 (bare hex) or 66 (`0x`-prefixed hex) characters
+// - `feed_id` must contain only hex digits after any `0x` prefix
+// - `max_staleness_seconds` must be non-zero
+// - `max_confidence_bps` must not exceed 10_000 (100%)
+// - `oracle_address` must not be the contract's own address
+//
+// NOTE: These tests are expected to fail until the validation tracked in
+// issue #1840 lands. They define the expected rejection behaviour.
+
+#[cfg(test)]
+mod oracle_config_validation_tests {
+    use crate::{PredictIQ, PredictIQClient};
+    use crate::errors::ErrorCode;
+    use crate::types::{MarketTier, OracleConfig};
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{Address, Env, String, Vec};
+
+    const VALID_FEED_ID: &str =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    /// Register the contract, initialize an admin, and return the client plus
+    /// the admin address. Mirrors the setup used in markets_test.rs.
+    fn setup(e: &Env) -> (PredictIQClient<'static>, Address) {
+        e.mock_all_auths();
+        let contract_id = e.register(PredictIQ, ());
+        let client = PredictIQClient::new(e, &contract_id);
+        let admin = Address::generate(e);
+        client.initialize(&admin, &100);
+        (client, admin)
+    }
+
+    /// A valid OracleConfig fixture, matching `test_config` in this module.
+    fn valid_config(e: &Env) -> OracleConfig {
+        OracleConfig {
+            oracle_address: Address::generate(e),
+            feed_id: String::from_str(e, VALID_FEED_ID),
+            min_responses: Some(1),
+            max_staleness_seconds: 300,
+            max_confidence_bps: 200,
+            strike_price: None,
+        }
+    }
+
+    fn options(e: &Env) -> Vec<String> {
+        Vec::from_array(
+            e,
+            [
+                String::from_str(e, "Yes"),
+                String::from_str(e, "No"),
+            ],
+        )
+    }
+
+    /// Attempt to create a market with the given oracle config and return the
+    /// raw result so callers can assert on the specific error variant.
+    fn try_create_market_with_config(
+        client: &PredictIQClient<'static>,
+        e: &Env,
+        admin: &Address,
+        config: &OracleConfig,
+    ) -> Result<u64, Result<ErrorCode, soroban_sdk::InvokeError>> {
+        let token = Address::generate(e);
+        client.try_create_market(
+            admin,
+            &String::from_str(e, "Oracle config validation market"),
+            &options(e),
+            &1000,
+            &2000,
+            config,
+            &MarketTier::Basic,
+            &token,
+            &0,
+            &0,
+        )
+    }
+
+    /// A well-formed OracleConfig must still create the market successfully.
+    #[test]
+    fn test_create_market_accepts_valid_oracle_config() {
+        let e = Env::default();
+        let (client, admin) = setup(&e);
+        let config = valid_config(&e);
+
+        let result = try_create_market_with_config(&client, &e, &admin, &config);
+        assert!(
+            result.is_ok(),
+            "a valid OracleConfig must create the market successfully, got {:?}",
+            result
+        );
+    }
+
+    /// feed_id shorter than 64 characters must be rejected.
+    #[test]
+    fn test_create_market_rejects_short_feed_id() {
+        let e = Env::default();
+        let (client, admin) = setup(&e);
+        let mut config = valid_config(&e);
+        config.feed_id = String::from_str(&e, "0123456789abcdef");
+
+        let result = try_create_market_with_config(&client, &e, &admin, &config);
+        assert_eq!(
+            result,
+            Err(Ok(ErrorCode::InvalidOracleConfig)),
+            "feed_id shorter than 64 chars must be rejected with InvalidOracleConfig"
+        );
+    }
+
+    /// feed_id longer than 66 characters must be rejected.
+    #[test]
+    fn test_create_market_rejects_long_feed_id() {
+        let e = Env::default();
+        let (client, admin) = setup(&e);
+        let mut config = valid_config(&e);
+        config.feed_id = String::from_str(
+            &e,
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef00",
+        );
+
+        let result = try_create_market_with_config(&client, &e, &admin, &config);
+        assert_eq!(
+            result,
+            Err(Ok(ErrorCode::InvalidOracleConfig)),
+            "feed_id longer than 66 chars must be rejected with InvalidOracleConfig"
+        );
+    }
+
+    /// feed_id of length 65 (between the two allowed lengths) must be rejected.
+    #[test]
+    fn test_create_market_rejects_feed_id_of_length_65() {
+        let e = Env::default();
+        let (client, admin) = setup(&e);
+        let mut config = valid_config(&e);
+        config.feed_id = String::from_str(
+            &e,
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde",
+        );
+
+        let result = try_create_market_with_config(&client, &e, &admin, &config);
+        assert_eq!(
+            result,
+            Err(Ok(ErrorCode::InvalidOracleConfig)),
+            "feed_id of length 65 must be rejected with InvalidOracleConfig"
+        );
+    }
+
+    /// feed_id containing non-hex characters must be rejected.
+    #[test]
+    fn test_create_market_rejects_non_hex_feed_id() {
+        let e = Env::default();
+        let (client, admin) = setup(&e);
+        let mut config = valid_config(&e);
+        config.feed_id = String::from_str(
+            &e,
+            "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+        );
+
+        let result = try_create_market_with_config(&client, &e, &admin, &config);
+        assert_eq!(
+            result,
+            Err(Ok(ErrorCode::InvalidOracleConfig)),
+            "feed_id with non-hex characters must be rejected with InvalidOracleConfig"
+        );
+    }
+
+    /// A 0x-prefixed feed_id with an invalid prefix must be rejected.
+    #[test]
+    fn test_create_market_rejects_invalid_0x_prefix() {
+        let e = Env::default();
+        let (client, admin) = setup(&e);
+        let mut config = valid_config(&e);
+        // 66 chars total, but the prefix is "0y" rather than "0x".
+        config.feed_id = String::from_str(
+            &e,
+            "0y0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd",
+        );
+
+        let result = try_create_market_with_config(&client, &e, &admin, &config);
+        assert_eq!(
+            result,
+            Err(Ok(ErrorCode::InvalidOracleConfig)),
+            "feed_id with an invalid 0x prefix must be rejected with InvalidOracleConfig"
+        );
+    }
+
+    /// A valid 0x-prefixed feed_id (66 chars) must be accepted.
+    #[test]
+    fn test_create_market_accepts_0x_prefixed_feed_id() {
+        let e = Env::default();
+        let (client, admin) = setup(&e);
+        let mut config = valid_config(&e);
+        config.feed_id = String::from_str(
+            &e,
+            "0x0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd",
+        );
+
+        let result = try_create_market_with_config(&client, &e, &admin, &config);
+        assert!(
+            result.is_ok(),
+            "a valid 0x-prefixed feed_id must create the market, got {:?}",
+            result
+        );
+    }
+
+    /// max_staleness_seconds == 0 must be rejected.
+    #[test]
+    fn test_create_market_rejects_zero_max_staleness() {
+        let e = Env::default();
+        let (client, admin) = setup(&e);
+        let mut config = valid_config(&e);
+        config.max_staleness_seconds = 0;
+
+        let result = try_create_market_with_config(&client, &e, &admin, &config);
+        assert_eq!(
+            result,
+            Err(Ok(ErrorCode::InvalidOracleConfig)),
+            "max_staleness_seconds == 0 must be rejected with InvalidOracleConfig"
+        );
+    }
+
+    /// max_confidence_bps above 10_000 must be rejected.
+    #[test]
+    fn test_create_market_rejects_max_confidence_bps_above_10000() {
+        let e = Env::default();
+        let (client, admin) = setup(&e);
+        let mut config = valid_config(&e);
+        config.max_confidence_bps = 10_001;
+
+        let result = try_create_market_with_config(&client, &e, &admin, &config);
+        assert_eq!(
+            result,
+            Err(Ok(ErrorCode::InvalidOracleConfig)),
+            "max_confidence_bps > 10_000 must be rejected with InvalidOracleConfig"
+        );
+    }
+
+    /// max_confidence_bps == 10_000 is the inclusive upper boundary and must be accepted.
+    #[test]
+    fn test_create_market_accepts_max_confidence_bps_at_10000() {
+        let e = Env::default();
+        let (client, admin) = setup(&e);
+        let mut config = valid_config(&e);
+        config.max_confidence_bps = 10_000;
+
+        let result = try_create_market_with_config(&client, &e, &admin, &config);
+        assert!(
+            result.is_ok(),
+            "max_confidence_bps == 10_000 is the inclusive boundary and must be accepted, got {:?}",
+            result
+        );
+    }
+
+    /// oracle_address equal to the contract's own address must be rejected.
+    #[test]
+    fn test_create_market_rejects_oracle_address_equal_to_contract() {
+        let e = Env::default();
+        e.mock_all_auths();
+        let contract_id = e.register(PredictIQ, ());
+        let client = PredictIQClient::new(&e, &contract_id);
+        let admin = Address::generate(&e);
+        client.initialize(&admin, &100);
+
+        let mut config = valid_config(&e);
+        config.oracle_address = contract_id.clone();
+
+        let result = try_create_market_with_config(&client, &e, &admin, &config);
+        assert_eq!(
+            result,
+            Err(Ok(ErrorCode::InvalidOracleConfig)),
+            "oracle_address equal to the contract address must be rejected with InvalidOracleConfig"
+        );
+    }
+}
