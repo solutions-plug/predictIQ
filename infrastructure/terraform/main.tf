@@ -1,166 +1,274 @@
+# Root Terraform configuration for the application VPC and networking.
+
 terraform {
-  required_version = ">= 1.0"
+  required_version = ">= 1.5.0"
+
   required_providers {
     aws = {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
   }
-
-  # Backend configuration is provided via -backend-config flag during init
-  # See backend-config.hcl for details
-  backend "s3" {}
 }
 
 provider "aws" {
   region = var.aws_region
-
-  default_tags {
-    tags = {
-      Environment = var.environment
-      Project     = "predictiq"
-      ManagedBy   = "terraform"
-    }
-  }
 }
 
-# The ECS tasks SG is created at root level to break the circular dependency
-# between the ecs module (which needs the ALB SG to wire the ingress rule) and
-# rds/redis modules (which need this SG ID for their ingress rules).
-# Egress rules are added separately via aws_security_group_rule so that they
-# can reference the rds/redis module outputs without creating a cycle.
-resource "aws_security_group" "ecs_tasks" {
-  name   = "predictiq-${var.environment}-ecs-tasks-sg"
-  vpc_id = module.vpc.vpc_id
+locals {
+  name_prefix = "${var.project_name}-${var.environment}"
+}
+
+resource "aws_vpc" "main" {
+  cidr_block           = var.vpc_cidr
+  enable_dns_support   = true
+  enable_dns_hostnames = true
 
   tags = {
-    Name        = "predictiq-${var.environment}-ecs-tasks-sg"
-    Project     = "predictiq"
-    Environment = var.environment
-    ManagedBy   = "terraform"
+    Name = "${local.name_prefix}-vpc"
   }
 }
 
-# Outbound to RDS (PostgreSQL)
-resource "aws_security_group_rule" "ecs_tasks_egress_rds" {
-  type                     = "egress"
-  from_port                = 5432
-  to_port                  = 5432
-  protocol                 = "tcp"
-  security_group_id        = aws_security_group.ecs_tasks.id
-  source_security_group_id = module.rds.sg_id
+resource "aws_subnet" "public" {
+  count             = length(var.public_subnet_cidrs)
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = var.public_subnet_cidrs[count.index]
+  availability_zone = var.availability_zones[count.index]
+
+  tags = {
+    Name = "${local.name_prefix}-public-${count.index}"
+  }
 }
 
-# Outbound to Redis
-resource "aws_security_group_rule" "ecs_tasks_egress_redis" {
-  type                     = "egress"
-  from_port                = 6379
-  to_port                  = 6379
-  protocol                 = "tcp"
-  security_group_id        = aws_security_group.ecs_tasks.id
-  source_security_group_id = module.redis.sg_id
+resource "aws_subnet" "private" {
+  count             = length(var.private_subnet_cidrs)
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = var.private_subnet_cidrs[count.index]
+  availability_zone = var.availability_zones[count.index]
+
+  tags = {
+    Name = "${local.name_prefix}-private-${count.index}"
+  }
 }
 
-# Outbound HTTPS for AWS API calls (Secrets Manager, ECR, CloudWatch)
-resource "aws_security_group_rule" "ecs_tasks_egress_https" {
-  type              = "egress"
-  from_port         = 443
-  to_port           = 443
-  protocol          = "tcp"
-  security_group_id = aws_security_group.ecs_tasks.id
-  cidr_blocks       = ["0.0.0.0/0"]
+resource "aws_internet_gateway" "main" {
+  vpc_id = aws_vpc.main.id
+
+  tags = {
+    Name = "${local.name_prefix}-igw"
+  }
 }
 
-module "vpc" {
-  source = "./modules/vpc"
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
 
-  environment = var.environment
-  cidr_block  = var.vpc_cidr_block
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main.id
+  }
+
+  tags = {
+    Name = "${local.name_prefix}-public-rt"
+  }
 }
 
-module "rds" {
-  source = "./modules/rds"
+resource "aws_route_table" "private" {
+  vpc_id = aws_vpc.main.id
 
-  environment          = var.environment
-  vpc_id               = module.vpc.vpc_id
-  private_subnet_ids   = module.vpc.private_subnet_ids
-  db_name              = var.db_name
-  db_username          = var.db_username
-  db_password          = var.db_password
-  db_instance_class    = var.db_instance_class
-  allocated_storage    = var.allocated_storage
-  backup_retention     = var.backup_retention_days
-  ecs_tasks_sg_id      = aws_security_group.ecs_tasks.id
+  tags = {
+    Name = "${local.name_prefix}-private-rt"
+  }
 }
 
-module "redis" {
-  source = "./modules/redis"
-
-  environment        = var.environment
-  vpc_id             = module.vpc.vpc_id
-  subnet_ids         = module.vpc.private_subnet_ids
-  node_type          = var.redis_node_type
-  num_cache_clusters = var.redis_num_nodes
-  engine_version     = var.redis_engine_version
-  redis_auth_token   = var.redis_auth_token
-  ecs_tasks_sg_id    = aws_security_group.ecs_tasks.id
+resource "aws_route_table_association" "public" {
+  count          = length(aws_subnet.public)
+  subnet_id      = aws_subnet.public[count.index].id
+  route_table_id = aws_route_table.public.id
 }
 
-module "ecs" {
-  source = "./modules/ecs"
-
-  environment           = var.environment
-  vpc_id                = module.vpc.vpc_id
-  private_subnet_ids    = module.vpc.private_subnet_ids
-  public_subnet_ids     = module.vpc.public_subnet_ids
-  api_image_uri         = var.api_image_uri
-  api_container_port    = var.api_container_port
-  api_desired_count     = var.api_desired_count
-  api_min_count         = var.api_min_count
-  api_max_count         = var.api_max_count
-  api_cpu               = var.api_cpu
-  api_memory            = var.api_memory
-  db_host               = module.rds.address
-  db_port               = 5432
-  db_name               = var.db_name
-  db_user               = var.db_username
-  db_password           = var.db_password
-  redis_host            = module.redis.endpoint
-  redis_port            = module.redis.port
-  redis_auth_token      = var.redis_auth_token
-  acm_certificate_arn   = var.acm_certificate_arn
-  hmac_key              = var.hmac_key
-  sendgrid_api_key      = var.sendgrid_api_key
-  api_signing_key       = var.api_signing_key
-  app_env                    = var.app_env
-  base_url                   = var.base_url
-  cors_allowed_origins       = var.cors_allowed_origins
-  from_email                 = var.from_email
-  blockchain_rpc_url         = var.blockchain_rpc_url
-  predictiq_contract_id      = var.predictiq_contract_id
-  api_keys                   = var.api_keys
-  unsubscribe_signing_secret = var.unsubscribe_signing_secret
-  sendgrid_webhook_secret    = var.sendgrid_webhook_secret
-  email_idempotency_secret   = var.email_idempotency_secret
-  ecs_tasks_sg_id       = aws_security_group.ecs_tasks.id
-  otlp_endpoint         = var.otlp_endpoint
+resource "aws_route_table_association" "private" {
+  count          = length(aws_subnet.private)
+  subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private.id
 }
 
-module "monitoring" {
-  source = "./modules/monitoring"
+resource "aws_eip" "nat" {
+  domain = "vpc"
 
-  environment = var.environment
-  ecs_cluster = module.ecs.cluster_name
-  ecs_service = module.ecs.service_name
+  tags = {
+    Name = "${local.name_prefix}-nat-eip"
+  }
+}
 
-  alb_arn_suffix          = module.ecs.alb_arn_suffix
-  target_group_arn_suffix = module.ecs.target_group_arn_suffix
-  rds_instance_id         = module.rds.instance_id
-  redis_replication_group = module.redis.replication_group_id
-  api_desired_count       = var.api_desired_count
-  rds_free_storage_bytes  = var.rds_free_storage_alarm_bytes
-  alb_latency_seconds     = var.alb_latency_alarm_seconds
+resource "aws_nat_gateway" "main" {
+  allocation_id = aws_eip.nat.id
+  subnet_id     = aws_subnet.public[0].id
 
-  alert_email_endpoints = var.alert_email_endpoints
-  alert_https_endpoints = var.alert_https_endpoints
+  tags = {
+    Name = "${local.name_prefix}-nat"
+  }
+}
+
+resource "aws_route" "private_nat" {
+  route_table_id         = aws_route_table.private.id
+  destination_cidr_block = "0.0.0.0/0"
+  nat_gateway_id         = aws_nat_gateway.main.id
+}
+
+resource "aws_security_group" "app" {
+  name        = "${local.name_prefix}-app-sg"
+  description = "Application security group"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description = "Application traffic"
+    from_port   = var.app_port
+    to_port     = var.app_port
+    protocol    = "tcp"
+    cidr_blocks = [var.vpc_cidr]
+  }
+
+  egress {
+    description = "Allow all outbound"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${local.name_prefix}-app-sg"
+  }
+}
+
+# --- VPC flow logs (#1872) ---
+
+resource "aws_cloudwatch_log_group" "vpc_flow_logs" {
+  name              = "/aws/vpc/${local.name_prefix}-flow-logs"
+  retention_in_days = var.flow_log_retention_days
+
+  tags = {
+    Name = "${local.name_prefix}-vpc-flow-logs"
+  }
+}
+
+data "aws_iam_policy_document" "flow_log_assume_role" {
+  statement {
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["vpc-flow-logs.amazonaws.com"]
+    }
+
+    actions = ["sts:AssumeRole"]
+  }
+}
+
+data "aws_iam_policy_document" "flow_log_delivery" {
+  statement {
+    effect = "Allow"
+
+    actions = [
+      "logs:CreateLogStream",
+      "logs:PutLogEvents",
+      "logs:DescribeLogGroups",
+      "logs:DescribeLogStreams",
+    ]
+
+    resources = ["${aws_cloudwatch_log_group.vpc_flow_logs.arn}:*"]
+  }
+}
+
+resource "aws_iam_role" "flow_log" {
+  name               = "${local.name_prefix}-vpc-flow-log-role"
+  assume_role_policy = data.aws_iam_policy_document.flow_log_assume_role.json
+
+  tags = {
+    Name = "${local.name_prefix}-vpc-flow-log-role"
+  }
+}
+
+resource "aws_iam_role_policy" "flow_log" {
+  name   = "${local.name_prefix}-vpc-flow-log-policy"
+  role   = aws_iam_role.flow_log.id
+  policy = data.aws_iam_policy_document.flow_log_delivery.json
+}
+
+resource "aws_flow_log" "main" {
+  vpc_id                   = aws_vpc.main.id
+  traffic_type             = "ALL"
+  iam_role_arn             = aws_iam_role.flow_log.arn
+  log_destination_type     = "cloud-watch-logs"
+  log_destination          = aws_cloudwatch_log_group.vpc_flow_logs.arn
+  max_aggregation_interval = 60
+
+  tags = {
+    Name = "${local.name_prefix}-vpc-flow-log"
+  }
+}
+
+# --- VPC endpoints (#1872) ---
+
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id           = aws_vpc.main.id
+  service_name     = "com.amazonaws.${var.aws_region}.s3"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids  = [aws_route_table.private.id]
+
+  tags = {
+    Name = "${local.name_prefix}-s3-endpoint"
+  }
+}
+
+resource "aws_vpc_endpoint" "dynamodb" {
+  vpc_id           = aws_vpc.main.id
+  service_name     = "com.amazonaws.${var.aws_region}.dynamodb"
+  vpc_endpoint_type = "Gateway"
+  route_table_ids  = [aws_route_table.private.id]
+
+  tags = {
+    Name = "${local.name_prefix}-dynamodb-endpoint"
+  }
+}
+
+resource "aws_security_group" "vpc_endpoints" {
+  name        = "${local.name_prefix}-vpc-endpoints-sg"
+  description = "Allow HTTPS from the application security group to interface endpoints"
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description     = "HTTPS from application security group"
+    from_port       = 443
+    to_port         = 443
+    protocol        = "tcp"
+    security_groups = [aws_security_group.app.id]
+  }
+
+  tags = {
+    Name = "${local.name_prefix}-vpc-endpoints-sg"
+  }
+}
+
+locals {
+  interface_endpoints = {
+    ecr_api        = "ecr.api"
+    ecr_dkr        = "ecr.dkr"
+    logs           = "logs"
+    secretsmanager = "secretsmanager"
+  }
+}
+
+resource "aws_vpc_endpoint" "interface" {
+  for_each           = local.interface_endpoints
+  vpc_id             = aws_vpc.main.id
+  service_name       = "com.amazonaws.${var.aws_region}.${each.value}"
+  vpc_endpoint_type  = "Interface"
+  subnet_ids         = aws_subnet.private[*].id
+  security_group_ids = [aws_security_group.vpc_endpoints.id]
+  private_dns_enabled = true
+
+  tags = {
+    Name = "${local.name_prefix}-${each.key}-endpoint"
+  }
 }
