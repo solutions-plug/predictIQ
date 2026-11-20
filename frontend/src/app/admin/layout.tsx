@@ -1,128 +1,108 @@
-'use client';
+"use client";
 
-import { ReactNode, useCallback, useEffect, useState } from 'react';
-import Link from 'next/link';
-import { usePathname, useRouter } from 'next/navigation';
-import { Modal } from '@/components/Modal';
+import { useEffect, useState } from "react";
+import { resolveApiOrigin } from "@/lib/env";
 
-interface AdminLayoutProps {
-  children: ReactNode;
-}
+const STORAGE_KEY = "predictiq.admin.apiKey";
 
-interface RotateKeyResponse {
-  apiKey?: string;
-  key?: string;
-}
+/**
+ * Cheap authenticated endpoint used to validate the entered admin key.
+ * `GET /api/v1/admin/api-keys` requires ApiKeyAuth and returns a small payload,
+ * so a 2xx confirms the key is valid without mutating anything.
+ */
+const VALIDATION_PATH = "/api/v1/admin/api-keys";
 
-const ADMIN_NAV = [
-  { href: '/admin', label: 'Overview' },
-  { href: '/admin/users', label: 'Users' },
-  { href: '/admin/settings', label: 'Settings' },
-];
-
-export default function AdminLayout({ children }: AdminLayoutProps) {
-  const pathname = usePathname();
-  const router = useRouter();
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [rotating, setRotating] = useState(false);
+export default function AdminLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  const [apiKey, setApiKey] = useState<string>("");
+  const [unlocked, setUnlocked] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const [newKey, setNewKey] = useState<string | null>(null);
+  const [checking, setChecking] = useState<boolean>(false);
 
   useEffect(() => {
-    if (!newKey) return;
-    try {
-      sessionStorage.setItem('admin:apiKey', newKey);
-    } catch {
-      // sessionStorage may be unavailable; the key is still shown below.
-    }
-  }, [newKey]);
-
-  const rotateKey = useCallback(async () => {
-    setConfirmOpen(false);
-    setRotating(true);
-    setError(null);
-    try {
-      const res = await fetch('/api/admin/rotate-key', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ confirm: true }),
-      });
-      if (!res.ok) {
-        throw new Error(`Rotation failed (${res.status})`);
-      }
-      const data = (await res.json()) as RotateKeyResponse;
-      const issued = data.apiKey ?? data.key ?? null;
-      if (!issued) {
-        throw new Error('Rotation response did not include a key');
-      }
-      setNewKey(issued);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Rotation failed');
-    } finally {
-      setRotating(false);
+    const stored = window.localStorage.getItem(STORAGE_KEY);
+    if (stored) {
+      setApiKey(stored);
     }
   }, []);
 
-  return (
-    <div className="admin-layout">
-      <aside className="admin-sidebar">
-        <nav>
-          {ADMIN_NAV.map((item) => (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={pathname === item.href ? 'active' : undefined}
-            >
-              {item.label}
-            </Link>
-          ))}
-        </nav>
-        <button
-          type="button"
-          className="admin-rotate-key"
-          onClick={() => setConfirmOpen(true)}
-          disabled={rotating}
-        >
-          {rotating ? 'Rotating…' : 'Rotate API key'}
-        </button>
-      </aside>
+  async function handleUnlock(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    setChecking(true);
 
-      <main className="admin-content">
-        {error && (
-          <p role="alert" className="admin-error">
+    try {
+      const origin = resolveApiOrigin();
+      const response = await fetch(`${origin}${VALIDATION_PATH}`, {
+        method: "GET",
+        headers: {
+          "X-API-Key": apiKey,
+        },
+      });
+
+      if (!response.ok) {
+        setUnlocked(false);
+        setError(
+          response.status === 401
+            ? "Invalid API key. Please check the key and try again."
+            : `Key validation failed (HTTP ${response.status}). Please try again.`,
+        );
+        return;
+      }
+
+      window.localStorage.setItem(STORAGE_KEY, apiKey);
+      setUnlocked(true);
+    } catch (err) {
+      setUnlocked(false);
+      setError(
+        err instanceof Error
+          ? `Could not reach the API: ${err.message}`
+          : "Could not reach the API to validate the key.",
+      );
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  if (unlocked) {
+    return <>{children}</>;
+  }
+
+  return (
+    <div className="flex min-h-screen items-center justify-center p-6">
+      <form
+        onSubmit={handleUnlock}
+        className="w-full max-w-sm space-y-4 rounded-lg border p-6"
+      >
+        <h1 className="text-lg font-semibold">Admin access</h1>
+        <p className="text-sm text-gray-600">
+          Enter your admin API key to continue.
+        </p>
+        <input
+          type="password"
+          value={apiKey}
+          onChange={(e) => setApiKey(e.target.value)}
+          placeholder="API key"
+          autoComplete="off"
+          className="w-full rounded border px-3 py-2"
+          required
+        />
+        {error ? (
+          <p role="alert" className="text-sm text-red-600">
             {error}
           </p>
-        )}
-        {newKey && (
-          <div role="status" className="admin-new-key">
-            <p>Your new API key (shown once):</p>
-            <code>{newKey}</code>
-            <button type="button" onClick={() => setNewKey(null)}>
-              Dismiss
-            </button>
-          </div>
-        )}
-        {children}
-      </main>
-
-      <Modal
-        open={confirmOpen}
-        onClose={() => setConfirmOpen(false)}
-        title="Rotate API key?"
-      >
-        <p>
-          Rotating the API key immediately invalidates the current key and any
-          active sessions using it. This cannot be undone.
-        </p>
-        <div className="modal__actions">
-          <button type="button" onClick={() => setConfirmOpen(false)}>
-            Cancel
-          </button>
-          <button type="button" onClick={rotateKey}>
-            Rotate key
-          </button>
-        </div>
-      </Modal>
+        ) : null}
+        <button
+          type="submit"
+          disabled={checking || apiKey.length === 0}
+          className="w-full rounded bg-black px-3 py-2 text-white disabled:opacity-50"
+        >
+          {checking ? "Validating…" : "Unlock"}
+        </button>
+      </form>
     </div>
   );
 }

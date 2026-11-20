@@ -50,6 +50,15 @@ export function getEnvConfig(): EnvConfig {
   return env;
 }
 
+/**
+ * Resolve the API origin used for admin auth-gate validation.
+ * Falls back to the validated NEXT_PUBLIC_API_URL and strips any trailing
+ * slash so callers can safely append `/api/v1/...` paths.
+ */
+export function getApiOrigin(): string {
+  return env.NEXT_PUBLIC_API_URL.replace(/\/+$/, '');
+}
+
 // Validate once at module load so any import of this file fails fast —
 // on the server during `next build` this surfaces missing vars as a build error.
 export const env = validateEnvironment();

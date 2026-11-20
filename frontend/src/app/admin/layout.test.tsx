@@ -1,53 +1,57 @@
-import { render, screen, waitFor } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
-import AdminLayout from './layout';
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import AdminLayout from "./layout";
 
-describe('AdminLayout API key rotation', () => {
-  const originalFetch = global.fetch;
+jest.mock("@/lib/env", () => ({
+  resolveApiOrigin: () => "http://api.test",
+}));
 
-  afterEach(() => {
-    global.fetch = originalFetch;
+describe("AdminLayout auth gate", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
     jest.restoreAllMocks();
   });
 
-  it('does not send a rotate request when the operator cancels', async () => {
-    const fetchMock = jest.fn();
-    global.fetch = fetchMock as unknown as typeof fetch;
+  it("unlocks the admin UI when the key is valid", async () => {
+    const fetchMock = jest
+      .spyOn(global, "fetch")
+      .mockResolvedValue(new Response("{}", { status: 200 }));
 
-    render(<AdminLayout>{null}</AdminLayout>);
+    render(
+      <AdminLayout>
+        <div>admin content</div>
+      </AdminLayout>,
+    );
 
-    await userEvent.click(screen.getByRole('button', { name: /rotate/i }));
+    await userEvent.type(screen.getByPlaceholderText("API key"), "good-key");
+    await userEvent.click(screen.getByRole("button", { name: /unlock/i }));
 
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
-
-    await userEvent.click(screen.getByRole('button', { name: /cancel/i }));
-
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText("admin content")).toBeInTheDocument();
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://api.test/api/v1/admin/api-keys",
+      expect.objectContaining({ method: "GET" }),
+    );
   });
 
-  it('sends the rotate request with a body and shows the new key on confirm', async () => {
-    const newKey = 'sk_live_new_key_123';
-    const fetchMock = jest.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ key: newKey }),
+  it("keeps the gate closed and surfaces the reason when the key is invalid", async () => {
+    jest
+      .spyOn(global, "fetch")
+      .mockResolvedValue(new Response("{}", { status: 401 }));
+
+    render(
+      <AdminLayout>
+        <div>admin content</div>
+      </AdminLayout>,
+    );
+
+    await userEvent.type(screen.getByPlaceholderText("API key"), "bad-key");
+    await userEvent.click(screen.getByRole("button", { name: /unlock/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(/invalid api key/i);
     });
-    global.fetch = fetchMock as unknown as typeof fetch;
-
-    render(<AdminLayout>{null}</AdminLayout>);
-
-    await userEvent.click(screen.getByRole('button', { name: /rotate/i }));
-    await userEvent.click(screen.getByRole('button', { name: /confirm/i }));
-
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(String(url)).toMatch(/rotate/i);
-    expect(init).toBeDefined();
-    expect(init.method).toBe('POST');
-    expect(init.body).toBeDefined();
-    expect(JSON.parse(init.body)).toEqual({ confirm: true });
-
-    expect(await screen.findByText(newKey)).toBeInTheDocument();
+    expect(screen.queryByText("admin content")).not.toBeInTheDocument();
   });
 });
