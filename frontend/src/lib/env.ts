@@ -69,6 +69,16 @@ export function getApiUrl(path: string): string {
   return `${getApiOrigin()}${normalised}`;
 }
 
+/**
+ * Build the absolute API URL for a market dispute submission.
+ * Mirrors the real dispute route in services/api/openapi.yaml
+ * (`POST /api/v1/markets/{market_id}/disputes`) so the dispute flow never
+ * targets the nonexistent `/blockchain/markets/{id}/disputes` endpoint.
+ */
+export function getMarketDisputeUrl(marketId: string | number): string {
+  return getApiUrl(`/api/v1/markets/${encodeURIComponent(String(marketId))}/disputes`);
+}
+
 // Validate once at module load so any import of this file fails fast —
 // on the server during `next build` this surfaces missing vars as a build error.
 export const env = validateEnvironment();
