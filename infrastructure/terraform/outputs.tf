@@ -9,10 +9,40 @@ output "rds_endpoint" {
   sensitive   = true
 }
 
+output "rds_host" {
+  description = "RDS hostname (without credentials) for assembling the database connection URL"
+  value       = module.rds.host
+}
+
+output "rds_port" {
+  description = "RDS port for assembling the database connection URL"
+  value       = module.rds.port
+}
+
+output "rds_database_name" {
+  description = "RDS database name for assembling the database connection URL"
+  value       = module.rds.database_name
+}
+
+output "rds_username" {
+  description = "RDS master username for assembling the database connection URL"
+  value       = module.rds.username
+}
+
 output "redis_endpoint" {
   description = "Redis endpoint"
   value       = module.redis.endpoint
   sensitive   = true
+}
+
+output "redis_host" {
+  description = "Redis hostname (without credentials) for assembling the Redis connection URL"
+  value       = module.redis.host
+}
+
+output "redis_port" {
+  description = "Redis port for assembling the Redis connection URL"
+  value       = module.redis.port
 }
 
 output "redis_parameter_group_name" {

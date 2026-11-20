@@ -189,6 +189,47 @@ Terraform state is stored in S3 with:
 - DynamoDB table for state locking
 - Restricted IAM access
 
+## Connection Outputs
+
+Database and Redis connection details are exposed as **separate, non-sensitive outputs** so that passwords are never interpolated into URLs (and therefore never written to Terraform state or printed by output consumers).
+
+| Output | Description |
+|--------|-------------|
+| `database_host` | RDS instance hostname |
+| `database_port` | RDS instance port |
+| `database_name` | RDS database name |
+| `database_username` | RDS master username |
+| `redis_host` | ElastiCache primary endpoint hostname |
+| `redis_port` | ElastiCache port |
+
+Passwords are **not** emitted as outputs. Retrieve them from AWS Secrets Manager at runtime.
+
+### Assembling the connection URL
+
+Consumers should build the URL from the split outputs and inject the password from the secret store:
+
+```bash
+# PostgreSQL
+DB_HOST=$(terraform output -raw database_host)
+DB_PORT=$(terraform output -raw database_port)
+DB_NAME=$(terraform output -raw database_name)
+DB_USER=$(terraform output -raw database_username)
+DB_PASSWORD=$(aws secretsmanager get-secret-value \
+  --secret-id predictiq/database --query SecretString --output text)
+
+DATABASE_URL="postgresql://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
+
+# Redis
+REDIS_HOST=$(terraform output -raw redis_host)
+REDIS_PORT=$(terraform output -raw redis_port)
+REDIS_PASSWORD=$(aws secretsmanager get-secret-value \
+  --secret-id predictiq/redis --query SecretString --output text)
+
+REDIS_URL="redis://:${REDIS_PASSWORD}@${REDIS_HOST}:${REDIS_PORT}"
+```
+
+Any output that still carries a secret value is marked `sensitive = true` in `terraform/outputs.tf`; prefer the split outputs above over sensitive outputs wherever possible.
+
 ## Deployment Process
 
 1. Create feature branch for infrastructure changes
@@ -267,22 +308,4 @@ terraform fmt -recursive
 
 ## Support
 
-For infrastructure issues:
-1. Check CloudWatch logs
-2. Review Terraform state
-3. Consult ROLLBACK.md for recovery procedures
-4. Contact infrastructure team
-
-## References
-
-- [Terraform Documentation](https://www.terraform.io/docs)
-- [AWS Provider Documentation](https://registry.terraform.io/providers/hashicorp/aws/latest/docs)
-- [PredictIQ Architecture](../docs/ARCHITECTURE.md)
-
-## Redis TLS, alarms and autoscaling
-
-- ElastiCache enforces in-transit encryption; the module emits a `rediss://` URL and the API's `redis` crate is built with `tokio-rustls-comp`.
-- CloudWatch ALB alarms/dashboard use `aws_lb.main.arn_suffix` (passed into the monitoring module), not a wildcard.
-- Alarms cover ECS CPU/memory/running tasks, ALB 5xx/latency/unhealthy hosts, RDS CPU/storage/connections and Redis memory/evictions/replication lag; each description links its runbook in `docs/runbooks/`.
-- The ECS service autoscales on CPU and ALB request count per target between `api_min_count` and `api_max_count`.
-- `infrastructure/terraform/tests/check_invariants.sh` (run in the Terraform CI workflow) guards these.
+For infrastructure support, contact the platform team or open an issue in the repository.
