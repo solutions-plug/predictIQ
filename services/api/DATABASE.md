@@ -12,10 +12,16 @@ This service uses PostgreSQL. Schema and seed scripts are in:
 - `waitlist_entries`
 - `analytics_events`
 - `content_management`
-- `audit_logs` — general audit trail (UUID primary key)
-- `audit_log` — append-only admin-operation audit log (bigserial primary key)
+- `audit_log` — the single audit table; append-only admin-operation audit log (bigserial primary key)
 - `email_jobs` — async email queue tracking
 - `markets` — on-chain market mirror
+
+## Audit Logging
+
+`audit_log` is the only audit table. It is **append-only**: rows are inserted by
+admin operations and are never updated or soft-deleted. The former `audit_logs`
+table (UUID primary key, soft-deletable) was unused and has been removed; see the
+migration note below. GDPR logging tests target `audit_log`.
 
 ## Migration Files
 
@@ -28,7 +34,7 @@ This service uses PostgreSQL. Schema and seed scripts are in:
 | 004 | `004_create_waitlist_entries.sql` | `waitlist_entries` table |
 | 005 | `005_create_content_management.sql` | `content_management` table |
 | 006 | `006_create_analytics_events.sql` | `analytics_events` table |
-| 007 | `007_create_audit_logs.sql` | `audit_logs` table (UUID PK) |
+| 007 | `007_create_audit_logs.sql` | Legacy `audit_logs` table (UUID PK) — removed, see migration note |
 | 008 | `008_create_email_tracking.sql` | Email jobs, events, suppressions, templates, analytics |
 | 009 | `009_add_newsletter_indexes.sql` | Performance indexes on `newsletter_subscribers` |
 | 010a | `010_add_soft_delete_newsletter.sql` | Adds `deleted_at` to `newsletter_subscribers` |
@@ -44,6 +50,20 @@ This service uses PostgreSQL. Schema and seed scripts are in:
 
 > **Note:** Two migration files share the `010_` prefix. Apply them in lexicographic
 > order (`010_add_soft_delete_newsletter.sql` before `010_create_audit_log.sql`).
+
+### Migration note: removal of `audit_logs`
+
+The unused `audit_logs` table (created by `007_create_audit_logs.sql`) has been
+removed from `schema.sql`. No source code references it. Environments that already
+applied migration `007` may still have the table; drop it with:
+
+```sql
+DROP TABLE IF EXISTS audit_logs CASCADE;
+```
+
+This is safe because nothing reads or writes `audit_logs`; all audit writes go to
+`audit_log`. Do not edit migration `007` in place — its checksum is recorded in
+`schema_migrations` and editing it will prevent the service from starting.
 
 ## Migration Immutability Guarantee
 
@@ -168,58 +188,4 @@ Pool sizing and timeouts are fully env-configurable — no code changes needed f
 | `DB_POOL_MIN_CONNECTIONS` | `5` | Minimum idle connections kept open |
 | `DB_POOL_MAX_CONNECTIONS` | `25` | Maximum concurrent connections |
 | `DB_POOL_ACQUIRE_TIMEOUT_SECS` | `5` | Seconds to wait for a free connection before error |
-| `DB_POOL_IDLE_TIMEOUT_SECS` | _(sqlx default)_ | Seconds before idle connections are reaped (0 = disabled) |
-| `DB_POOL_MAX_LIFETIME_SECS` | _(sqlx default)_ | Max lifetime of a connection in seconds (0 = disabled) |
-| `DB_QUERY_TIMEOUT_SECS` | `30` | Per-query execution timeout; queries exceeding this return an error |
-
-**Sizing guidance:**
-- Small / dev: `DB_POOL_MIN_CONNECTIONS=2 DB_POOL_MAX_CONNECTIONS=5`
-- Medium: `DB_POOL_MIN_CONNECTIONS=5 DB_POOL_MAX_CONNECTIONS=25` (default)
-- Large / high-traffic: `DB_POOL_MIN_CONNECTIONS=10 DB_POOL_MAX_CONNECTIONS=100`
-
-Pool metrics are exposed on the `/metrics` Prometheus endpoint under the `db_pool_*` family.
-
-## Apply Migrations
-
-Run from the workspace root:
-
-```bash
-for f in services/api/database/migrations/*.sql; do
-  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
-done
-```
-
-Or use the provided script:
-
-```bash
-bash services/api/scripts/run_migrations.sh
-```
-
-## Seeding
-
-```bash
-for f in services/api/database/seeds/*.sql; do
-  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
-done
-```
-
-## Backup Strategy
-
-- Daily logical backups with `pg_dump`, 30-day retention.
-- Weekly full snapshot, 90-day retention.
-- Quarterly restore drills in staging.
-- Encrypt backup storage at rest.
-
-## Data Retention Policy
-
-- `analytics_events`: 13 months raw, then archive/aggregate.
-- `audit_logs` / `audit_log`: 24 months minimum for compliance.
-- `contact_form_submissions`: 12 months unless legal hold.
-- `newsletter_subscribers` / `waitlist_entries`: retain active records; hard-delete on GDPR request.
-
-## Notes
-
-- UUID primary keys via `gen_random_uuid()` (most tables); `audit_log` uses `BIGSERIAL`.
-- All tables include `created_at` / `updated_at` timestamps.
-- Soft deletes via `deleted_at` in `content_management`, `audit_logs`, `newsletter_subscribers`, and `markets`. All query helpers filter `WHERE deleted_at IS NULL` by default. Rows soft-deleted for more than 30 days are eligible for hard-deletion via the `cleanup_soft_deleted_markets()` database function.
-- Indexes on high-frequency query fields (`email`, `status`, `created_at`).
+| `DB_POOL_IDLE_TIMEOUT_SECS` | _(sqlx default)
