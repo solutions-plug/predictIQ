@@ -25,30 +25,42 @@ mod tests {
 
     // ── helpers ───────────────────────────────────────────────────────────────
 
-    fn cors_layer_from(cfg: &CorsConfig) -> CorsLayer {
+    fn cors_layer_from(cfg: &CorsConfig) -> Result<CorsLayer, String> {
         use axum::http::{HeaderName, HeaderValue, Method};
 
         if cfg.dev_mode {
-            return CorsLayer::permissive();
+            return Ok(CorsLayer::permissive());
         }
 
         let origins: Vec<HeaderValue> = cfg
             .allowed_origins
             .iter()
-            .filter_map(|o| o.parse().ok())
-            .collect();
+            .map(|o| {
+                o.parse().map_err(|_| {
+                    format!("invalid CORS allowed origin entry: {o:?}")
+                })
+            })
+            .collect::<Result<_, _>>()?;
 
         let methods: Vec<Method> = cfg
             .allowed_methods
             .iter()
-            .filter_map(|m| m.parse().ok())
-            .collect();
+            .map(|m| {
+                m.parse().map_err(|_| {
+                    format!("invalid CORS allowed method entry: {m:?}")
+                })
+            })
+            .collect::<Result<_, _>>()?;
 
         let headers: Vec<HeaderName> = cfg
             .allowed_headers
             .iter()
-            .filter_map(|h| h.parse().ok())
-            .collect();
+            .map(|h| {
+                h.parse().map_err(|_| {
+                    format!("invalid CORS allowed header entry: {h:?}")
+                })
+            })
+            .collect::<Result<_, _>>()?;
 
         let layer = CorsLayer::new()
             .allow_origin(origins)
@@ -57,16 +69,17 @@ mod tests {
             .max_age(Duration::from_secs(cfg.max_age_secs));
 
         if cfg.allow_credentials {
-            layer.allow_credentials(true)
+            Ok(layer.allow_credentials(true))
         } else {
-            layer
+            Ok(layer)
         }
     }
 
     fn app(cfg: &CorsConfig) -> Router {
+        let layer = cors_layer_from(cfg).expect("test config should produce a valid CORS layer");
         Router::new()
             .route("/api/data", get(|| async { "ok" }))
-            .layer(cors_layer_from(cfg))
+            .layer(layer)
     }
 
     fn default_cfg(origins: Vec<&str>) -> CorsConfig {
@@ -347,6 +360,65 @@ mod tests {
                 "expected ACAO={origin}, got {acao:?}"
             );
         }
+    }
+
+    // ── invalid entries ───────────────────────────────────────────────────────
+
+    #[test]
+    fn invalid_origin_entry_reports_error_naming_entry() {
+        let cfg = default_cfg(vec!["https://app.predictiq.com", "not a valid origin"]);
+        let err = cors_layer_from(&cfg).expect_err("invalid origin must fail");
+        assert!(
+            err.contains("not a valid origin"),
+            "error should name the offending origin entry, got: {err}"
+        );
+        assert!(
+            err.to_lowercase().contains("origin"),
+            "error should mention origins, got: {err}"
+        );
+    }
+
+    #[test]
+    fn invalid_method_entry_reports_error_naming_entry() {
+        let cfg = CorsConfig {
+            allowed_methods: vec!["GET".into(), "BAD METHOD".into()],
+            ..default_cfg(vec!["https://app.predictiq.com"])
+        };
+        let err = cors_layer_from(&cfg).expect_err("invalid method must fail");
+        assert!(
+            err.contains("BAD METHOD"),
+            "error should name the offending method entry, got: {err}"
+        );
+        assert!(
+            err.to_lowercase().contains("method"),
+            "error should mention methods, got: {err}"
+        );
+    }
+
+    #[test]
+    fn invalid_header_entry_reports_error_naming_entry() {
+        let cfg = CorsConfig {
+            allowed_headers: vec!["content-type".into(), "bad header".into()],
+            ..default_cfg(vec!["https://app.predictiq.com"])
+        };
+        let err = cors_layer_from(&cfg).expect_err("invalid header must fail");
+        assert!(
+            err.contains("bad header"),
+            "error should name the offending header entry, got: {err}"
+        );
+        assert!(
+            err.to_lowercase().contains("header"),
+            "error should mention headers, got: {err}"
+        );
+    }
+
+    #[test]
+    fn valid_configuration_builds_layer_successfully() {
+        let cfg = default_cfg(vec!["https://app.predictiq.com"]);
+        assert!(
+            cors_layer_from(&cfg).is_ok(),
+            "valid configuration must build a CORS layer"
+        );
     }
 
     // ── CorsConfig parsing ────────────────────────────────────────────────────
