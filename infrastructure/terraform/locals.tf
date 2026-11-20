@@ -23,4 +23,9 @@ locals {
     logs           = "com.amazonaws.${var.aws_region}.logs"
     secretsmanager = "com.amazonaws.${var.aws_region}.secretsmanager"
   }
+
+  # Redis connection URL (issue #1875). The ElastiCache cluster enforces
+  # in-transit encryption, so the scheme must be rediss:// (TLS) rather than
+  # the plaintext redis:// form. Assembled here so every consumer shares it.
+  redis_url = "rediss://${aws_elasticache_replication_group.redis.primary_endpoint_address}:${aws_elasticache_replication_group.redis.port}"
 }

@@ -17,6 +17,11 @@ provider "aws" {
 
 locals {
   name_prefix = "${var.project_name}-${var.environment}"
+
+  # Redis connection URL. The ElastiCache cluster enforces in-transit
+  # encryption, so the scheme must be rediss:// (TLS) rather than redis://.
+  # See issue #1875.
+  redis_url = "rediss://${var.redis_endpoint}:${var.redis_port}"
 }
 
 resource "aws_vpc" "main" {
@@ -371,83 +376,5 @@ resource "aws_wafv2_web_acl" "alb" {
 
   tags = {
     Name = "${local.name_prefix}-alb-waf"
-  }
-}
-
-# --- ECS container healthCheck (#1874) ---
-# Lightweight liveness path shared by the container healthCheck and the
-# target group health check. Must exist in services/api/src/main.rs routes.
-locals {
-  health_check_path = "/healthz"
-}
-
-resource "aws_lb_target_group" "app" {
-  name        = "${local.name_prefix}-tg"
-  port        = var.app_port
-  protocol    = "HTTP"
-  vpc_id      = aws_vpc.main.id
-  target_type = "ip"
-
-  health_check {
-    enabled             = true
-    protocol            = "HTTP"
-    path                = local.health_check_path
-    port                = "traffic-port"
-    matcher             = "200"
-    interval            = 10
-    timeout             = 5
-    healthy_threshold   = 2
-    unhealthy_threshold = 2
-  }
-
-  tags = {
-    Name = "${local.name_prefix}-tg"
-  }
-}
-
-resource "aws_ecs_task_definition" "app" {
-  family                   = "${local.name_prefix}-app"
-  requires_compatibilities = ["FARGATE"]
-  network_mode             = "awsvpc"
-  cpu                      = var.task_cpu
-  memory                   = var.task_memory
-  execution_role_arn       = aws_iam_role.task_execution.arn
-
-  container_definitions = jsonencode([
-    {
-      name      = "app"
-      image     = var.container_image
-      essential = true
-
-      portMappings = [
-        {
-          containerPort = var.app_port
-          protocol      = "tcp"
-        }
-      ]
-
-      # Dependency-free liveness probe (no curl/wget in the runtime image).
-      # Uses the same lightweight path as the target group health check.
-      healthCheck = {
-        command     = ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/${var.app_port} && printf 'GET ${local.health_check_path} HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -q ' 200 '"]
-        interval    = 10
-        timeout     = 5
-        retries     = 2
-        startPeriod = 30
-      }
-
-      logConfiguration = {
-        logDriver = "awslogs"
-        options = {
-          awslogs-group         = aws_cloudwatch_log_group.app.name
-          awslogs-region        = var.aws_region
-          awslogs-stream-prefix = "app"
-        }
-      }
-    }
-  ])
-
-  tags = {
-    Name = "${local.name_prefix}-app"
   }
 }
