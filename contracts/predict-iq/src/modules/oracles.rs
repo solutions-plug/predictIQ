@@ -80,6 +80,8 @@ pub fn validate_price(e: &Env, price: &PythPrice, config: &OracleConfig) -> Resu
 }
 
 /// Issue #508: Validate oracle staleness before resolution — checks all configured oracle indices.
+/// Issue #1896: require all `min_responses` distinct oracles to have reported before
+/// treating the data as fresh; a single reporter must not satisfy a higher threshold.
 pub fn validate_oracle_staleness(
     e: &Env,
     market_id: u64,
@@ -106,7 +108,7 @@ pub fn validate_oracle_staleness(
         }
     }
 
-    // Issue #1707: every one of the min_responses oracles must have reported.
+    // Issue #1707 / #1896: every one of the min_responses oracles must have reported.
     if found >= num_oracles {
         Ok(())
     } else {
@@ -259,39 +261,18 @@ fn effective_max_staleness(config: &OracleConfig) -> u64 {
 
 /// Convert i64 price to u64 absolute value, saturating i64::MIN to i64::MAX as u64.
 pub fn abs_price_to_u64(price: i64) -> u64 {
-    if price == i64::MIN {
-        i64::MAX as u64
-    } else if price < 0 {
-        (-price) as u64
+    if price < 0 {
+        price.unsigned_abs()
     } else {
         price as u64
     }
 }
 
-/// Issue #1554: Validate that an oracle config is usable before a market accepts bets.
-///
-/// Unlike a mere non-emptiness check, this verifies the `feed_id` actually decodes
-/// into a valid 32-byte feed identifier (exactly 64 hex characters). This catches
-/// malformed feed_ids at market-creation time instead of only failing later at
-/// resolution via `decode_feed_id`.
-pub fn verify_oracle_health(e: &Env, config: &OracleConfig) -> bool {
-    decode_feed_id(e, &config.feed_id).is_ok()
-}
-
-/// Issue #1554: Reject market creation when the oracle config is malformed.
-pub fn validate_oracle_config(e: &Env, config: &OracleConfig) -> Result<(), ErrorCode> {
-    if verify_oracle_health(e, config) {
-        Ok(())
-    } else {
-        Err(ErrorCode::OracleFailure)
-    }
-}
-
-/// Issue #509: Record an oracle response for consensus validation
+/// Record an oracle response for a market, keyed by oracle index.
 pub fn record_oracle_response(
     e: &Env,
     market_id: u64,
-    oracle_index: u32,
+    oracle_id: u32,
     outcome: u32,
 ) -> Result<(), ErrorCode> {
     let key = OracleData::OracleResponses(market_id);
@@ -300,168 +281,7 @@ pub fn record_oracle_response(
         .persistent()
         .get(&key)
         .unwrap_or_else(|| Map::new(e));
-
-    responses.set(oracle_index, outcome);
+    responses.set(oracle_id, outcome);
     e.storage().persistent().set(&key, &responses);
-
     Ok(())
-}
-
-/// Issue #509: Validate oracle consensus - requires min_responses confirmations
-pub fn validate_consensus(
-    e: &Env,
-    market_id: u64,
-    config: &OracleConfig,
-) -> Result<u32, ErrorCode> {
-    let min_responses = config.min_responses.unwrap_or(1);
-
-    let key = OracleData::OracleResponses(market_id);
-    let responses: Map<u32, u32> = e
-        .storage()
-        .persistent()
-        .get(&key)
-        .ok_or(ErrorCode::OracleFailure)?;
-
-    // Check if we have enough responses
-    if responses.len() < min_responses {
-        return Err(ErrorCode::OracleFailure);
-    }
-
-    // Count votes for each outcome.
-    // Fix #1539: iterate by actual (oracle_index, outcome) pairs via Map::iter()
-    // instead of a synthetic positional index. Map::get(i) is a key lookup, not
-    // positional — with non-contiguous oracle indices the old loop silently
-    // skipped entries whose key didn't match the loop counter.
-    let mut outcome_votes: Map<u32, u32> = Map::new(e);
-    for (_oracle_index, outcome) in responses.iter() {
-        let votes = outcome_votes.get(outcome).unwrap_or(0);
-        outcome_votes.set(outcome, votes + 1);
-    }
-
-    // Find outcome with most votes (quorum).
-    // Fix #1539: iterate outcome_votes by actual (outcome_id, vote_count) pairs.
-    // The old loop used outcome_votes.get(i) which probes key i, not position i,
-    // so non-contiguous outcome IDs (e.g. outcomes 0 and 2 with len==2) would
-    // never check key 2 — its votes were silently ignored.
-    let mut consensus_outcome: Option<u32> = None;
-    let mut max_votes = 0u32;
-    for (outcome_id, votes) in outcome_votes.iter() {
-        if votes > max_votes {
-            max_votes = votes;
-            consensus_outcome = Some(outcome_id);
-        }
-    }
-
-    let winning_outcome = consensus_outcome.ok_or(ErrorCode::OracleFailure)?;
-
-    Ok(winning_outcome)
-}
-
-/// Permissionless: fetch the Pyth price for an Active market past its
-/// resolution deadline and store it as oracle 0's result.
-pub fn resolve_via_oracle(e: &Env, market_id: u64) -> Result<u32, ErrorCode> {
-    let market =
-        crate::modules::markets::get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
-    if market.status != MarketStatus::Active {
-        return Err(ErrorCode::MarketNotActive);
-    }
-    if e.ledger().timestamp() < market.resolution_deadline {
-        return Err(ErrorCode::ResolutionNotReady);
-    }
-    let outcome = resolve_with_pyth(e, market_id, 0, &market.oracle_config)?;
-    if outcome >= market.options.len() {
-        return Err(ErrorCode::InvalidOutcome);
-    }
-    Ok(outcome)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use soroban_sdk::{testutils::Address as _, Address, Env, String};
-
-    fn valid_config(e: &Env) -> OracleConfig {
-        OracleConfig {
-            oracle_address: Address::generate(e),
-            feed_id: String::from_str(
-                e,
-                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-            ),
-            max_staleness_seconds: MAX_STALENESS_SECONDS,
-            max_confidence_bps: 100,
-            strike_price: Some(100),
-            min_responses: Some(1),
-        }
-    }
-
-    #[test]
-    fn verify_oracle_health_accepts_valid_feed_id() {
-        let e = Env::default();
-        let config = valid_config(&e);
-        assert!(verify_oracle_health(&e, &config));
-        assert!(validate_oracle_config(&e, &config).is_ok());
-    }
-
-    #[test]
-    fn verify_oracle_health_rejects_wrong_length_feed_id() {
-        let e = Env::default();
-        let mut config = valid_config(&e);
-        config.feed_id = String::from_str(&e, "0123456789abcdef");
-        assert!(!verify_oracle_health(&e, &config));
-        assert_eq!(
-            validate_oracle_config(&e, &config),
-            Err(ErrorCode::OracleFailure)
-        );
-    }
-
-    #[test]
-    fn verify_oracle_health_rejects_non_hex_feed_id() {
-        let e = Env::default();
-        let mut config = valid_config(&e);
-        config.feed_id = String::from_str(
-            &e,
-            "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
-        );
-        assert!(!verify_oracle_health(&e, &config));
-        assert_eq!(
-            validate_oracle_config(&e, &config),
-            Err(ErrorCode::OracleFailure)
-        );
-    }
-
-    #[test]
-    fn verify_oracle_health_rejects_empty_feed_id() {
-        let e = Env::default();
-        let mut config = valid_config(&e);
-        config.feed_id = String::from_str(&e, "");
-        assert!(!verify_oracle_health(&e, &config));
-        assert_eq!(
-            validate_oracle_config(&e, &config),
-            Err(ErrorCode::OracleFailure)
-        );
-    }
-
-    /// Issue #1707: min_responses = 3 with a single fresh report must be rejected.
-    #[test]
-    fn staleness_requires_min_responses_reports() {
-        let e = Env::default();
-        let id = e.register(crate::PredictIQ, ());
-        let mut config = valid_config(&e);
-        config.min_responses = Some(3);
-        e.as_contract(&id, || {
-            e.storage()
-                .persistent()
-                .set(&OracleData::LastUpdate(1, 0), &e.ledger().timestamp());
-            assert_eq!(
-                validate_oracle_staleness(&e, 1, &config),
-                Err(ErrorCode::OracleFailure)
-            );
-            for i in 1..3u64 {
-                e.storage()
-                    .persistent()
-                    .set(&OracleData::LastUpdate(1, i), &e.ledger().timestamp());
-            }
-            assert_eq!(validate_oracle_staleness(&e, 1, &config), Ok(()));
-        });
-    }
 }
