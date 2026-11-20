@@ -27,6 +27,50 @@ pages render a "not configured" message and disable the submit button rather
 than calling a nonexistent endpoint. See `.env.example` for examples.
 
 
+## Admin authentication flow
+
+The admin UI (`/admin/*`) is gated client-side by `AdminAuthGate` in
+[`src/app/admin/layout.tsx`](./src/app/admin/layout.tsx). The API key client
+lives in [`src/lib/api/admin-client.ts`](./src/lib/api/admin-client.ts).
+
+**Obtaining the key.** There is no username/password login. An operator pastes
+an admin API key into the password field shown by the gate.
+
+**Validation.** The gate validates the key by calling
+`GET /api/v1/admin/api-keys` (`api.listApiKeys(key)`), sending it as the
+`x-api-key` header. There is no separate session endpoint.
+
+**Storage.** On success the key is stored in `sessionStorage` under
+`predictiq-admin-key` (`ADMIN_KEY_STORAGE`). It is cleared when the tab closes
+or the operator clicks **Logout**. It is never put in `localStorage` or cookies.
+Subsequent admin requests read it from `sessionStorage` and attach it as
+`x-api-key`.
+
+**Missing key.** The gate renders the key form and no admin page content or
+navigation is mounted.
+
+**Invalid key.**
+
+| Situation | Behaviour |
+|---|---|
+| Submitted key rejected (401/403) | "Invalid API key. Please try again."; key not stored |
+| Validation fails for another reason (network, 5xx) | "Failed to validate API key. Please try again."; key not stored |
+| Stored key rejected on page load | Key removed from `sessionStorage`; "Session expired. Please log in again." |
+
+**Behavioural specification.**
+[`e2e/admin.spec.ts`](./e2e/admin.spec.ts) is the source of truth for how the
+API treats admin keys: a missing key or an invalid key must yield `401`. The
+suite requires `ADMIN_API_KEY` (or `ADMIN_KEY`) and fails loudly without it.
+
+**Divergence from the intended flow.** Issue #1757 reported that the gate
+called a nonexistent session endpoint and unlocked the UI without validating
+the key. The current layout validates against `/api/v1/admin/api-keys`, so
+that gap is closed in code. Remaining caveats: the gate is a client-side UX
+control only (real enforcement is the API's `x-api-key` check on every admin
+route), and `e2e/admin.spec.ts` exercises the API directly rather than driving
+the gate UI, so the gate's own invalid-key messages are not covered by an e2e
+test.
+
 ## Styling conventions (CSP-safe, no inline styles)
 
 ### Why: the CSP constraint
