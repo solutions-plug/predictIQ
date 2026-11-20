@@ -92,3 +92,53 @@ pub trait PythOracleInterface {
     /// * The latest price is older than `age_seconds`.
     fn get_price_no_older_than(env: Env, feed_id: BytesN<32>, age_seconds: u64) -> Price;
 }
+
+/// Compute `10^exp` using checked arithmetic.
+///
+/// Returns `None` if `exp` is negative or the result overflows `i128`.
+fn checked_pow10(exp: u32) -> Option<i128> {
+    let mut result: i128 = 1;
+    let mut i: u32 = 0;
+    while i < exp {
+        result = result.checked_mul(10)?;
+        i += 1;
+    }
+    Some(result)
+}
+
+/// Compare a Pyth [`Price`] against a `strike_price`, applying the Pyth exponent.
+///
+/// The raw `price.price` is scaled by `10^price.expo` before comparison.  Both
+/// sides are normalised to a common scale (the smaller of the two exponents) so
+/// that the comparison is exact and avoids overflow.  All arithmetic is checked;
+/// the function returns `None` if any intermediate value overflows `i128`.
+///
+/// Returns `Some(true)` when the scaled Pyth price is strictly greater than
+/// `strike_price`, `Some(false)` otherwise (including equality).
+///
+/// `strike_price` is interpreted with the same exponent as the Pyth price
+/// (`price.expo`), i.e. it is expressed in the feed's native units.
+pub fn price_above_strike(price: &Price, strike_price: i64) -> Option<bool> {
+    // Normalise both sides to a common scale.  We pick the smaller exponent so
+    // that neither side needs a fractional (negative-power) multiplier.
+    let pyth_exp = price.expo;
+    let strike_exp: i32 = 0;
+    let common_exp = if pyth_exp < strike_exp { pyth_exp } else { strike_exp };
+
+    // Scale factor applied to the Pyth raw price: 10^(pyth_exp - common_exp).
+    let pyth_shift = (pyth_exp as i64).checked_sub(common_exp as i64)?;
+    // Scale factor applied to the strike: 10^(strike_exp - common_exp).
+    let strike_shift = (strike_exp as i64).checked_sub(common_exp as i64)?;
+
+    if pyth_shift < 0 || strike_shift < 0 {
+        return None;
+    }
+
+    let pyth_factor = checked_pow10(pyth_shift as u32)?;
+    let strike_factor = checked_pow10(strike_shift as u32)?;
+
+    let scaled_pyth = (price.price as i128).checked_mul(pyth_factor)?;
+    let scaled_strike = (strike_price as i128).checked_mul(strike_factor)?;
+
+    Some(scaled_pyth > scaled_strike)
+}
