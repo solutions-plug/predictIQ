@@ -8,6 +8,9 @@ grep -q 'rediss://' modules/redis/main.tf || fail "redis_url must use rediss://"
 grep -q 'tokio-rustls-comp' ../../services/api/Cargo.toml || fail "redis crate TLS feature missing"
 ! grep -q 'alb/\*' modules/monitoring/main.tf || fail "wildcard LoadBalancer dimension"
 grep -q 'var.alb_arn_suffix' modules/monitoring/main.tf || fail "alarms must use alb_arn_suffix"
+# Reject any wildcard LoadBalancer dimension in alarm or dashboard definitions.
+! grep -Eq 'LoadBalancer[^\n]*"\*"' main.tf || fail "wildcard LoadBalancer dimension in main.tf"
+! grep -Eq 'LoadBalancer[^\n]*"\*"' modules/monitoring/main.tf || fail "wildcard LoadBalancer dimension in monitoring"
 for m in FreeStorageSpace DatabaseMemoryUsagePercentage Evictions ReplicationLag UnHealthyHostCount TargetResponseTime RunningTaskCount; do
   grep -q "$m" modules/monitoring/main.tf || fail "missing alarm for $m"
 done
