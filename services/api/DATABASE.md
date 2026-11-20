@@ -15,6 +15,7 @@ This service uses PostgreSQL. Schema and seed scripts are in:
 - `audit_log` — the single audit table; append-only admin-operation audit log (bigserial primary key)
 - `email_jobs` — async email queue tracking
 - `markets` — on-chain market mirror
+- `watched_transactions` — user watch records for on-chain transactions
 
 ## Audit Logging
 
@@ -47,6 +48,7 @@ migration note below. GDPR logging tests target `audit_log`.
 | 016 | `016_add_markets_deadline_index.sql` | Partial index for deadline-based active market queries |
 | 017 | `017_add_soft_delete_markets.sql` | Adds `deleted_at` to `markets` + cleanup function |
 | 018 | `018_add_varchar_constraints.sql` | CHECK constraints on user-supplied TEXT columns |
+| 019 | `019_create_watched_transactions.sql` | Canonical `watched_transactions` table (guarded, idempotent) |
 
 > **Note:** Two migration files share the `010_` prefix. Apply them in lexicographic
 > order (`010_add_soft_delete_newsletter.sql` before `010_create_audit_log.sql`).
@@ -64,6 +66,35 @@ DROP TABLE IF EXISTS audit_logs CASCADE;
 This is safe because nothing reads or writes `audit_logs`; all audit writes go to
 `audit_log`. Do not edit migration `007` in place — its checksum is recorded in
 `schema_migrations` and editing it will prevent the service from starting.
+
+### Migration note: `watched_transactions` (017 vs 019)
+
+Migrations `017` and `019` both created `watched_transactions` with different
+column sets, so the resulting schema depended on which migration ran and whether
+the table already existed (see issue #1747). This is resolved as follows:
+
+- **`019_create_watched_transactions.sql` is the canonical schema.** It uses
+  `CREATE TABLE IF NOT EXISTS` and guarded `ALTER TABLE ... ADD COLUMN IF NOT
+  EXISTS` statements, so it is idempotent and safe on databases that already
+  have the table (from either migration).
+- **`017` no longer creates the table.** Its `watched_transactions` DDL has been
+  reduced to a no-op so it cannot produce a divergent schema.
+
+Final `watched_transactions` column set (after all migrations):
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | `bigserial` | Primary key |
+| `user_id` | `uuid` | Owner of the watch record |
+| `tx_hash` | `text` | On-chain transaction hash |
+| `chain_id` | `bigint` | Chain the transaction belongs to |
+| `status` | `text` | Watch status (default `'pending'`) |
+| `created_at` | `timestamptz` | Default `now()` |
+| `updated_at` | `timestamptz` | Default `now()` |
+
+Applying all migrations to an empty database and to one that already has the
+old `watched_transactions` table both yield this same schema. Backfilling data
+into `watched_transactions` is out of scope.
 
 ## Migration Immutability Guarantee
 
@@ -122,6 +153,7 @@ exact changes made by their paired migration.
 | `016_add_markets_deadline_index.sql` | `rollbacks/016_add_markets_deadline_index_down.sql` |
 | `017_add_soft_delete_markets.sql` | `rollbacks/017_add_soft_delete_markets_down.sql` |
 | `018_add_varchar_constraints.sql` | `rollbacks/018_add_varchar_constraints_down.sql` |
+| `019_create_watched_transactions.sql` | `rollbacks/019_create_watched_transactions_down.sql` |
 
 ### Rolling back a single migration
 
@@ -153,7 +185,7 @@ done
 
 When rolling back multiple migrations, respect foreign-key dependencies:
 
-1. `018` → `017` → `016` → `015` → `014` → `013` → `012` → `011` → `010b` → `010a` → `009` → `008` → `007` → `006` → `005` → `004` → `003` → `002` → `001` → `000`
+1. `019` → `018` → `017` → `016` → `015` → `014` → `013` → `012` → `011` → `010b` → `010a` → `009` → `008` → `007` → `006` → `005` → `004` → `003` → `002` → `001` → `000`
 
 `analytics_events` (006) references `content_management` (005), and
 `audit_logs` (007) references several earlier tables — roll them back before
@@ -174,18 +206,6 @@ bash services/api/scripts/run_migrations.sh
 
 | File | Purpose |
 |---|---|
-| `performance_indexes.sql` | Source for the indexes now in `012_add_performance_indexes.sql`. Kept as a reference; do not apply manually. |
-| `newsletter_schema.sql` | Early draft of the `newsletter_subscribers` schema. Superseded by `002_create_newsletter_subscriptions.sql`. Do not apply manually. |
+| `performance_indexes.sql` | Source for the index
 
-> **Rule:** No schema-altering SQL should be applied from `sql/` directly. All schema changes must go through a numbered migration in `database/migrations/`.
-
-## Connection Pool Configuration
-
-Pool sizing and timeouts are fully env-configurable — no code changes needed for different deployment sizes.
-
-| Variable | Default | Description |
-|---|---|---|
-| `DB_POOL_MIN_CONNECTIONS` | `5` | Minimum idle connections kept open |
-| `DB_POOL_MAX_CONNECTIONS` | `25` | Maximum concurrent connections |
-| `DB_POOL_ACQUIRE_TIMEOUT_SECS` | `5` | Seconds to wait for a free connection before error |
-| `DB_POOL_IDLE_TIMEOUT_SECS` | _(sqlx default)
+/* … truncated 893 chars — edit only what you need near the top … */
