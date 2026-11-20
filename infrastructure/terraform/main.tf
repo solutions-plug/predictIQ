@@ -146,6 +146,53 @@ module "ecs" {
   otlp_endpoint         = var.otlp_endpoint
 }
 
+# ECS service autoscaling: target tracking on CPU and ALB request count.
+# Capacity bounds are configurable via api_min_count / api_max_count.
+resource "aws_appautoscaling_target" "ecs_api" {
+  service_namespace  = "ecs"
+  scalable_dimension = "ecs:service:DesiredCount"
+  resource_id        = "service/${module.ecs.cluster_name}/${module.ecs.service_name}"
+  min_capacity       = var.api_min_count
+  max_capacity       = var.api_max_count
+}
+
+resource "aws_appautoscaling_policy" "ecs_api_cpu" {
+  name               = "predictiq-${var.environment}-api-cpu-scaling"
+  policy_type        = "TargetTrackingScaling"
+  service_namespace  = aws_appautoscaling_target.ecs_api.service_namespace
+  resource_id        = aws_appautoscaling_target.ecs_api.resource_id
+  scalable_dimension = aws_appautoscaling_target.ecs_api.scalable_dimension
+
+  target_tracking_scaling_policy_configuration {
+    target_value       = var.api_cpu_target_utilization
+    scale_in_cooldown  = 300
+    scale_out_cooldown = 60
+
+    predefined_metric_specification {
+      predefined_metric_type = "ECSServiceAverageCPUUtilization"
+    }
+  }
+}
+
+resource "aws_appautoscaling_policy" "ecs_api_request_count" {
+  name               = "predictiq-${var.environment}-api-request-count-scaling"
+  policy_type        = "TargetTrackingScaling"
+  service_namespace  = aws_appautoscaling_target.ecs_api.service_namespace
+  resource_id        = aws_appautoscaling_target.ecs_api.resource_id
+  scalable_dimension = aws_appautoscaling_target.ecs_api.scalable_dimension
+
+  target_tracking_scaling_policy_configuration {
+    target_value       = var.api_request_count_target
+    scale_in_cooldown  = 300
+    scale_out_cooldown = 60
+
+    predefined_metric_specification {
+      predefined_metric_type = "ALBRequestCountPerTarget"
+      resource_label         = "${module.ecs.alb_arn_suffix}/${module.ecs.target_group_arn_suffix}"
+    }
+  }
+}
+
 module "monitoring" {
   source = "./modules/monitoring"
 

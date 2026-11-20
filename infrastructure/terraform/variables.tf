@@ -198,6 +198,33 @@ variable "api_max_count" {
   description = "Maximum API tasks for autoscaling"
   type        = number
   default     = 10
+
+  validation {
+    condition     = var.api_max_count >= var.api_min_count && var.api_max_count <= 100
+    error_message = "api_max_count must be >= api_min_count and <= 100."
+  }
+}
+
+variable "api_cpu_target_utilization" {
+  description = "Target average CPU utilization (percent) for ECS service autoscaling"
+  type        = number
+  default     = 70
+
+  validation {
+    condition     = var.api_cpu_target_utilization >= 1 && var.api_cpu_target_utilization <= 100
+    error_message = "api_cpu_target_utilization must be between 1 and 100."
+  }
+}
+
+variable "api_request_count_target" {
+  description = "Target ALBRequestCountPerTarget for ECS service autoscaling"
+  type        = number
+  default     = 1000
+
+  validation {
+    condition     = var.api_request_count_target >= 1
+    error_message = "api_request_count_target must be >= 1."
+  }
 }
 
 variable "rds_free_storage_alarm_bytes" {
@@ -272,77 +299,6 @@ variable "api_signing_key" {
   sensitive   = true
 
   validation {
-    condition     = length(var.api_signing_key) >= 32
-    error_message = "API signing key must be at least 32 characters."
-  }
-}
+    condition     = length(var.api_signin
 
-variable "app_env" {
-  description = "Runtime APP_ENV/RUST_ENV for the API (development, staging, production)"
-  type        = string
-  validation {
-    condition     = contains(["development", "staging", "production"], var.app_env)
-    error_message = "app_env must be one of: development, staging, production."
-  }
-}
-
-variable "base_url" {
-  description = "Public base URL of the API (BASE_URL)"
-  type        = string
-}
-
-variable "cors_allowed_origins" {
-  description = "Comma-separated CORS_ALLOWED_ORIGINS"
-  type        = string
-}
-
-variable "from_email" {
-  description = "Sender address (FROM_EMAIL)"
-  type        = string
-}
-
-variable "blockchain_rpc_url" {
-  description = "Soroban RPC URL (BLOCKCHAIN_RPC_URL)"
-  type        = string
-}
-
-variable "predictiq_contract_id" {
-  description = "Deployed contract ID (PREDICTIQ_CONTRACT_ID)"
-  type        = string
-}
-
-variable "api_keys" {
-  description = "Comma-separated API keys (API_KEYS). Stored in Secrets Manager."
-  type        = string
-  sensitive   = true
-}
-
-variable "unsubscribe_signing_secret" {
-  description = "UNSUBSCRIBE_SIGNING_SECRET. Stored in Secrets Manager."
-  type        = string
-  sensitive   = true
-}
-
-variable "sendgrid_webhook_secret" {
-  description = "SENDGRID_WEBHOOK_SECRET. Stored in Secrets Manager."
-  type        = string
-  sensitive   = true
-}
-
-variable "email_idempotency_secret" {
-  description = "EMAIL_IDEMPOTENCY_SECRET. Stored in Secrets Manager."
-  type        = string
-  sensitive   = true
-}
-
-variable "alert_email_endpoints" {
-  type        = list(string)
-  default     = []
-  description = "Email addresses subscribed to the alerts SNS topic."
-}
-
-variable "alert_https_endpoints" {
-  type        = list(string)
-  default     = []
-  description = "HTTPS endpoints (PagerDuty/Slack) subscribed to the alerts SNS topic."
-}
+/* … truncated 1912 chars — edit only what you need near the top … */
