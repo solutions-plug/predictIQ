@@ -45,7 +45,29 @@ This service uses PostgreSQL. Schema and seed scripts are in:
 > **Note:** Two migration files share the `010_` prefix. Apply them in lexicographic
 > order (`010_add_soft_delete_newsletter.sql` before `010_create_audit_log.sql`).
 
+## Migration Registry Check
+
+`scripts/check_migrations_registry.sh` verifies that the migration registry stays
+consistent with the files on disk. It checks that:
+
+- every migration file in `services/api/database/migrations/` is registered in
+  `services/api/src/migrations.rs`,
+- every migration has a matching rollback script in
+  `services/api/database/migrations/rollbacks/`,
+- there are no orphan rollback scripts without a corresponding migration,
+- there are no duplicate versions in the registry.
+
+CI runs this check on every pull request (see the migration registry job in
+`.github/workflows/test.yml`); a non-zero exit fails the job.
+
+Run it locally from the workspace root:
+
+```bash
+bash scripts/check_migrations_registry.sh
+```
+
 ## Migration Immutability Guarantee
+=======
 
 Migration files are embedded at compile time and their SHA-256 checksums are
 stored in `schema_migrations` when first applied. At every startup the

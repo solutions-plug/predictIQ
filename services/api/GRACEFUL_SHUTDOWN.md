@@ -127,15 +127,19 @@ Use the provided test scripts:
 
 ### Shutdown Flow
 
-1. Signal handler receives termination signal
-2. ShutdownCoordinator broadcasts shutdown signal to all workers
-3. Each worker:
+1. Signal handler receives termination signal and signals the main task (it does not drain workers itself)
+2. HTTP server stops accepting new connections
+3. ShutdownCoordinator broadcasts shutdown signal to all workers (draining begins only after the server has stopped)
+4. Each worker:
    - Receives shutdown signal via broadcast channel
    - Completes current operation or saves state
    - Reports completion to coordinator
-4. Coordinator waits for all workers with timeout
-5. HTTP server stops accepting new connections
+5. Coordinator waits for all workers with timeout
 6. Application exits
+
+This ordering ensures that in-flight requests can still enqueue work while the server is
+accepting connections; workers are only drained once the server has stopped accepting new
+requests, so no worker receives work after draining starts.
 
 ### Error Handling
 

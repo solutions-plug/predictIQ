@@ -13,17 +13,21 @@ The `/webhooks/sendgrid` endpoint receives and processes email delivery status e
 
 ## Authentication: Cryptographic Signatures
 
-SendGrid signs every webhook request with an HMAC-SHA256 signature. The signature is verified by the `sendgrid_webhook_middleware` before the request reaches the handler.
+SendGrid signs every webhook request with an **ECDSA P-256** signature over the raw event payload. The signature is verified by the `sendgrid_webhook_middleware` before the request reaches the handler.
 
 **Configuration:**
-- `SENDGRID_WEBHOOK_SECRET`: SendGrid's Signed Event Webhook **public key** (base64 DER, ECDSA P-256). Must be set in production. HMAC-SHA256 with a shared secret is accepted only outside production, for local testing.
+- `SENDGRID_WEBHOOK_SECRET`: SendGrid's Signed Event Webhook **public key** (base64 DER, ECDSA P-256), supplied via configuration. It is never hard-coded in the source. Must be set in production.
 - Signature is in the `X-Twilio-Email-Event-Webhook-Signature` header
 - Verification happens in `security::sendgrid_webhook_middleware` before body parsing
 
 **Production Requirements:**
-- Must match the key configured in the SendGrid dashboard
-- Mismatched secrets cause all webhook requests to be rejected with HTTP 403
-- If not set, all webhook requests are rejected (safe default)
+- Must match the public key configured in the SendGrid dashboard
+- Requests with a missing signature are rejected with HTTP 4xx
+- Requests with an invalid or tampered signature are rejected with HTTP 4xx
+- If the public key is not configured, all webhook requests are rejected (safe default)
+
+**Local Testing Fallback:**
+- Outside production only, an HMAC-SHA256 shared secret may be used instead of ECDSA verification, to simplify local testing. This fallback is never used in production.
 
 ## Replay Protection: Two-Stage Deduplication
 
@@ -89,10 +93,10 @@ Provides fallback deduplication if:
 | Variable | Default | Purpose |
 |---|---|---|
 | `WEBHOOK_REPLAY_WINDOW_SECS` | `300` | Duration (seconds) that Redis nonces are retained |
-| `SENDGRID_WEBHOOK_SECRET` | (required) | SendGrid ECDSA public key (base64 DER) for signature verification |
+| `SENDGRID_WEBHOOK_SECRET` | (required) | SendGrid ECDSA P-256 public key (base64 DER) for signature verification; HMAC shared secret only outside production |
 
 **Production Checklist:**
-- [ ] `SENDGRID_WEBHOOK_SECRET` is set and matches the SendGrid dashboard
+- [ ] `SENDGRID_WEBHOOK_SECRET` is set to the ECDSA public key and matches the SendGrid dashboard
 - [ ] `WEBHOOK_REPLAY_WINDOW_SECS` is appropriate for your retry policy (default 5 min)
 - [ ] Redis is configured with data persistence or high availability
 - [ ] Database backups are in place (email_events table contains audit trail)
@@ -167,7 +171,7 @@ See `services/api/src/email/webhook.rs` for comprehensive test coverage:
 
 To test replay protection in a live environment:
 
-1. Send a webhook POST to `/webhooks/sendgrid` with a valid SendGrid signature
+1. Send a webhook POST to `/webhooks/sendgrid` with a valid SendGrid ECDSA signature
 2. Verify the event is processed (check DB and logs)
 3. Send the *exact same request* again immediately
 4. Verify the duplicate is rejected (check logs for "Replay attack detected")
@@ -175,13 +179,20 @@ To test replay protection in a live environment:
 6. Send the same request again
 7. Verify the DB secondary guard rejects it (check logs for "Duplicate event detected (DB)")
 
+**Signature Verification Tests:**
+
+See `services/api/tests/security_tests.rs` for coverage of:
+- A correctly signed SendGrid payload is accepted
+- A tampered payload (valid signature over different content) is rejected with 4xx
+- An unsigned payload (missing signature header) is rejected with 4xx
+
 ## Incident Response
 
 **If replay attacks are detected:**
 
 1. Check logs for `"Replay attack detected (Redis nonce)"` entries
-2. Verify the attacker is not forging valid SendGrid signatures (check `X-Twilio-Email-Event-Webhook-Signature` in access logs)
-3. If signatures are invalid, rotate `SENDGRID_WEBHOOK_SECRET` immediately
+2. Verify the attacker is not forging valid SendGrid ECDSA signatures (check `X-Twilio-Email-Event-Webhook-Signature` in access logs)
+3. If signatures are invalid, verify `SENDGRID_WEBHOOK_SECRET` still matches the SendGrid dashboard public key
 4. Monitor metrics for spike in replay attempts
 
 **If deduplication fails (same event processed twice):**
@@ -193,7 +204,7 @@ To test replay protection in a live environment:
 
 **If webhooks stop being processed:**
 
-1. Verify `SENDGRID_WEBHOOK_SECRET` matches the dashboard value
+1. Verify `SENDGRID_WEBHOOK_SECRET` matches the dashboard ECDSA public key
 2. Check Redis connectivity (admin endpoint logs)
 3. Check database connectivity (admin endpoint logs)
 4. Verify `/metrics` shows non-zero `sendgrid_webhook_*` counters
