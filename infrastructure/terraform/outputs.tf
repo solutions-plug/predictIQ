@@ -29,3 +29,8 @@ output "alb_dns_name" {
   description = "ALB DNS name"
   value       = module.ecs.alb_dns_name
 }
+
+output "alb_access_log_bucket_name" {
+  description = "S3 bucket name receiving ALB access logs"
+  value       = aws_s3_bucket.alb_access_logs.bucket
+}
