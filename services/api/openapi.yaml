@@ -116,6 +116,10 @@ paths:
       tags: [newsletter]
       operationId: newsletterGdprRequestToken
       summary: Request a GDPR verification token by email
+      description: |
+        Sends a short-lived verification token to the supplied address. The token
+        is required by the GDPR export and delete endpoints. The response is the
+        same whether or not the address is subscribed, to avoid leaking membership.
       requestBody:
         required: true
         content:
@@ -128,11 +132,42 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AnyObject"
+                $ref: "#/components/schemas/NewsletterResponse"
         "400":
           $ref: "#/components/responses/NewsletterResponse"
         "429":
           $ref: "#/components/responses/NewsletterResponse"
+        "500":
+          $ref: "#/components/responses/ApiError"
+
+  /api/v1/newsletter/gdpr/request-token/verify:
+    get:
+      tags: [newsletter]
+      operationId: newsletterGdprVerifyToken
+      summary: Verify a GDPR request token
+      description: |
+        Validates a GDPR verification token issued by
+        `POST /api/v1/newsletter/gdpr/request-token`. Returns whether the token is
+        currently valid and the email address it was issued for.
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Token verification result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GdprTokenVerification"
+        "400":
+          $ref: "#/components/responses/NewsletterResponse"
+        "404":
+          $ref: "#/components/responses/NewsletterResponse"
+        "500":
+          $ref: "#/components/responses/ApiError"
 
   /api/v1/admin/api-keys:
     get:
@@ -147,7 +182,34 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AnyObject"
+                type: array
+                items:
+                  $ref: "#/components/schemas/ApiKeyView"
+        "401":
+          $ref: "#/components/responses/ApiError"
+        "500":
+          $ref: "#/components/responses/ApiError"
+    post:
+      tags: [audit]
+      operationId: createApiKey
+      summary: Create a new API key (admin)
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateApiKeyRequest"
+      responses:
+        "201":
+          description: Key created; the plaintext secret is returned only once
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiKeySecret"
+        "400":
+          $ref: "#/components/responses/ApiError"
         "401":
           $ref: "#/components/responses/ApiError"
         "500":
@@ -165,36 +227,60 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/AnyObject"
+              $ref: "#/components/schemas/RotateApiKeyRequest"
       responses:
         "201":
           description: New key issued
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AnyObject"
+                $ref: "#/components/schemas/ApiKeySecret"
+        "400":
+          $ref: "#/components/responses/ApiError"
         "401":
+          $ref: "#/components/responses/ApiError"
+        "404":
           $ref: "#/components/responses/ApiError"
         "500":
           $ref: "#/components/responses/ApiError"
 
   /api/v1/admin/api-keys/{id}:
+    get:
+      tags: [audit]
+      operationId: getApiKey
+      summary: Retrieve a single API key's metadata (admin)
+      security:
+        - ApiKeyAuth: []
+      parameters:
+        - $ref: "#/components/parameters/apiKeyId"
+      responses:
+        "200":
+          description: API key metadata (never includes the secret)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiKeyView"
+        "401":
+          $ref: "#/components/responses/ApiError"
+        "404":
+          $ref: "#/components/responses/ApiError"
+        "500":
+          $ref: "#/components/responses/ApiError"
     delete:
       tags: [audit]
       operationId: revokeApiKey
       summary: Revoke an API key immediately (admin)
+      description: |
+        Sets `revoked_at` on the target key. Once revoked, any request presenting
+        the key is rejected with `401 Unauthorized` by the authentication layer.
+        Revocation is idempotent: revoking an already-revoked key succeeds.
       security:
         - ApiKeyAuth: []
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
+        - $ref: "#/components/parameters/apiKeyId"
       responses:
         "204":
-          description: Key revoked
+          description: Key revoked (or already revoked)
         "401":
           $ref: "#/components/responses/ApiError"
         "404":
@@ -1049,6 +1135,14 @@ components:
         minimum: 1
         maximum: 100
         default: 20
+    apiKeyId:
+      name: id
+      in: path
+      required: true
+      description: API key identifier
+      schema:
+        type: string
+        format: uuid
 
   schemas:
     AnyObject:
@@ -1163,6 +1257,97 @@ components:
           type: boolean
         data:
           $ref: "#/components/schemas/AnyObject"
+
+    GdprTokenVerification:
+      type: object
+      required: [valid]
+      properties:
+        valid:
+          type: boolean
+          description: Whether the token is currently valid and unexpired
+        email:
+          type: string
+          format: email
+          nullable: true
+          description: Address the token was issued for, when valid
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Expiry timestamp of the token, when valid
+
+    ApiKeyView:
+      type: object
+      required: [id, name, created_at, revoked_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          description: Human-readable label for the key
+        created_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type: string
+          format: date-time
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Set when the key has been revoked; revoked keys are rejected on authentication
+
+    ApiKeySecret:
+      type: object
+      required: [id, name, key, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        key:
+          type: string
+          description: Plaintext API key secret. Returned only once, at creation or rotation.
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    CreateApiKeyRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          maxLength: 128
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    RotateApiKeyRequest:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Identifier of the key to rotate
+        overlap_seconds:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Window during which the old key remains valid alongside the new one
 
     EmailTestRequest:
       type: object
