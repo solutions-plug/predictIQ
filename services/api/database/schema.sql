@@ -196,21 +196,34 @@ CREATE TABLE IF NOT EXISTS public.email_analytics (
     CONSTRAINT email_analytics_template_name_variant_name_date_key UNIQUE (template_name, variant_name, date)
 );
 
--- migration 017: durable chain event store (issue #1892)
-CREATE TABLE IF NOT EXISTS public.chain_events (
-    id              uuid         NOT NULL DEFAULT gen_random_uuid(),
-    contract_id     varchar(120) NOT NULL,
-    event_type      varchar(120) NOT NULL,
-    transaction_hash varchar(128) NOT NULL,
-    log_index       integer      NOT NULL DEFAULT 0,
-    ledger          bigint,
-    payload         jsonb        NOT NULL DEFAULT '{}'::jsonb,
-    occurred_at     timestamptz  NOT NULL DEFAULT now(),
-    created_at      timestamptz  NOT NULL DEFAULT now(),
-    updated_at      timestamptz  NOT NULL DEFAULT now(),
-    CONSTRAINT chain_events_pkey PRIMARY KEY (id),
-    CONSTRAINT chain_events_identity_key UNIQUE (transaction_hash, log_index)
+-- migration 016: markets table with consistency constraints
+-- Invariants mirror contracts/predict-iq/INVARIANTS.md for stored market state.
+CREATE TABLE IF NOT EXISTS public.markets (
+    id                  uuid         NOT NULL DEFAULT gen_random_uuid(),
+    on_chain_market_id  varchar(120) NOT NULL,
+    question            text         NOT NULL,
+    outcome_count       integer      NOT NULL,
+    status              varchar(50)  NOT NULL DEFAULT 'open',
+    winning_outcome     integer,
+    resolved_at         timestamptz,
+    created_at          timestamptz  NOT NULL DEFAULT now(),
+    updated_at          timestamptz  NOT NULL DEFAULT now(),
+    CONSTRAINT markets_pkey PRIMARY KEY (id),
+    -- Uniqueness: each on-chain market is persisted at most once.
+    CONSTRAINT markets_on_chain_market_id_key UNIQUE (on_chain_market_id),
+    -- Outcome count: a market must offer at least two outcomes.
+    CONSTRAINT markets_outcome_count_check CHECK (outcome_count >= 2),
+    -- Status domain: only the contract's lifecycle states are storable.
+    CONSTRAINT markets_status_check CHECK (status IN ('open', 'closed', 'resolved')),
+    -- Winning outcome: must reference a valid outcome index when set.
+    CONSTRAINT markets_winning_outcome_check CHECK (
+        winning_outcome IS NULL
+        OR (winning_outcome >= 0 AND winning_outcome < outcome_count)
+    ),
+    -- Status transitions: only resolved markets carry a winning outcome and
+    -- a resolution timestamp; unresolved markets must not.
+    CONSTRAINT markets_resolution_consistency_check CHECK (
+        (status = 'resolved' AND winning_outcome IS NOT NULL AND resolved_at IS NOT NULL)
+        OR (status <> 'resolved' AND winning_outcome IS NULL AND resolved_at IS NULL)
+    )
 );
-
-CREATE INDEX IF NOT EXISTS chain_events_contract_id_idx ON public.chain_events (contract_id);
-CREATE INDEX IF NOT EXISTS chain_events_event_type_idx  ON public.chain_events (event_type);
