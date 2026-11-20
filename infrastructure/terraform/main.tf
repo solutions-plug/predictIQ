@@ -224,3 +224,184 @@ resource "aws_sns_topic_subscription" "alerts" {
 
   depends_on = [module.monitoring]
 }
+
+# ---------------------------------------------------------------------------
+# CloudWatch alarms for RDS, Redis, ALB and ECS task count (issue #1871).
+# Each alarm publishes to the existing alerts SNS topic and uses concrete
+# resource dimensions (DB identifier, cache cluster id, ALB/target group
+# suffixes, cluster/service name) rather than wildcards. Thresholds follow the
+# SLO targets in performance/config/slo.json and the matching runbooks under
+# docs/runbooks/.
+# ---------------------------------------------------------------------------
+
+# RDS: CPU utilisation (slow-database-queries runbook)
+resource "aws_cloudwatch_metric_alarm" "rds_cpu" {
+  alarm_name          = "predictiq-${var.environment}-rds-cpu-high"
+  alarm_description   = "RDS CPU utilisation above threshold; see docs/runbooks/slow-database-queries.md"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 3
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/RDS"
+  period              = 300
+  statistic           = "Average"
+  threshold           = var.rds_cpu_alarm_percent
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    DBInstanceIdentifier = module.rds.instance_id
+  }
+
+  alarm_actions = [module.monitoring.alerts_topic_arn]
+  ok_actions    = [module.monitoring.alerts_topic_arn]
+}
+
+# RDS: free storage space (slow-database-queries runbook)
+resource "aws_cloudwatch_metric_alarm" "rds_free_storage" {
+  alarm_name          = "predictiq-${var.environment}-rds-free-storage-low"
+  alarm_description   = "RDS free storage space below threshold; see docs/runbooks/slow-database-queries.md"
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "FreeStorageSpace"
+  namespace           = "AWS/RDS"
+  period              = 300
+  statistic           = "Average"
+  threshold           = var.rds_free_storage_alarm_bytes
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    DBInstanceIdentifier = module.rds.instance_id
+  }
+
+  alarm_actions = [module.monitoring.alerts_topic_arn]
+  ok_actions    = [module.monitoring.alerts_topic_arn]
+}
+
+# RDS: database connections (slow-database-queries runbook)
+resource "aws_cloudwatch_metric_alarm" "rds_connections" {
+  alarm_name          = "predictiq-${var.environment}-rds-connections-high"
+  alarm_description   = "RDS database connection count above threshold; see docs/runbooks/slow-database-queries.md"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 3
+  metric_name         = "DatabaseConnections"
+  namespace           = "AWS/RDS"
+  period              = 300
+  statistic           = "Average"
+  threshold           = var.rds_connections_alarm_count
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    DBInstanceIdentifier = module.rds.instance_id
+  }
+
+  alarm_actions = [module.monitoring.alerts_topic_arn]
+  ok_actions    = [module.monitoring.alerts_topic_arn]
+}
+
+# Redis: memory usage (redis-failure runbook)
+resource "aws_cloudwatch_metric_alarm" "redis_memory" {
+  alarm_name          = "predictiq-${var.environment}-redis-memory-high"
+  alarm_description   = "Redis memory usage above threshold; see docs/runbooks/redis-failure.md"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 3
+  metric_name         = "DatabaseMemoryUsagePercentage"
+  namespace           = "AWS/ElastiCache"
+  period              = 300
+  statistic           = "Average"
+  threshold           = var.redis_memory_alarm_percent
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    CacheClusterId = module.redis.replication_group_id
+  }
+
+  alarm_actions = [module.monitoring.alerts_topic_arn]
+  ok_actions    = [module.monitoring.alerts_topic_arn]
+}
+
+# Redis: evictions (redis-failure runbook)
+resource "aws_cloudwatch_metric_alarm" "redis_evictions" {
+  alarm_name          = "predictiq-${var.environment}-redis-evictions"
+  alarm_description   = "Redis key evictions detected; see docs/runbooks/redis-failure.md"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "Evictions"
+  namespace           = "AWS/ElastiCache"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = var.redis_evictions_alarm_count
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    CacheClusterId = module.redis.replication_group_id
+  }
+
+  alarm_actions = [module.monitoring.alerts_topic_arn]
+  ok_actions    = [module.monitoring.alerts_topic_arn]
+}
+
+# ALB: target response time (high-api-response-time runbook)
+resource "aws_cloudwatch_metric_alarm" "alb_target_response_time" {
+  alarm_name          = "predictiq-${var.environment}-alb-target-response-time-high"
+  alarm_description   = "ALB target response time above threshold; see docs/runbooks/high-api-response-time.md"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 3
+  metric_name         = "TargetResponseTime"
+  namespace           = "AWS/ApplicationELB"
+  period              = 300
+  statistic           = "Average"
+  threshold           = var.alb_latency_alarm_seconds
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    LoadBalancer = module.ecs.alb_arn_suffix
+    TargetGroup  = module.ecs.target_group_arn_suffix
+  }
+
+  alarm_actions = [module.monitoring.alerts_topic_arn]
+  ok_actions    = [module.monitoring.alerts_topic_arn]
+}
+
+# ALB: target 5xx count (high-api-response-time runbook)
+resource "aws_cloudwatch_metric_alarm" "alb_target_5xx" {
+  alarm_name          = "predictiq-${var.environment}-alb-target-5xx-high"
+  alarm_description   = "ALB target 5xx responses above threshold; see docs/runbooks/high-api-response-time.md"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "HTTPCode_Target_5XX_Count"
+  namespace           = "AWS/ApplicationELB"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = var.alb_5xx_alarm_count
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    LoadBalancer = module.ecs.alb_arn_suffix
+    TargetGroup  = module.ecs.target_group_arn_suffix
+  }
+
+  alarm_actions = [module.monitoring.alerts_topic_arn]
+  ok_actions    = [module.monitoring.alerts_topic_arn]
+}
+
+# ECS: running task count compared against the desired count
+# (ecs-task-crash-loop runbook)
+resource "aws_cloudwatch_metric_alarm" "ecs_running_task_count" {
+  alarm_name          = "predictiq-${var.environment}-ecs-running-task-count-low"
+  alarm_description   = "ECS running task count below desired count; see docs/runbooks/ecs-task-crash-loop.md"
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "RunningTaskCount"
+  namespace           = "ECS/ContainerInsights"
+  period              = 60
+  statistic           = "Average"
+  threshold           = var.api_desired_count
+  treat_missing_data  = "breaching"
+
+  dimensions = {
+    ClusterName = module.ecs.cluster_name
+    ServiceName = module.ecs.service_name
+  }
+
+  alarm_actions = [module.monitoring.alerts_topic_arn]
+  ok_actions    = [module.monitoring.alerts_topic_arn]
+}
