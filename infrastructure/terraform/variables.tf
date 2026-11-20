@@ -277,72 +277,79 @@ variable "api_signing_key" {
   }
 }
 
-variable "app_env" {
-  description = "Runtime APP_ENV/RUST_ENV for the API (development, staging, production)"
+variable "jwt_secret" {
+  description = "Secret used to sign and verify JWT access tokens. Stored in AWS Secrets Manager."
   type        = string
+  sensitive   = true
+
   validation {
-    condition     = contains(["development", "staging", "production"], var.app_env)
-    error_message = "app_env must be one of: development, staging, production."
+    condition     = length(var.jwt_secret) >= 32
+    error_message = "JWT secret must be at least 32 characters."
   }
 }
 
-variable "base_url" {
-  description = "Public base URL of the API (BASE_URL)"
-  type        = string
-}
-
-variable "cors_allowed_origins" {
-  description = "Comma-separated CORS_ALLOWED_ORIGINS"
-  type        = string
-}
-
-variable "from_email" {
-  description = "Sender address (FROM_EMAIL)"
-  type        = string
-}
-
-variable "blockchain_rpc_url" {
-  description = "Soroban RPC URL (BLOCKCHAIN_RPC_URL)"
-  type        = string
-}
-
-variable "predictiq_contract_id" {
-  description = "Deployed contract ID (PREDICTIQ_CONTRACT_ID)"
-  type        = string
-}
-
-variable "api_keys" {
-  description = "Comma-separated API keys (API_KEYS). Stored in Secrets Manager."
+variable "encryption_key" {
+  description = "Symmetric key used to encrypt sensitive data at rest. Stored in AWS Secrets Manager."
   type        = string
   sensitive   = true
+
+  validation {
+    condition     = length(var.encryption_key) >= 32
+    error_message = "Encryption key must be at least 32 characters."
+  }
 }
 
-variable "unsubscribe_signing_secret" {
-  description = "UNSUBSCRIBE_SIGNING_SECRET. Stored in Secrets Manager."
+variable "stripe_secret_key" {
+  description = "Stripe secret API key for payment processing. Stored in AWS Secrets Manager."
   type        = string
   sensitive   = true
+
+  validation {
+    condition     = can(regex("^sk_", var.stripe_secret_key))
+    error_message = "Stripe secret key must start with 'sk_'."
+  }
 }
 
-variable "sendgrid_webhook_secret" {
-  description = "SENDGRID_WEBHOOK_SECRET. Stored in Secrets Manager."
+variable "stripe_webhook_secret" {
+  description = "Stripe webhook signing secret. Stored in AWS Secrets Manager."
   type        = string
   sensitive   = true
+
+  validation {
+    condition     = can(regex("^whsec_", var.stripe_webhook_secret))
+    error_message = "Stripe webhook secret must start with 'whsec_'."
+  }
 }
 
-variable "email_idempotency_secret" {
-  description = "EMAIL_IDEMPOTENCY_SECRET. Stored in Secrets Manager."
+variable "smtp_password" {
+  description = "SMTP password for outbound email. Stored in AWS Secrets Manager."
   type        = string
   sensitive   = true
+
+  validation {
+    condition     = length(var.smtp_password) >= 8
+    error_message = "SMTP password must be at least 8 characters."
+  }
 }
 
-variable "alert_email_endpoints" {
-  type        = list(string)
-  default     = []
-  description = "Email addresses subscribed to the alerts SNS topic."
+variable "oauth_client_secret" {
+  description = "OAuth client secret for third-party identity providers. Stored in AWS Secrets Manager."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(var.oauth_client_secret) >= 16
+    error_message = "OAuth client secret must be at least 16 characters."
+  }
 }
 
-variable "alert_https_endpoints" {
-  type        = list(string)
-  default     = []
-  description = "HTTPS endpoints (PagerDuty/Slack) subscribed to the alerts SNS topic."
+variable "webhook_signing_secret" {
+  description = "Secret used to sign outbound webhook payloads. Stored in AWS Secrets Manager."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(var.webhook_signing_secret) >= 32
+    error_message = "Webhook signing secret must be at least 32 characters."
+  }
 }
