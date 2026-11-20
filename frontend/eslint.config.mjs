@@ -14,6 +14,12 @@ const eslintConfig = [
   {
     ignores: ['.next/**', 'coverage/**', 'playwright-report/**', 'test-results/**'],
   },
+  {
+    files: ['src/app/**/*.{ts,tsx}'],
+    rules: {
+      'max-len': ['warn', { code: 120, ignoreUrls: true, ignoreStrings: true, ignoreTemplateLiterals: true }],
+    },
+  },
 ];
 
 export default eslintConfig;
