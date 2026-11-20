@@ -112,6 +112,55 @@ else
     echo "⚠️  Skipping Test 8: SENDGRID_API_KEY not set"
 fi
 
+# Test 9: Newsletter Confirmation Token Hashing
+# Verifies that the confirmation token stored in the database is a SHA-256 hex
+# hash (matching the unsubscribe token scheme from #1728) rather than the
+# plaintext token sent in the email, and that the confirm flow still succeeds.
+echo ""
+echo "Test 9: Newsletter Confirmation Token Hashing"
+HASH_TEST_EMAIL="hash-test-$(date +%s)@example.com"
+
+# Subscribe and capture the emailed confirmation token
+subscribe_response=$(curl -s -X POST "$API_URL/api/v1/newsletter/subscribe" \
+    -H "Content-Type: application/json" \
+    -d "{\"email\":\"$HASH_TEST_EMAIL\"}")
+
+emailed_token=$(echo "$subscribe_response" | grep -o '"confirmation_token":"[^"]*"' | cut -d'"' -f4)
+if [ -z "$emailed_token" ]; then
+    test_failed "Could not obtain confirmation token from subscribe response: $subscribe_response"
+fi
+test_passed "Subscribe returned a confirmation token"
+
+# Query the stored confirmation token for this subscriber
+stored_token=$(curl -s "$API_URL/api/v1/newsletter/subscribers/$HASH_TEST_EMAIL" \
+    | grep -o '"confirmation_token":"[^"]*"' | cut -d'"' -f4)
+if [ -z "$stored_token" ]; then
+    test_failed "Could not obtain stored confirmation token for $HASH_TEST_EMAIL"
+fi
+
+# Assert stored value differs from the emailed plaintext token
+if [ "$stored_token" = "$emailed_token" ]; then
+    test_failed "Stored confirmation token equals plaintext emailed token (plaintext storage reintroduced)"
+fi
+test_passed "Stored confirmation token differs from emailed token"
+
+# Assert stored value matches SHA-256 hex format (64 lowercase hex chars)
+if echo "$stored_token" | grep -Eq '^[a-f0-9]{64}$'; then
+    test_passed "Stored confirmation token matches SHA-256 hex format"
+else
+    test_failed "Stored confirmation token is not a SHA-256 hex hash: $stored_token"
+fi
+
+# Assert the confirm flow still succeeds end to end with the emailed token
+confirm_response=$(curl -s -X POST "$API_URL/api/v1/newsletter/confirm" \
+    -H "Content-Type: application/json" \
+    -d "{\"token\":\"$emailed_token\"}")
+if echo "$confirm_response" | grep -q "success"; then
+    test_passed "Confirm flow succeeded with emailed token"
+else
+    test_failed "Confirm flow failed with emailed token: $confirm_response"
+fi
+
 echo ""
 echo "========================================="
 echo "✅ All tests passed!"
