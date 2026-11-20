@@ -239,4 +239,13 @@ pub enum ErrorCode {
 
     /// The oracle configuration failed validation at market creation.
     InvalidOracleConfig = 206,
+
+    /// The voting deadline for the pending upgrade proposal has passed; votes are no longer accepted.
+    UpgradeVotingDeadlinePassed = 207,
+
+    /// The pending upgrade proposal has been cancelled and can no longer be voted on or executed.
+    UpgradeCancelled = 208,
+
+    /// No upgrade proposal is pending; cancellation or voting cannot proceed.
+    UpgradeNotPending = 209,
 }

@@ -2,6 +2,124 @@ use crate::errors::ErrorCode;
 use crate::types::{ConfigKey, Guardian};
 use soroban_sdk::{contracttype, Address, Env, Vec};
 
+/// Default voting window (in ledgers' seconds) applied to a pending upgrade
+/// when no explicit deadline is supplied.
+pub const DEFAULT_UPGRADE_VOTING_WINDOW: u64 = 7 * 24 * 60 * 60;
+
+/// Storage key for the currently pending upgrade proposal.
+#[contracttype]
+#[derive(Clone)]
+pub enum MigrationKey {
+    PendingUpgrade,
+}
+
+/// A pending contract upgrade proposal awaiting votes.
+#[contracttype]
+#[derive(Clone)]
+pub struct PendingUpgrade {
+    pub from_version: u32,
+    pub to_version: u32,
+    pub proposer: Address,
+    /// Ledger timestamp after which votes are rejected and the proposal expires.
+    pub voting_deadline: u64,
+}
+
+/// Propose a pending upgrade, recording a voting deadline derived from the
+/// current ledger timestamp plus `voting_window` seconds.
+///
+/// Any existing pending proposal that has expired is cleared first so that a
+/// stale proposal never blocks a new one. A still-live proposal blocks a new
+/// proposal with `ErrorCode::UpgradeAlreadyPending`.
+pub fn propose_upgrade(
+    e: &Env,
+    proposer: Address,
+    from_version: u32,
+    to_version: u32,
+    voting_window: u64,
+) -> Result<PendingUpgrade, ErrorCode> {
+    proposer.require_auth();
+
+    if to_version <= from_version {
+        return Err(ErrorCode::NotAuthorized);
+    }
+
+    // Clear an expired pending proposal so it does not block this one.
+    if let Some(existing) = get_pending_upgrade(e) {
+        if e.ledger().timestamp() > existing.voting_deadline {
+            clear_pending_upgrade(e);
+        } else {
+            return Err(ErrorCode::UpgradeAlreadyPending);
+        }
+    }
+
+    let window = if voting_window == 0 {
+        DEFAULT_UPGRADE_VOTING_WINDOW
+    } else {
+        voting_window
+    };
+
+    let pending = PendingUpgrade {
+        from_version,
+        to_version,
+        proposer,
+        voting_deadline: e.ledger().timestamp().saturating_add(window),
+    };
+
+    e.storage()
+        .persistent()
+        .set(&MigrationKey::PendingUpgrade, &pending);
+
+    Ok(pending)
+}
+
+/// Return the currently pending upgrade proposal, if any.
+pub fn get_pending_upgrade(e: &Env) -> Option<PendingUpgrade> {
+    e.storage()
+        .persistent()
+        .get(&MigrationKey::PendingUpgrade)
+}
+
+/// Remove any pending upgrade proposal from storage.
+fn clear_pending_upgrade(e: &Env) {
+    e.storage()
+        .persistent()
+        .remove(&MigrationKey::PendingUpgrade);
+}
+
+/// Record a vote on the pending upgrade.
+///
+/// Votes cast after the recorded voting deadline are rejected with
+/// `ErrorCode::UpgradeVotingExpired`; the expired proposal is cleared so it no
+/// longer blocks new proposals. Returns the pending proposal on success.
+pub fn vote_on_upgrade(e: &Env, voter: Address) -> Result<PendingUpgrade, ErrorCode> {
+    voter.require_auth();
+
+    let pending = get_pending_upgrade(e).ok_or(ErrorCode::NoPendingUpgrade)?;
+
+    if e.ledger().timestamp() > pending.voting_deadline {
+        clear_pending_upgrade(e);
+        return Err(ErrorCode::UpgradeVotingExpired);
+    }
+
+    Ok(pending)
+}
+
+/// Cancel the pending upgrade proposal.
+///
+/// Requires the same authorization as proposing (the caller must authenticate).
+/// Clears pending state so a new proposal can be made. Returns
+/// `ErrorCode::NoPendingUpgrade` when nothing is pending.
+pub fn cancel_pending_upgrade(e: &Env, caller: Address) -> Result<(), ErrorCode> {
+    caller.require_auth();
+
+    if get_pending_upgrade(e).is_none() {
+        return Err(ErrorCode::NoPendingUpgrade);
+    }
+
+    clear_pending_upgrade(e);
+    Ok(())
+}
+
 /// Storage migration context for tracking version changes
 #[contracttype]
 #[derive(Clone)]
@@ -234,6 +352,89 @@ mod tests {
         let e = Env::default();
         let result = execute_migration(&e, 2, 1, |_| Ok(()));
         assert_eq!(result, Err(ErrorCode::NotAuthorized));
+    }
+
+    #[test]
+    fn test_cancel_pending_upgrade() {
+        let e = Env::default();
+        e.mock_all_auths();
+
+        let proposer = Address::generate(&e);
+        let pending = propose_upgrade(&e, proposer.clone(), 1, 2, 100).unwrap();
+        assert_eq!(pending.to_version, 2);
+        assert!(get_pending_upgrade(&e).is_some());
+
+        cancel_pending_upgrade(&e, proposer.clone()).unwrap();
+        assert!(get_pending_upgrade(&e).is_none());
+
+        // Cancelling again fails because nothing is pending.
+        assert_eq!(
+            cancel_pending_upgrade(&e, proposer),
+            Err(ErrorCode::NoPendingUpgrade)
+        );
+    }
+
+    #[test]
+    fn test_propose_after_cancellation() {
+        let e = Env::default();
+        e.mock_all_auths();
+
+        let proposer = Address::generate(&e);
+        propose_upgrade(&e, proposer.clone(), 1, 2, 100).unwrap();
+        cancel_pending_upgrade(&e, proposer.clone()).unwrap();
+
+        // A new proposal is accepted after cancellation.
+        let pending = propose_upgrade(&e, proposer, 1, 3, 100).unwrap();
+        assert_eq!(pending.to_version, 3);
+    }
+
+    #[test]
+    fn test_live_proposal_blocks_new_one() {
+        let e = Env::default();
+        e.mock_all_auths();
+
+        let proposer = Address::generate(&e);
+        propose_upgrade(&e, proposer.clone(), 1, 2, 100).unwrap();
+        assert_eq!(
+            propose_upgrade(&e, proposer, 1, 3, 100),
+            Err(ErrorCode::UpgradeAlreadyPending)
+        );
+    }
+
+    #[test]
+    fn test_vote_after_deadline_rejected() {
+        let e = Env::default();
+        e.mock_all_auths();
+
+        let proposer = Address::generate(&e);
+        let voter = Address::generate(&e);
+        let pending = propose_upgrade(&e, proposer, 1, 2, 100).unwrap();
+
+        // Advance the ledger past the voting deadline.
+        e.ledger().set_timestamp(pending.voting_deadline + 1);
+
+        assert_eq!(
+            vote_on_upgrade(&e, voter),
+            Err(ErrorCode::UpgradeVotingExpired)
+        );
+        // Expired proposal is cleared.
+        assert!(get_pending_upgrade(&e).is_none());
+    }
+
+    #[test]
+    fn test_propose_after_expiry() {
+        let e = Env::default();
+        e.mock_all_auths();
+
+        let proposer = Address::generate(&e);
+        let pending = propose_upgrade(&e, proposer.clone(), 1, 2, 100).unwrap();
+
+        // Advance past the deadline without voting.
+        e.ledger().set_timestamp(pending.voting_deadline + 1);
+
+        // A new proposal is accepted because the expired one is cleared.
+        let next = propose_upgrade(&e, proposer, 1, 3, 100).unwrap();
+        assert_eq!(next.to_version, 3);
     }
 
     #[test]

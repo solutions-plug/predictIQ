@@ -34,6 +34,25 @@ pub struct ValidatedPagination {
     pub offset: u32,
 }
 
+impl ValidatedPagination {
+    /// Number of rows to fetch from the database to detect a following page.
+    ///
+    /// Uses the `limit + 1` sentinel pattern so callers can tell whether more
+    /// rows exist without issuing a second `COUNT` query.
+    pub fn fetch_limit(&self) -> u32 {
+        self.limit.saturating_add(1)
+    }
+
+    /// Clamp an arbitrary requested limit into the accepted `[1, MAX_PAGE_LIMIT]`
+    /// range, falling back to `DEFAULT_LIMIT` when the request is absent.
+    ///
+    /// Handlers that cannot surface a `400` (for example because they build the
+    /// query themselves) can use this to bound their listing defensively.
+    pub fn clamped_limit(requested: Option<u32>) -> u32 {
+        requested.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_PAGE_LIMIT)
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct PaginationError {
     pub error:     &'static str,
@@ -147,6 +166,25 @@ impl PaginationQuery {
     pub fn cursor(&self) -> Option<String> {
         self.cursor.clone()
     }
+
+    /// Offset derived from the query, defaulting to `0`.
+    ///
+    /// `PaginationQuery` does not carry an offset field, so this always returns
+    /// `0`; it exists so offset-based handlers can share one call site.
+    pub fn offset(&self) -> i64 {
+        0
+    }
+
+    /// Convert into the fully validated form, applying the same rules as
+    /// [`validate_pagination`] but clamping instead of rejecting out-of-range
+    /// limits.  Useful for handlers that must never fail on pagination input.
+    pub fn to_validated(&self) -> ValidatedPagination {
+        ValidatedPagination {
+            limit:  self.limit(),
+            cursor: self.cursor(),
+            offset: self.offset() as u32,
+        }
+    }
 }
 
 /// A single page of results returned by paginated endpoints.
@@ -160,6 +198,37 @@ pub struct PaginatedResponse<T: Serialize> {
 
 impl<T: Serialize> PaginatedResponse<T> {
     pub fn new(items: Vec<T>, next_cursor: Option<String>, limit: u32, has_more: bool) -> Self {
+        Self { items, next_cursor, limit, has_more }
+    }
+
+    /// Build a page from a slice fetched with `limit + 1` rows (sentinel pattern).
+    ///
+    /// The extra row, when present, is trimmed and `has_more` is set; the
+    /// `next_cursor` is derived from the last kept item via `make_cursor`.
+    pub fn from_fetched(
+        mut items: Vec<T>,
+        limit: u32,
+        make_cursor: impl Fn(&T) -> String,
+    ) -> Self {
+        let has_more = items.len() > limit as usize;
+        if has_more {
+            items.truncate(limit as usize);
+        }
+        let next_cursor = if has_more { items.last().map(make_cursor) } else { None };
+        Self { items, next_cursor, limit, has_more }
+    }
+
+    /// Build a page from a slice fetched with `limit + 1` rows where the cursor
+    /// is the item's own string representation (e.g. a UUID).
+    pub fn from_fetched_ids(mut items: Vec<T>, limit: u32) -> Self
+    where
+        T: ToString,
+    {
+        let has_more = items.len() > limit as usize;
+        if has_more {
+            items.truncate(limit as usize);
+        }
+        let next_cursor = if has_more { items.last().map(|i| i.to_string()) } else { None };
         Self { items, next_cursor, limit, has_more }
     }
 }
@@ -365,5 +434,86 @@ mod tests {
         assert_eq!(v.limit, DEFAULT_LIMIT);
         assert!(v.cursor.is_none());
         assert_eq!(v.offset, 0);
+    }
+
+    // ── Helper surface used by bounded listings ───────────────────────────────
+
+    #[test]
+    fn fetch_limit_adds_sentinel_row() {
+        let v = validate_pagination(params(Some(10))).unwrap();
+        assert_eq!(v.fetch_limit(), 11);
+    }
+
+    #[test]
+    fn fetch_limit_saturates_at_max() {
+        let v = validate_pagination(params(Some(MAX_PAGE_LIMIT))).unwrap();
+        assert_eq!(v.fetch_limit(), MAX_PAGE_LIMIT + 1);
+        assert_eq!(ValidatedPagination { limit: u32::MAX, cursor: None, offset: 0 }.fetch_limit(), u32::MAX);
+    }
+
+    #[test]
+    fn clamped_limit_applies_default_and_maximum() {
+        assert_eq!(ValidatedPagination::clamped_limit(None), DEFAULT_LIMIT);
+        assert_eq!(ValidatedPagination::clamped_limit(Some(0)), 1);
+        assert_eq!(ValidatedPagination::clamped_limit(Some(5)), 5);
+        assert_eq!(ValidatedPagination::clamped_limit(Some(MAX_PAGE_LIMIT)), MAX_PAGE_LIMIT);
+        assert_eq!(ValidatedPagination::clamped_limit(Some(MAX_PAGE_LIMIT + 1)), MAX_PAGE_LIMIT);
+        assert_eq!(ValidatedPagination::clamped_limit(Some(u32::MAX)), MAX_PAGE_LIMIT);
+    }
+
+    #[test]
+    fn pagination_query_clamps_limit_and_defaults_offset() {
+        let q = PaginationQuery { limit: None, cursor: None };
+        assert_eq!(q.limit(), DEFAULT_LIMIT as i64);
+        assert_eq!(q.offset(), 0);
+
+        let q = PaginationQuery { limit: Some(0), cursor: None };
+        assert_eq!(q.limit(), 1);
+
+        let q = PaginationQuery { limit: Some(MAX_PAGE_LIMIT as i64 + 50), cursor: None };
+        assert_eq!(q.limit(), MAX_PAGE_LIMIT as i64);
+
+        let q = PaginationQuery { limit: Some(7), cursor: Some("abc".to_string()) };
+        let v = q.to_validated();
+        assert_eq!(v.limit, 7);
+        assert_eq!(v.cursor.as_deref(), Some("abc"));
+        assert_eq!(v.offset, 0);
+    }
+
+    #[test]
+    fn paginated_response_from_fetched_trims_sentinel_and_sets_metadata() {
+        let items: Vec<u64> = (1..=6).collect();
+        let page = PaginatedResponse::from_fetched(items, 5, |n| n.to_string());
+        assert_eq!(page.items, vec![1, 2, 3, 4, 5]);
+        assert_eq!(page.limit, 5);
+        assert!(page.has_more);
+        assert_eq!(page.next_cursor.as_deref(), Some("5"));
+    }
+
+    #[test]
+    fn paginated_response_from_fetched_without_sentinel_has_no_more() {
+        let items: Vec<u64> = (1..=5).collect();
+        let page = PaginatedResponse::from_fetched(items, 5, |n| n.to_string());
+        assert_eq!(page.items.len(), 5);
+        assert!(!page.has_more);
+        assert!(page.next_cursor.is_none());
+    }
+
+    #[test]
+    fn paginated_response_from_fetched_ids_uses_item_display() {
+        let items: Vec<u64> = (1..=3).collect();
+        let page = PaginatedResponse::from_fetched_ids(items, 2);
+        assert_eq!(page.items, vec![1, 2]);
+        assert!(page.has_more);
+        assert_eq!(page.next_cursor.as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn paginated_response_empty_page_has_no_cursor() {
+        let page = PaginatedResponse::<u64>::from_fetched_ids(vec![], DEFAULT_LIMIT);
+        assert!(page.items.is_empty());
+        assert!(!page.has_more);
+        assert!(page.next_cursor.is_none());
+        assert_eq!(page.limit, DEFAULT_LIMIT);
     }
 }
