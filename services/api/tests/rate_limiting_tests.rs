@@ -18,8 +18,9 @@ mod tests {
     };
     use predictiq_api::{
         rate_limit::{
-            admin_rate_limit_middleware, analytics_rate_limit_middleware,
-            contact_rate_limit_middleware, newsletter_rate_limit_middleware,
+            admin_rate_limit_middleware, admin_rate_limit_middleware_with_trust,
+            analytics_rate_limit_middleware, contact_rate_limit_middleware,
+            newsletter_rate_limit_middleware,
         },
         security::{RateLimitConfig, RateLimiter},
     };
@@ -33,6 +34,18 @@ mod tests {
             .header("x-forwarded-for", ip)
             .body(Body::empty())
             .unwrap()
+    }
+
+    /// Request with an explicit peer address and an optional spoofable
+    /// `X-Forwarded-For` header.
+    fn req_with_peer(peer: &str, forwarded_for: Option<&str>) -> Request<Body> {
+        let mut builder = Request::builder()
+            .uri("/")
+            .extension(axum::extract::ConnectInfo(peer.to_string()));
+        if let Some(ip) = forwarded_for {
+            builder = builder.header("x-forwarded-for", ip);
+        }
+        builder.body(Body::empty()).unwrap()
     }
 
     fn req_with_session(ip: &str, session: &str) -> Request<Body> {
@@ -115,17 +128,18 @@ mod tests {
 
     // ── admin limiter proxy trust ─────────────────────────────────────────────
     //
-    // The admin limiter currently hard-codes `trust_proxy = true` (see closed
-    // issue #1725). That means the client IP is taken from the left-most
-    // `X-Forwarded-For` entry, so a caller can rotate spoofed XFF values to
-    // obtain a fresh bucket per request. These tests pin that behaviour: if the
-    // trust setting changes, they must be updated deliberately in review.
+    // The admin limiter's proxy trust setting is configurable. When trust is
+    // disabled (the default), the client IP is the peer address and spoofed
+    // `X-Forwarded-For` values are ignored. When trust is enabled, the client
+    // IP is taken from the left-most `X-Forwarded-For` entry, so a caller can
+    // rotate spoofed XFF values to obtain a fresh bucket per request. These
+    // tests pin both behaviours: if the trust setting changes, they must be
+    // updated deliberately in review.
 
-    /// With proxy trust enabled (the current admin default), differing
-    /// `X-Forwarded-For` values are treated as different clients, so spoofing
-    /// XFF bypasses the per-IP bucket.
+    /// With trust disabled (the default), a spoofed `X-Forwarded-For` header
+    /// must not change the bucket: requests from the same peer share it.
     #[tokio::test]
-    async fn admin_trusts_x_forwarded_for_when_proxy_trust_enabled() {
+    async fn admin_ignores_spoofed_forwarded_for_when_trust_disabled() {
         let limiter = Arc::new(RateLimiter::new());
         let app = Router::new()
             .route("/", get(|| async { "ok" }))
@@ -134,25 +148,60 @@ mod tests {
                 admin_rate_limit_middleware,
             ));
 
-        // Exhaust the bucket for the first spoofed address.
+        // Exhaust the bucket for the peer, rotating the spoofed header each time.
+        for i in 0..30 {
+            let spoofed = format!("9.9.9.{i}");
+            assert_eq!(
+                status(app.clone(), req_with_peer("5.5.5.5", Some(&spoofed))).await,
+                StatusCode::OK,
+                "request {i} should be allowed"
+            );
+        }
+
+        // A fresh spoofed header must not grant a new bucket.
+        assert_eq!(
+            status(app.clone(), req_with_peer("5.5.5.5", Some("8.8.8.8"))).await,
+            StatusCode::TOO_MANY_REQUESTS,
+            "spoofed X-Forwarded-For must not bypass the limit"
+        );
+
+        // Requests without the header share the same peer bucket.
+        assert_eq!(
+            status(app, req_with_peer("5.5.5.5", None)).await,
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+
+    /// With trust enabled, the forwarded client IP is honored, so distinct
+    /// forwarded IPs get distinct buckets even from the same peer.
+    #[tokio::test]
+    async fn admin_honors_forwarded_for_when_trust_enabled() {
+        let limiter = Arc::new(RateLimiter::new());
+        let app = Router::new()
+            .route("/", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(
+                limiter.clone(),
+                admin_rate_limit_middleware_with_trust(true),
+            ));
+
+        // Exhaust the bucket for forwarded client 6.6.6.6.
         for _ in 0..30 {
             assert_eq!(
-                status(app.clone(), req("5.5.5.5")).await,
+                status(app.clone(), req_with_peer("5.5.5.5", Some("6.6.6.6"))).await,
                 StatusCode::OK
             );
         }
         assert_eq!(
-            status(app.clone(), req("5.5.5.5")).await,
+            status(app.clone(), req_with_peer("5.5.5.5", Some("6.6.6.6"))).await,
             StatusCode::TOO_MANY_REQUESTS,
             "spoofed address 5.5.5.5 should be rate-limited"
         );
 
-        // A different XFF value is honoured as a distinct client, so the
-        // request is allowed even though it comes from the same caller.
+        // A different forwarded client from the same peer is unaffected.
         assert_eq!(
-            status(app, req("6.6.6.6")).await,
+            status(app, req_with_peer("5.5.5.5", Some("7.7.7.7"))).await,
             StatusCode::OK,
-            "admin limiter trusts X-Forwarded-For: a new XFF value gets a fresh bucket"
+            "distinct forwarded client must get its own bucket"
         );
     }
 
@@ -179,12 +228,12 @@ mod tests {
 
         // The real client IP is exhausted; a spoofed XFF must not help.
         assert_eq!(
-            status(app.clone(), req("7.7.7.7")).await,
+            status(app.clone(), req_with_peer("7.7.7.7", Some("8.8.8.8"))).await,
             StatusCode::TOO_MANY_REQUESTS,
             "real client IP 7.7.7.7 should be rate-limited"
         );
         assert_eq!(
-            status(app, req("8.8.8.8")).await,
+            status(app, req_with_peer("7.7.7.7", Some("9.9.9.9"))).await,
             StatusCode::TOO_MANY_REQUESTS,
             "with proxy trust off, a differing XFF must not grant a fresh bucket"
         );
