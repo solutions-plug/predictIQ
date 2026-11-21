@@ -1,9 +1,13 @@
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
 
     use axum::{
         body::Body,
+        extract::Path,
         http::{Request, StatusCode},
         middleware,
         routing::{get, patch, post, put},
@@ -19,12 +23,70 @@ mod tests {
     };
     use tower::ServiceExt;
 
+    /// A well-formed Stellar strkey (56 chars, starts with `G`).
+    const VALID_STELLAR_ADDRESS: &str =
+        "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+
+    /// Spy that records whether the downstream handler was reached. Used to
+    /// prove that path-parameter validation rejects requests *before* any
+    /// cache or RPC call could be attempted.
+    #[derive(Clone, Default)]
+    struct HandlerSpy {
+        invoked: Arc<AtomicBool>,
+    }
+
+    impl HandlerSpy {
+        fn new() -> Self {
+            Self::default()
+        }
+
+        fn was_invoked(&self) -> bool {
+            self.invoked.load(Ordering::SeqCst)
+        }
+
+        fn mark_invoked(&self) {
+            self.invoked.store(true, Ordering::SeqCst);
+        }
+    }
+
     fn app() -> Router {
+        app_with_spy(HandlerSpy::new())
+    }
+
+    fn app_with_spy(spy: HandlerSpy) -> Router {
         let auth = Arc::new(ApiKeyAuth::new(vec!["admin-valid-key".to_string()]));
 
         let admin_routes = Router::new()
             .route("/admin/mutate", post(|| async { "ok" }))
             .layer(middleware::from_fn_with_state(auth, api_key_middleware));
+
+        // Routes mirroring the real path parameter names from
+        // `services/api/src/validation.rs`. The handlers record invocation so
+        // tests can assert validation short-circuits before the handler (and
+        // therefore before any cache or RPC call) runs.
+        let user_spy = spy.clone();
+        let user_routes = Router::new().route(
+            "/users/:address",
+            get(move |Path(_address): Path<String>| {
+                let spy = user_spy.clone();
+                async move {
+                    spy.mark_invoked();
+                    "ok"
+                }
+            }),
+        );
+
+        let market_spy = spy.clone();
+        let market_routes = Router::new().route(
+            "/markets/:market_id",
+            get(move |Path(_market_id): Path<String>| {
+                let spy = market_spy.clone();
+                async move {
+                    spy.mark_invoked();
+                    "ok"
+                }
+            }),
+        );
 
         Router::new()
             .route("/safe", get(|| async { "ok" }))
@@ -32,6 +94,8 @@ mod tests {
             .route("/safe-put", put(|| async { "ok" }))
             .route("/safe-patch", patch(|| async { "ok" }))
             .merge(admin_routes)
+            .merge(user_routes)
+            .merge(market_routes)
             .layer(middleware::from_fn(request_validation_middleware))
             .layer(middleware::from_fn(content_type_validation_middleware))
             .layer(middleware::from_fn(request_size_validation_middleware))
@@ -187,6 +251,88 @@ mod tests {
                 "expected {market_id:?} to be rejected"
             );
         }
+    }
+
+    // ── Path parameter validation ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn malformed_user_address_is_rejected_before_handler() {
+        let spy = HandlerSpy::new();
+        let response = app_with_spy(spy.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/users/not-an-address")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            !spy.was_invoked(),
+            "handler must not run for a malformed user address"
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_market_id_is_rejected_before_handler() {
+        let spy = HandlerSpy::new();
+        let response = app_with_spy(spy.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/markets/abc")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            !spy.was_invoked(),
+            "handler must not run for a non-numeric market id"
+        );
+    }
+
+    #[tokio::test]
+    async fn well_formed_user_address_passes_validation() {
+        let spy = HandlerSpy::new();
+        let response = app_with_spy(spy.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/users/{VALID_STELLAR_ADDRESS}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            spy.was_invoked(),
+            "handler should run for a well-formed user address"
+        );
+    }
+
+    #[tokio::test]
+    async fn numeric_market_id_passes_validation() {
+        let spy = HandlerSpy::new();
+        let response = app_with_spy(spy.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/markets/42")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            spy.was_invoked(),
+            "handler should run for a numeric market id"
+        );
     }
 
     // ── Content-Type: missing header → 415 ───────────────────────────────────

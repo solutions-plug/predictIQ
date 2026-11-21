@@ -286,6 +286,45 @@ impl IntoResponse for ValidationError {
     }
 }
 
+// ── Outcome index validation ──────────────────────────────────────────────────
+
+/// Validate a market `outcome_index` before it is cast to `i32` and submitted
+/// on-chain.
+///
+/// Guards against two failure modes:
+/// - Overflow: `outcome_index` must fit in `i32` (the on-chain type).
+/// - Out-of-range: `outcome_index` must be strictly less than the market's
+///   outcome count, so a market cannot be resolved to a nonexistent outcome.
+///
+/// Returns the validated `i32` index on success, or a `ValidationError`
+/// (rendered as HTTP 400) describing the offending field.
+pub fn validate_outcome_index(outcome_index: u32, outcome_count: u32) -> Result<i32, ValidationError> {
+    if outcome_index > i32::MAX as u32 {
+        return Err(ValidationError {
+            error:   "invalid_outcome_index",
+            field:   "outcome_index".to_string(),
+            message: format!(
+                "outcome_index {} exceeds the maximum supported value of {}.",
+                outcome_index,
+                i32::MAX
+            ),
+        });
+    }
+
+    if outcome_index >= outcome_count {
+        return Err(ValidationError {
+            error:   "invalid_outcome_index",
+            field:   "outcome_index".to_string(),
+            message: format!(
+                "outcome_index {} is out of range for a market with {} outcome(s).",
+                outcome_index, outcome_count
+            ),
+        });
+    }
+
+    Ok(outcome_index as i32)
+}
+
 static REJECT_PATTERNS: &[&str] = &[
     "<script",
     "</script",
@@ -417,5 +456,83 @@ mod tests {
         assert!(validate_market_id("bad id").is_err());
         assert!(validate_market_id("bad/id").is_err());
         assert!(validate_market_id(&"a".repeat(MARKET_ID_MAX_LEN + 1)).is_err());
+    }
+
+    #[test]
+    fn parse_request_body_max_bytes_table() {
+        let cases: &[(Option<&str>, usize)] = &[
+            (None, DEFAULT_REQUEST_BODY_MAX_BYTES),
+            (Some(""), DEFAULT_REQUEST_BODY_MAX_BYTES),
+            (Some("   "), DEFAULT_REQUEST_BODY_MAX_BYTES),
+            (Some("0"), DEFAULT_REQUEST_BODY_MAX_BYTES),
+            (Some("-1"), DEFAULT_REQUEST_BODY_MAX_BYTES),
+            (Some("1.5"), DEFAULT_REQUEST_BODY_MAX_BYTES),
+            (Some("12abc"), DEFAULT_REQUEST_BODY_MAX_BYTES),
+            (Some("1"), 1),
+            (Some(" 2048 "), 2048),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(parse_request_body_max_bytes(*input), *expected, "input {:?}", input);
+        }
+    }
+
+    #[test]
+    fn webhook_max_events_whitespace_and_negative_use_default() {
+        for input in ["  ", "-5", "1e3"] {
+            assert_eq!(parse_webhook_max_events(Some(input)), DEFAULT_WEBHOOK_MAX_EVENTS, "input {:?}", input);
+        }
+        assert_eq!(parse_webhook_max_events(Some("1")), 1);
+    }
+
+    #[test]
+    fn webhook_batch_zero_events_is_within_limit() {
+        assert!(webhook_batch_within_limit(0));
+    }
+
+    #[test]
+    fn validate_string_length_boundaries() {
+        // (input, min, max, ok)
+        let cases: &[(&str, usize, usize, bool)] = &[
+            ("abc", 3, 5, true),   // exactly min
+            ("ab", 3, 5, false),   // just below min
+            ("abcde", 3, 5, true), // exactly max
+            ("abcdef", 3, 5, false), // just above max
+            ("", 0, 5, true),      // empty allowed when min is 0
+            ("", 1, 5, false),     // empty rejected when min >= 1
+        ];
+        for (input, min, max, ok) in cases {
+            assert_eq!(validate_string("f", input, *min, *max).is_ok(), *ok, "input {:?}", input);
+        }
+    }
+
+    #[test]
+    fn validate_string_error_codes() {
+        assert_eq!(validate_string("f", "ab", 3, 5).unwrap_err().error, "too_short");
+        assert_eq!(validate_string("f", "abcdef", 3, 5).unwrap_err().error, "too_long");
+        let e = validate_string("name", "<script>x</script>", 0, 100).unwrap_err();
+        assert_eq!(e.error, "invalid_content");
+        assert_eq!(e.field, "name");
+    }
+
+    #[test]
+    fn validate_string_whitespace_only_is_rejected_when_min_is_one() {
+        for input in ["   ", "\t\n", " \r\n "] {
+            assert_eq!(validate_string("f", input, 1, 10).unwrap_err().error, "too_short", "input {:?}", input);
+        }
+    }
+
+    #[test]
+    fn sanitize_trims_and_strips_control_chars() {
+        assert_eq!(sanitize_string("f", "  hi  ").unwrap(), "hi");
+        assert_eq!(sanitize_string("f", "a\0b\u{7}c").unwrap(), "abc");
+        assert_eq!(sanitize_string("f", "").unwrap(), "");
+        assert_eq!(sanitize_string("f", "   ").unwrap(), "");
+    }
+
+    #[test]
+    fn sanitize_rejects_malformed_content() {
+        for input in ["<script>alert(1)</script>", "<img src=x onerror=alert(1)>", "javascript:alert(1)", "<div>x</div>"] {
+            assert!(sanitize_string("f", input).is_err(), "input {:?}", input);
+        }
     }
 }

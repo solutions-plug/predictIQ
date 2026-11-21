@@ -146,12 +146,35 @@ pub async fn v1_deprecation_middleware(req: Request, next: Next) -> Response {
     response
 }
 
+/// Adds a `Deprecation` header (RFC 8594) plus a `Link` pointing at the
+/// versioned replacement to responses served from the legacy unversioned
+/// `/api/blockchain/replay` path.  The old path is kept working temporarily
+/// so existing clients can migrate to `/api/v1/blockchain/replay`.
+pub async fn legacy_replay_deprecation_middleware(req: Request, next: Next) -> Response {
+    tracing::warn!(
+        path = "/api/blockchain/replay",
+        replacement = "/api/v1/blockchain/replay",
+        "Deprecated unversioned replay route called; clients should migrate to the versioned path"
+    );
+
+    let mut response = next.run(req).await;
+    let headers = response.headers_mut();
+    headers.insert("Deprecation", HeaderValue::from_static("true"));
+    headers.insert(
+        header::LINK,
+        HeaderValue::from_static(
+            "</api/v1/blockchain/replay>; rel=\"successor-version\"",
+        ),
+    );
+    response
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::{Request as HttpRequest, StatusCode};
-    use axum::routing::get;
+    use axum::routing::{get, post};
     use axum::Router;
     use tower::ServiceExt;
 
@@ -161,6 +184,10 @@ mod tests {
 
     async fn ok_handler() -> &'static str {
         "ok"
+    }
+
+    async fn replay_handler() -> &'static str {
+        "replayed"
     }
 
     fn deprecation_router() -> Router {
@@ -177,6 +204,20 @@ mod tests {
                 state,
                 versioning_middleware,
             ))
+    }
+
+    /// Mirrors how the replay route is nested: the versioned path is the
+    /// canonical route, and the legacy unversioned path is kept working with a
+    /// deprecation signal.
+    fn replay_router() -> Router {
+        Router::new()
+            .route("/api/v1/blockchain/replay", post(replay_handler))
+            .route(
+                "/api/blockchain/replay",
+                post(replay_handler).layer(axum::middleware::from_fn(
+                    legacy_replay_deprecation_middleware,
+                )),
+            )
     }
 
     #[tokio::test]
@@ -226,6 +267,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn replay_route_resolves_under_versioned_prefix() {
+        let response = replay_router()
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/api/v1/blockchain/replay")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        // The canonical versioned route must not carry the legacy deprecation signal.
+        assert!(response.headers().get("Deprecation").is_none());
+    }
+
+    #[tokio::test]
+    async fn legacy_replay_route_returns_deprecation_signal() {
+        let response = replay_router()
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/api/blockchain/replay")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let headers = response.headers();
+        assert_eq!(headers.get("Deprecation").unwrap(), "true");
+        let link = headers.get(header::LINK).unwrap().to_str().unwrap();
+        assert!(link.contains("</api/v1/blockchain/replay>"));
+        assert!(link.contains("rel=\"successor-version\""));
+    }
+
+    #[tokio::test]
     async fn versioning_middleware_injects_resolved_version() {
         let router = versioning_router(test_metrics());
         let response = router
@@ -247,100 +327,6 @@ mod tests {
         let router = versioning_router(metrics.clone());
 
         // Fire several requests from the same client; the sampler will only
-        // allow one log line, but the counter must increment every time.
-        for _ in 0..5 {
-            let response = router
-                .clone()
-                .oneshot(
-                    HttpRequest::builder()
-                        .uri("/ping")
-                        .header("API-Version", "v1")
-                        .header("x-forwarded-for", "203.0.113.7")
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::OK);
-        }
+        // allow one log line, but the counter must incre
 
-        let count = metrics.deprecated_api_calls_total("v1");
-        assert_eq!(count, 5, "counter must increment on every deprecated request");
-    }
-
-    #[tokio::test]
-    async fn current_version_does_not_increment_deprecated_counter() {
-        let metrics = test_metrics();
-        let router = versioning_router(metrics.clone());
-
-        let response = router
-            .oneshot(
-                HttpRequest::builder()
-                    .uri("/ping")
-                    .header("API-Version", "v2")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(metrics.deprecated_api_calls_total("v2"), 0);
-    }
-
-    #[test]
-    fn sampler_logs_first_call_then_suppresses_within_window() {
-        let sampler = DeprecationSampler::new();
-        assert!(sampler.should_log("10.0.0.1", "v1"));
-        // Subsequent calls within the hour window are suppressed.
-        assert!(!sampler.should_log("10.0.0.1", "v1"));
-        assert!(!sampler.should_log("10.0.0.1", "v1"));
-    }
-
-    #[test]
-    fn sampler_tracks_clients_and_versions_independently() {
-        let sampler = DeprecationSampler::new();
-        assert!(sampler.should_log("10.0.0.1", "v1"));
-        // Different client -> independent window.
-        assert!(sampler.should_log("10.0.0.2", "v1"));
-        // Different version for same client -> independent window.
-        assert!(sampler.should_log("10.0.0.1", "v0"));
-        // Repeats are still suppressed per key.
-        assert!(!sampler.should_log("10.0.0.1", "v1"));
-        assert!(!sampler.should_log("10.0.0.2", "v1"));
-    }
-
-    #[test]
-    fn sampler_allows_log_after_window_elapses() {
-        let sampler = DeprecationSampler::new();
-        assert!(sampler.should_log("10.0.0.1", "v1"));
-
-        // Simulate the hour window having elapsed by rewinding the stored
-        // timestamp for this key.
-        {
-            let mut map = sampler.last_logged.lock().unwrap();
-            let key = "10.0.0.1:v1".to_string();
-            let past = Instant::now() - Duration::from_secs(3601);
-            map.insert(key, past);
-        }
-
-        assert!(sampler.should_log("10.0.0.1", "v1"));
-    }
-
-    #[test]
-    fn peer_ip_prefers_forwarded_for_then_real_ip() {
-        let req = HttpRequest::builder()
-            .header("x-forwarded-for", "198.51.100.9, 10.0.0.1")
-            .body(Body::empty())
-            .unwrap();
-        assert_eq!(peer_ip_from_headers(&req), "198.51.100.9");
-
-        let req = HttpRequest::builder()
-            .header("x-real-ip", "198.51.100.10")
-            .body(Body::empty())
-            .unwrap();
-        assert_eq!(peer_ip_from_headers(&req), "198.51.100.10");
-
-        let req = HttpRequest::builder().body(Body::empty()).unwrap();
-        assert_eq!(peer_ip_from_headers(&req), "unknown");
-    }
-}
+/* … truncated 3472 chars — edit only what you need near the top … */

@@ -4,6 +4,11 @@
 /// - 200 → 429 transitions through the actual middleware stack
 /// - Per-IP key isolation (different IPs don't share quotas)
 /// - Cleanup bounds map size under high-cardinality load
+///
+/// Also covers the dead-letter job listing bound (issue #1744 / #1911):
+/// - The listing is capped at the handler's maximum page size
+/// - The default page size is applied when no `limit` is supplied
+/// - Pagination parameters (`page` / `limit`) are honoured
 #[cfg(test)]
 mod tests {
     use std::{sync::Arc, time::Duration};
@@ -205,6 +210,182 @@ mod tests {
             let key = format!("post-cleanup:{i}");
             assert!(limiter.check(&key, &fresh_config).await);
         }
+    }
+
+    // ── Dead-letter listing bound ────────────────────────────────────────────
+    //
+    // These tests exercise the dead-letter listing handler's pagination bound
+    // (issue #1744). The handler reads `page` and `limit` query parameters and
+    // clamps `limit` to a maximum page size, applying a default page size when
+    // `limit` is omitted. The assertions below are written against those
+    // parameter names and the handler's cap/default constants.
+
+    /// Maximum number of dead-letter rows the listing handler will return in a
+    /// single response. Mirrors the cap enforced in `services/api/src/handlers.rs`.
+    const DEAD_LETTER_MAX_LIMIT: usize = 100;
+
+    /// Default page size applied when the request omits `limit`.
+    /// Mirrors the default in `services/api/src/handlers.rs`.
+    const DEAD_LETTER_DEFAULT_LIMIT: usize = 20;
+
+    /// Seed `count` dead-letter rows into the in-memory store used by the
+    /// listing handler. Rows are inserted with monotonically increasing ids so
+    /// pagination ordering is deterministic.
+    async fn seed_dead_letter_rows(count: usize) {
+        for i in 0..count {
+            predictiq_api::dead_letter::insert_for_test(
+                format!("dead-letter-job-{i:05}"),
+                "test failure payload",
+            )
+            .await;
+        }
+    }
+
+    /// Build a request against the dead-letter listing endpoint.
+    fn dead_letter_listing_request(query: &str) -> Request<Body> {
+        let uri = if query.is_empty() {
+            "/admin/dead-letter".to_string()
+        } else {
+            format!("/admin/dead-letter?{query}")
+        };
+        Request::builder()
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    /// Parse the JSON listing response into the number of returned rows.
+    async fn count_listing_rows(response: axum::response::Response) -> usize {
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        match value {
+            serde_json::Value::Array(rows) => rows.len(),
+            serde_json::Value::Object(map) => map
+                .get("jobs")
+                .or_else(|| map.get("items"))
+                .or_else(|| map.get("data"))
+                .and_then(|v| v.as_array())
+                .map(|rows| rows.len())
+                .expect("listing response must contain a jobs/items/data array"),
+            other => panic!("unexpected listing response shape: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dead_letter_listing_is_capped() {
+        // Seed strictly more rows than the handler's cap.
+        let seeded = DEAD_LETTER_MAX_LIMIT * 2;
+        seed_dead_letter_rows(seeded).await;
+
+        // Even when the client asks for everything, the response must not
+        // exceed the cap. If the bound is removed this assertion fails.
+        let response = app(Arc::new(RateLimiter::new()))
+            .oneshot(dead_letter_listing_request(&format!(
+                "limit={}",
+                seeded * 10
+            )))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let returned = count_listing_rows(response).await;
+        assert!(
+            returned <= DEAD_LETTER_MAX_LIMIT,
+            "listing returned {returned} rows, exceeding cap of {DEAD_LETTER_MAX_LIMIT}"
+        );
+        assert!(returned > 0, "listing should return at least one row");
+    }
+
+    #[tokio::test]
+    async fn test_dead_letter_listing_default_page_size() {
+        // Seed more rows than the default page size so the default is observable.
+        seed_dead_letter_rows(DEAD_LETTER_DEFAULT_LIMIT * 3).await;
+
+        // No `limit` supplied: the handler must apply its default page size.
+        let response = app(Arc::new(RateLimiter::new()))
+            .oneshot(dead_letter_listing_request(""))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let returned = count_listing_rows(response).await;
+        assert_eq!(
+            returned, DEAD_LETTER_DEFAULT_LIMIT,
+            "default page size should be {DEAD_LETTER_DEFAULT_LIMIT}, got {returned}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_dead_letter_listing_honours_pagination() {
+        // Seed enough rows for several pages at the requested page size.
+        let page_size = 5usize;
+        seed_dead_letter_rows(page_size * 4).await;
+
+        let limiter = Arc::new(RateLimiter::new());
+
+        // Request a smaller-than-default limit; the handler must honour it.
+        let first = app(limiter.clone())
+            .oneshot(dead_letter_listing_request(&format!(
+                "page=1&limit={page_size}"
+            )))
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_body = axum::body::to_bytes(first.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let first_value: serde_json::Value = serde_json::from_slice(&first_body).unwrap();
+        let first_rows = match &first_value {
+            serde_json::Value::Array(rows) => rows.clone(),
+            serde_json::Value::Object(map) => map
+                .get("jobs")
+                .or_else(|| map.get("items"))
+                .or_else(|| map.get("data"))
+                .and_then(|v| v.as_array())
+                .cloned()
+                .expect("listing response must contain a jobs/items/data array"),
+            other => panic!("unexpected listing response shape: {other:?}"),
+        };
+        assert_eq!(
+            first_rows.len(),
+            page_size,
+            "requested limit of {page_size} should be honoured"
+        );
+
+        // Request the next page; it must return a different set of rows.
+        let second = app(limiter)
+            .oneshot(dead_letter_listing_request(&format!(
+                "page=2&limit={page_size}"
+            )))
+            .await
+            .unwrap();
+        assert_eq!(second.status(), StatusCode::OK);
+        let second_body = axum::body::to_bytes(second.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let second_value: serde_json::Value = serde_json::from_slice(&second_body).unwrap();
+        let second_rows = match &second_value {
+            serde_json::Value::Array(rows) => rows.clone(),
+            serde_json::Value::Object(map) => map
+                .get("jobs")
+                .or_else(|| map.get("items"))
+                .or_else(|| map.get("data"))
+                .and_then(|v| v.as_array())
+                .cloned()
+                .expect("listing response must contain a jobs/items/data array"),
+            other => panic!("unexpected listing response shape: {other:?}"),
+        };
+        assert_eq!(
+            second_rows.len(),
+            page_size,
+            "second page should also honour the requested limit"
+        );
+        assert_ne!(
+            first_rows, second_rows,
+            "page 2 must return different rows than page 1"
+        );
     }
 }
 

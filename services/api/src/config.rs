@@ -326,6 +326,16 @@ pub struct Config {
     pub admin_whitelist_ips: Vec<IpAddr>,
     pub trust_proxy: bool,
     pub request_signing_secret: Option<String>,
+    /// SendGrid Event Webhook signing key.
+    ///
+    /// SendGrid signs event payloads with ECDSA (NIST P-256 / SHA-256), not
+    /// HMAC. This value is the **base64-encoded DER SubjectPublicKeyInfo**
+    /// public key shown in the SendGrid dashboard under *Settings → Sender
+    /// Authentication → Signed Event Webhook*. It is loaded from the
+    /// `SENDGRID_WEBHOOK_SECRET` environment variable (injected from Secrets
+    /// Manager) and must never be hard-coded.
+    ///
+    /// See `docs/webhook-security.md` for the verification procedure.
     pub sendgrid_webhook_secret: Option<String>,
     /// Webhook replay protection window in seconds. Default: 300 (5 minutes).
     pub webhook_replay_window_secs: u64,
@@ -608,7 +618,12 @@ impl Config {
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(false),
             request_signing_secret: env::var("REQUEST_SIGNING_SECRET").ok(),
-            sendgrid_webhook_secret: env::var("SENDGRID_WEBHOOK_SECRET").ok(),
+            // SendGrid Event Webhook signing key: base64-encoded DER
+            // SubjectPublicKeyInfo for the ECDSA P-256 public key. Loaded from
+            // the environment (Secrets Manager) — never hard-coded.
+            sendgrid_webhook_secret: env::var("SENDGRID_WEBHOOK_SECRET")
+                .ok()
+                .filter(|s| !s.trim().is_empty()),
             webhook_replay_window_secs: env::var("WEBHOOK_REPLAY_WINDOW_SECS")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -724,6 +739,20 @@ impl Config {
 
     pub fn is_production(&self) -> bool {
         self.app_env.eq_ignore_ascii_case("production")
+    }
+
+    /// Return the raw base64-encoded DER public key used to verify SendGrid
+    /// Event Webhook signatures, if configured.
+    ///
+    /// The value is the base64 DER SubjectPublicKeyInfo of SendGrid's ECDSA
+    /// P-256 signing key, as shown in the SendGrid dashboard. Verification
+    /// (ECDSA P-256 / SHA-256 over `timestamp || payload`) is performed by the
+    /// newsletter webhook handler; see `docs/webhook-security.md`.
+    ///
+    /// Returns `None` when `SENDGRID_WEBHOOK_SECRET` is unset or empty, in
+    /// which case the handler must reject all webhook requests.
+    pub fn sendgrid_webhook_public_key(&self) -> Option<&str> {
+        self.sendgrid_webhook_secret
     }
 
     /// Emit a `tracing::warn!` if `SENDGRID_KEY_ROTATED_AT`
