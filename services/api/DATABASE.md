@@ -12,10 +12,17 @@ This service uses PostgreSQL. Schema and seed scripts are in:
 - `waitlist_entries`
 - `analytics_events`
 - `content_management`
-- `audit_logs` — general audit trail (UUID primary key)
-- `audit_log` — append-only admin-operation audit log (bigserial primary key)
+- `audit_log` — the single audit table; append-only admin-operation audit log (bigserial primary key)
 - `email_jobs` — async email queue tracking
 - `markets` — on-chain market mirror
+- `watched_transactions` — user watch records for on-chain transactions
+
+## Audit Logging
+
+`audit_log` is the only audit table. It is **append-only**: rows are inserted by
+admin operations and are never updated or soft-deleted. The former `audit_logs`
+table (UUID primary key, soft-deletable) was unused and has been removed; see the
+migration note below. GDPR logging tests target `audit_log`.
 
 ## `markets` Consistency Constraints
 
@@ -46,7 +53,7 @@ database level with a constraint-violation error.
 | 004 | `004_create_waitlist_entries.sql` | `waitlist_entries` table |
 | 005 | `005_create_content_management.sql` | `content_management` table |
 | 006 | `006_create_analytics_events.sql` | `analytics_events` table |
-| 007 | `007_create_audit_logs.sql` | `audit_logs` table (UUID PK) |
+| 007 | `007_create_audit_logs.sql` | Legacy `audit_logs` table (UUID PK) — removed, see migration note |
 | 008 | `008_create_email_tracking.sql` | Email jobs, events, suppressions, templates, analytics |
 | 009 | `009_add_newsletter_indexes.sql` | Performance indexes on `newsletter_subscribers` |
 | 010a | `010_add_soft_delete_newsletter.sql` | Adds `deleted_at` to `newsletter_subscribers` |
@@ -59,10 +66,54 @@ database level with a constraint-violation error.
 | 016 | `016_add_markets_deadline_index.sql` | Partial index for deadline-based active market queries |
 | 017 | `017_add_soft_delete_markets.sql` | Adds `deleted_at` to `markets` + cleanup function |
 | 018 | `018_add_varchar_constraints.sql` | CHECK constraints on user-supplied TEXT columns |
+| 019 | `019_create_watched_transactions.sql` | Canonical `watched_transactions` table (guarded, idempotent) |
 | 019 | `019_add_markets_consistency_constraints.sql` | UNIQUE + CHECK constraints enforcing `markets` invariants |
 
 > **Note:** Two migration files share the `010_` prefix. Apply them in lexicographic
 > order (`010_add_soft_delete_newsletter.sql` before `010_create_audit_log.sql`).
+
+### Migration note: removal of `audit_logs`
+
+The unused `audit_logs` table (created by `007_create_audit_logs.sql`) has been
+removed from `schema.sql`. No source code references it. Environments that already
+applied migration `007` may still have the table; drop it with:
+
+```sql
+DROP TABLE IF EXISTS audit_logs CASCADE;
+```
+
+This is safe because nothing reads or writes `audit_logs`; all audit writes go to
+`audit_log`. Do not edit migration `007` in place — its checksum is recorded in
+`schema_migrations` and editing it will prevent the service from starting.
+
+### Migration note: `watched_transactions` (017 vs 019)
+
+Migrations `017` and `019` both created `watched_transactions` with different
+column sets, so the resulting schema depended on which migration ran and whether
+the table already existed (see issue #1747). This is resolved as follows:
+
+- **`019_create_watched_transactions.sql` is the canonical schema.** It uses
+  `CREATE TABLE IF NOT EXISTS` and guarded `ALTER TABLE ... ADD COLUMN IF NOT
+  EXISTS` statements, so it is idempotent and safe on databases that already
+  have the table (from either migration).
+- **`017` no longer creates the table.** Its `watched_transactions` DDL has been
+  reduced to a no-op so it cannot produce a divergent schema.
+
+Final `watched_transactions` column set (after all migrations):
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | `bigserial` | Primary key |
+| `user_id` | `uuid` | Owner of the watch record |
+| `tx_hash` | `text` | On-chain transaction hash |
+| `chain_id` | `bigint` | Chain the transaction belongs to |
+| `status` | `text` | Watch status (default `'pending'`) |
+| `created_at` | `timestamptz` | Default `now()` |
+| `updated_at` | `timestamptz` | Default `now()` |
+
+Applying all migrations to an empty database and to one that already has the
+old `watched_transactions` table both yield this same schema. Backfilling data
+into `watched_transactions` is out of scope.
 
 ## Migration Naming and Numbering Rules
 
@@ -220,6 +271,7 @@ exact changes made by their paired migration.
 | `016_add_markets_deadline_index.sql` | `rollbacks/016_add_markets_deadline_index_down.sql` |
 | `017_add_soft_delete_markets.sql` | `rollbacks/017_add_soft_delete_markets_down.sql` |
 | `018_add_varchar_constraints.sql` | `rollbacks/018_add_varchar_constraints_down.sql` |
+| `019_create_watched_transactions.sql` | `rollbacks/019_create_watched_transactions_down.sql` |
 | `019_add_markets_consistency_constraints.sql` | `rollbacks/019_add_markets_consistency_constraints_down.sql` |
 
 ### Rolling back a single migration
@@ -273,8 +325,7 @@ bash services/api/scripts/run_migrations.sh
 
 | File | Purpose |
 |---|---|
-| `performance_indexes.sql` | Source for the indexes now in `012_add_performance_indexes.sql`. Kept as a reference; do not apply manually. |
-| `newsletter_schema.sql` | Early draft of the `newsletter_subscribers` schema. Superseded by `002_create_newsletter_subscriptions.sql`. Do not apply manually. |
+| `performance_indexes.sql` | Source for the index
 
 > **Rule:** No schema-altering SQL should be applied from `sql/` directly. All schema changes must go through a numbered migration in `database/migrations/`.
 
