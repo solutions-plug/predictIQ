@@ -150,3 +150,16 @@ Given the WASM toolchain maturity timeline, the recommended order is:
 1. Expand proptest coverage (done — `property_invariants_test.rs`)
 2. Add cargo-fuzz targets (done — `fuzz/` directory)
 3. Engage Certora when Soroban WASM backend reaches GA
+
+## Market creation limits
+
+`create_market` enforces (see `types.rs`): at least 2 and at most 100 outcomes
+(`InvalidOutcome` / `TooManyOutcomes`), description ≤ 1024 bytes
+(`DescriptionTooLong`), and each option label non-empty and ≤ 128 bytes
+(`InvalidOptionLength`).
+
+## Oracle strike price scale
+
+`OracleConfig::strike_price` is an integer in units of 1e-8. The Pyth price is
+rescaled from `10^expo` to 1e-8 with checked arithmetic before comparison;
+overflow returns `ArithmeticOverflow`.
