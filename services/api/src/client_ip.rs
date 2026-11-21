@@ -200,4 +200,19 @@ mod tests {
         );
         assert_eq!(ip, IpAddr::V4(Ipv4Addr::new(203, 0, 113, 8)));
     }
+
+    #[test]
+    fn single_xff_entry_from_configured_trusted_peer() {
+        let cidrs = vec!["192.0.2.0/24".to_owned()];
+        let peer = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9));
+        let ip = extract_client_ip(&peer, Some("203.0.113.50"), None, &cidrs);
+        assert_eq!(ip, IpAddr::V4(Ipv4Addr::new(203, 0, 113, 50)));
+    }
+
+    #[test]
+    fn untrusted_peer_cannot_inject_ip_with_empty_trust_list() {
+        let peer = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let ip = extract_client_ip(&peer, Some("203.0.113.50"), Some("203.0.113.51"), &[]);
+        assert_eq!(ip, peer);
+    }
 }

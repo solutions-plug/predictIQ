@@ -6,7 +6,7 @@
 # 1.83 is a current, supported toolchain that satisfies it.
 # Base-image drift is tracked automatically via the Dependabot `docker`
 # ecosystem entry in .github/dependabot.yml.
-FROM rust:1.99-slim@sha256:2752b332db73fdbb7dc576f06c82ed1f312005784ef913d7e04a28f5f55dc581 AS builder
+FROM rust:1.99-slim@sha256:f6c4a35d21dbb3c89d7a8d056c193e94fc09037f2b58dd858b09c39a47dd02d7 AS builder
 
 WORKDIR /usr/src/app
 
@@ -32,12 +32,11 @@ COPY . .
 RUN cargo build --release --manifest-path services/api/Cargo.toml
 
 # Runtime stage.
-FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587 AS runtime
+FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d96a961d3376b179bc AS runtime
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
-        curl \
         libssl3 \
     && rm -rf /var/lib/apt/lists/*
 

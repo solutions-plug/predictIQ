@@ -329,6 +329,8 @@ groups:
 
 ### Docker Health Check
 
+The runtime image does not include `curl`, so the container health check must use a probe that ships with the runtime stage. The check targets the lightweight liveness route (`/health/live`) rather than the comprehensive `/health` route, and uses conservative intervals to avoid restart churn.
+
 ```dockerfile
 FROM node:20-alpine
 
@@ -338,11 +340,21 @@ RUN npm install && npm run build
 
 EXPOSE 3000
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:3000/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"
+# Probe the lightweight liveness route using a client present in the runtime image.
+# Do not use curl (not installed) or /health (heavy dependency checks).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD node -e "require('http').get('http://localhost:3000/health/live', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
 
 CMD ["npm", "start"]
 ```
+
+**Probe conventions:**
+
+- **Liveness (`/health/live`)** — used for the container `HEALTHCHECK`; very fast, indicates the process is alive.
+- **Readiness (`/health/ready`)** — used by orchestrators to gate traffic; fast, indicates the service can accept requests.
+- **Comprehensive (`/health`)** — for dashboards and alerting only; performs dependency checks and must not be used for liveness probes.
+- **Intervals/timeouts** — keep `--interval` at 30s or higher, `--timeout` at 5s, and `--start-period` at 30s so slow starts do not trigger restarts.
+- **Client availability** — only use HTTP clients guaranteed to exist in the runtime stage (e.g. `node`, `wget`); avoid `curl` unless explicitly installed.
 
 ### Kubernetes Deployment
 
@@ -416,6 +428,18 @@ curl -v http://localhost:3000/health/ready
 
 # Liveness probe
 curl -v http://localhost:3000/health/live
+```
+
+### Verifying the Container Health Check
+
+The runtime image does not include `curl`, so verify the built-in `HEALTHCHECK` (which probes `/health/live`) instead:
+
+```bash
+# Inspect the configured health check command
+docker inspect --format '{{json .Config.Healthcheck}}' tts-service
+
+# Confirm the container reports healthy within the start period
+docker inspect --format '{{.State.Health.Status}}' tts-service
 ```
 
 ### Automated Testing
