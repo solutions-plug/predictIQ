@@ -15,6 +15,9 @@
 > ```
 >
 > Source of truth: [`contracts/predict-iq/src/errors.rs`](../contracts/predict-iq/src/errors.rs)
+>
+> `errors.rs` is authoritative. Any new error variant (including governance and
+> upgrade errors) must be added to this document in the same PR that introduces it.
 
 Error codes returned by the `predict-iq` Soroban smart contract.
 
@@ -84,10 +87,19 @@ The table below maps each code to its variant name and a human-readable descript
 | 158 | `ResolutionDeadlinePassed` | The resolution deadline for this market has passed without a resolution. |
 | 159 | `Overflow` | An arithmetic overflow occurred during calculation. |
 | 160 | `InvalidTimeRange` | The provided time range is invalid (e.g. start is after end, or range is zero-length). |
-| 161 | `InvalidToken` | The supplied token address is not the token configured for this market. |
-| 162 | `AlreadyVotedOnRemoval` | The caller has already voted on this guardian removal proposal. |
-| 163 | `RemovalNotPending` | No guardian removal proposal is pending for the given identifier. |
-| 164 | `RemovalExpired` | The guardian removal proposal has expired and can no longer be voted on. |
+| 161 | `GuardianCannotVoteOnOwnRemoval` | A guardian cannot cast a vote on their own removal proposal. |
+| 162 | `BelowMinimumGuardianCount` | The operation would leave fewer guardians than the required minimum. |
+| 163 | `InvalidTokenDecimals` | The token's decimals value is invalid or unsupported. |
+| 164 | `TooManyDisputeVoters` | The number of dispute voters exceeds the maximum allowed. |
+| 165 | `InvalidToken` | The supplied token address is not the token configured for this market. |
+| 166 | `AlreadyVotedOnRemoval` | The caller has already voted on this guardian removal proposal. |
+| 167 | `RemovalNotPending` | No guardian removal proposal is pending for the given identifier. |
+| 168 | `RemovalExpired` | The guardian removal proposal has expired and can no longer be voted on. |
+| 169 | `MinimumBetNotMet` | The bet amount is below the market's configured minimum bet. |
+| 170 | `InvalidBaseFee` | The provided base fee is invalid or outside the allowed range. |
+| 200 | `DisputeBondRequired` | A dispute bond must be posted before the dispute can be filed. |
+| 201 | `ZeroWinningStake` | The winning stake is zero; payout cannot be computed. |
+| 202 | `RemovalAlreadyPending` | A guardian removal proposal is already pending for this guardian. |
 | 203 | `DescriptionTooLong` | Market description exceeds 1024 bytes. |
 | 204 | `InvalidOptionLength` | An outcome label is empty or exceeds 128 bytes. |
 | 205 | `TokenNotAllowed` | Settlement token is not on the admin allowlist (enforced once the allowlist is non-empty). |
@@ -102,13 +114,13 @@ The table below maps each code to its variant name and a human-readable descript
 102 `MarketNotFound`, 103 `MarketClosed`, 104 `MarketStillActive`, 115 `MarketNotActive`, 116 `DeadlinePassed`, 148 `InvalidDeadline`, 160 `InvalidTimeRange`
 
 ### Betting
-105 `InvalidOutcome`, 106 `InvalidBetAmount`, 107 `InsufficientBalance`, 126 `InsufficientDeposit`, 142 `BetNotFound`, 145 `InvalidAmount`, 155 `AlreadyClaimed`, 156 `NoWinnings`, 157 `InvalidReferrer`, 161 `InvalidToken`
+105 `InvalidOutcome`, 106 `InvalidBetAmount`, 107 `InsufficientBalance`, 126 `InsufficientDeposit`, 142 `BetNotFound`, 145 `InvalidAmount`, 155 `AlreadyClaimed`, 156 `NoWinnings`, 157 `InvalidReferrer`, 161 `GuardianCannotVoteOnOwnRemoval`, 162 `BelowMinimumGuardianCount`, 163 `InvalidTokenDecimals`, 164 `TooManyDisputeVoters`, 165 `InvalidToken`, 169 `MinimumBetNotMet`, 170 `InvalidBaseFee`, 200 `DisputeBondRequired`, 201 `ZeroWinningStake`
 
 ### Resolution & Disputes
 108 `OracleFailure`, 110 `DisputeWindowClosed`, 117 `CannotChangeOutcome`, 118 `MarketNotDisputed`, 119 `MarketNotPendingResolution`, 133 `ParentMarketNotResolved`, 134 `ParentMarketInvalidOutcome`, 135 `ResolutionNotReady`, 136 `DisputeWindowStillOpen`, 137 `NoMajorityReached`, 138 `StalePrice`, 139 `ConfidenceTooLow`, 141 `MarketNotCancelled`, 147 `MarketNotResolved`, 158 `ResolutionDeadlinePassed`
 
 ### Voting & Governance
-111 `VotingNotStarted`, 112 `VotingEnded`, 113 `AlreadyVoted`, 114 `FeeTooHigh`, 129 `InsufficientVotes`, 130 `AlreadyVotedOnUpgrade`, 140 `InsufficientVotingWeight`, 162 `AlreadyVotedOnRemoval`, 163 `RemovalNotPending`, 164 `RemovalExpired`
+111 `VotingNotStarted`, 112 `VotingEnded`, 113 `AlreadyVoted`, 114 `FeeTooHigh`, 129 `InsufficientVotes`, 130 `AlreadyVotedOnUpgrade`, 140 `InsufficientVotingWeight`, 166 `AlreadyVotedOnRemoval`, 167 `RemovalNotPending`, 168 `RemovalExpired`, 202 `RemovalAlreadyPending`
 
 ### Upgrades
 127 `TimelockActive`, 128 `UpgradeNotInitiated`, 131 `InvalidWasmHash`, 132 `UpgradeFailed`, 143 `UpgradeAlreadyPending`, 144 `UpgradeHashInCooldown`

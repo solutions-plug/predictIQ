@@ -113,6 +113,83 @@ mod tests {
         );
     }
 
+    // ── admin limiter proxy trust ─────────────────────────────────────────────
+    //
+    // The admin limiter currently hard-codes `trust_proxy = true` (see closed
+    // issue #1725). That means the client IP is taken from the left-most
+    // `X-Forwarded-For` entry, so a caller can rotate spoofed XFF values to
+    // obtain a fresh bucket per request. These tests pin that behaviour: if the
+    // trust setting changes, they must be updated deliberately in review.
+
+    /// With proxy trust enabled (the current admin default), differing
+    /// `X-Forwarded-For` values are treated as different clients, so spoofing
+    /// XFF bypasses the per-IP bucket.
+    #[tokio::test]
+    async fn admin_trusts_x_forwarded_for_when_proxy_trust_enabled() {
+        let limiter = Arc::new(RateLimiter::new());
+        let app = Router::new()
+            .route("/", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(
+                limiter.clone(),
+                admin_rate_limit_middleware,
+            ));
+
+        // Exhaust the bucket for the first spoofed address.
+        for _ in 0..30 {
+            assert_eq!(
+                status(app.clone(), req("5.5.5.5")).await,
+                StatusCode::OK
+            );
+        }
+        assert_eq!(
+            status(app.clone(), req("5.5.5.5")).await,
+            StatusCode::TOO_MANY_REQUESTS,
+            "spoofed address 5.5.5.5 should be rate-limited"
+        );
+
+        // A different XFF value is honoured as a distinct client, so the
+        // request is allowed even though it comes from the same caller.
+        assert_eq!(
+            status(app, req("6.6.6.6")).await,
+            StatusCode::OK,
+            "admin limiter trusts X-Forwarded-For: a new XFF value gets a fresh bucket"
+        );
+    }
+
+    /// When proxy trust is disabled, the limiter keys on the real client IP
+    /// rather than `X-Forwarded-For`, so differing XFF values from the same
+    /// client share a single bucket.
+    #[tokio::test]
+    async fn admin_keys_on_real_client_ip_when_proxy_trust_disabled() {
+        let limiter = Arc::new(RateLimiter::new());
+        let config = RateLimitConfig::new(30, Duration::from_secs(60));
+
+        // Simulate the limiter resolving the real peer IP (proxy trust off):
+        // all requests share the "admin:<real-ip>" key regardless of XFF.
+        for _ in 0..30 {
+            assert!(limiter.check("admin:7.7.7.7", &config).await);
+        }
+
+        let app = Router::new()
+            .route("/", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(
+                limiter,
+                admin_rate_limit_middleware,
+            ));
+
+        // The real client IP is exhausted; a spoofed XFF must not help.
+        assert_eq!(
+            status(app.clone(), req("7.7.7.7")).await,
+            StatusCode::TOO_MANY_REQUESTS,
+            "real client IP 7.7.7.7 should be rate-limited"
+        );
+        assert_eq!(
+            status(app, req("8.8.8.8")).await,
+            StatusCode::TOO_MANY_REQUESTS,
+            "with proxy trust off, a differing XFF must not grant a fresh bucket"
+        );
+    }
+
     /// Analytics: session-keyed — exhausting one session does not affect another.
     #[tokio::test]
     async fn analytics_isolates_by_session_id() {

@@ -147,3 +147,78 @@ mod tests {
         }
     }
 }
+
+/// Tests for the request body-size middleware (`REQUEST_BODY_MAX_BYTES`).
+#[cfg(test)]
+mod body_size_tests {
+    use std::sync::Once;
+
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+        middleware,
+        routing::post,
+        Router,
+    };
+    use predictiq_api::validation::request_size_validation_middleware;
+    use tower::ServiceExt;
+
+    const LIMIT: usize = 1024;
+    static INIT: Once = Once::new();
+
+    /// The limit is cached in a process-wide `OnceLock` on first use, so the env
+    /// var must be set before any request in this test binary hits the middleware.
+    fn init_limit() {
+        INIT.call_once(|| std::env::set_var("REQUEST_BODY_MAX_BYTES", LIMIT.to_string()));
+    }
+
+    fn app() -> Router {
+        init_limit();
+        Router::new()
+            .route("/echo", post(|body: String| async move { body.len().to_string() }))
+            .layer(middleware::from_fn(request_size_validation_middleware))
+    }
+
+    fn post_body(len: usize, with_content_length: bool) -> Request<Body> {
+        let mut b = Request::builder().method("POST").uri("/echo");
+        if with_content_length {
+            b = b.header("content-length", len.to_string());
+        }
+        b.body(Body::from("a".repeat(len))).unwrap()
+    }
+
+    #[tokio::test]
+    async fn body_at_limit_reaches_handler() {
+        let resp = app().oneshot(post_body(LIMIT, true)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn body_over_limit_rejected_via_content_length() {
+        let resp = app().oneshot(post_body(LIMIT + 1, true)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn body_over_limit_rejected_without_content_length() {
+        let resp = app().oneshot(post_body(LIMIT + 1, false)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn limit_is_not_reread_per_request() {
+        let router = app();
+        let ok = router.clone().oneshot(post_body(LIMIT, true)).await.unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+
+        // Changing the env var after first use must not change the enforced limit.
+        std::env::set_var("REQUEST_BODY_MAX_BYTES", "1");
+        let still_ok = router.clone().oneshot(post_body(LIMIT, true)).await.unwrap();
+        assert_eq!(still_ok.status(), StatusCode::OK);
+
+        std::env::set_var("REQUEST_BODY_MAX_BYTES", "1000000");
+        let still_rejected = router.oneshot(post_body(LIMIT + 1, true)).await.unwrap();
+        assert_eq!(still_rejected.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        std::env::set_var("REQUEST_BODY_MAX_BYTES", LIMIT.to_string());
+    }
+}

@@ -17,6 +17,24 @@ This service uses PostgreSQL. Schema and seed scripts are in:
 - `email_jobs` — async email queue tracking
 - `markets` — on-chain market mirror
 
+## `markets` Consistency Constraints
+
+The `markets` table mirrors on-chain state. The invariants below are enforced at
+the database level so that direct writes and migrations cannot persist
+contradictory state (see `contracts/predict-iq/INVARIANTS.md`).
+
+| Constraint | Type | Invariant enforced |
+|---|---|---|
+| `markets_on_chain_market_id_key` | UNIQUE | Each on-chain market identifier maps to exactly one row; no duplicate mirrors of the same market. |
+| `markets_outcome_count_check` | CHECK | A market has at least two outcomes (`outcome_count >= 2`), matching the contract's minimum outcome count. |
+| `markets_status_check` | CHECK | `status` is one of the contract's valid lifecycle states (`active`, `closed`, `resolved`, `cancelled`). |
+| `markets_resolved_status_check` | CHECK | A market may only carry a `resolved_outcome` when `status = 'resolved'`; unresolved markets must leave it `NULL`. |
+| `markets_resolved_outcome_check` | CHECK | When present, `resolved_outcome` is a valid outcome index (`resolved_outcome >= 0` and `< outcome_count`). |
+| `markets_deadline_check` | CHECK | `deadline` is strictly after `created_at`, so a market cannot be created already expired. |
+
+Any insert or update that violates one of these constraints fails at the
+database level with a constraint-violation error.
+
 ## Migration Files
 
 | # | File | Description |
@@ -41,9 +59,78 @@ This service uses PostgreSQL. Schema and seed scripts are in:
 | 016 | `016_add_markets_deadline_index.sql` | Partial index for deadline-based active market queries |
 | 017 | `017_add_soft_delete_markets.sql` | Adds `deleted_at` to `markets` + cleanup function |
 | 018 | `018_add_varchar_constraints.sql` | CHECK constraints on user-supplied TEXT columns |
+| 019 | `019_add_markets_consistency_constraints.sql` | UNIQUE + CHECK constraints enforcing `markets` invariants |
 
 > **Note:** Two migration files share the `010_` prefix. Apply them in lexicographic
 > order (`010_add_soft_delete_newsletter.sql` before `010_create_audit_log.sql`).
+
+## Migration Naming and Numbering Rules
+
+Every schema change lives in its own file under
+`services/api/database/migrations/`. The filename determines both the
+**version** recorded in `schema_migrations` and the **order** in which
+migrations are applied, so the format is enforced by tooling.
+
+### Filename format
+
+```
+<prefix>_<description>.sql
+```
+
+| Part | Rule | Examples |
+|------|------|----------|
+| `<prefix>` | Zero-padded number, optionally followed by a single lowercase letter suffix | `017`, `017b`, `017c` |
+| `<description>` | Lowercase words separated by underscores, describing the change | `add_soft_delete_markets` |
+| Extension | Always `.sql` | — |
+
+The **filename stem** (the filename without the `.sql` extension) is the
+canonical identifier for a migration, e.g. `017b_add_markets_status_index`.
+
+### The numeric prefix is not the version
+
+The numeric prefix is **not** the migration version. The version is the
+**full filename stem**, and that is the value stored in the
+`schema_migrations` table and compared against the embedded migration at
+startup.
+
+This means files that share a numeric prefix are all distinct migrations and
+are all applied. For example, `017`, `017b`, `017c`, `017d` and `017e` are
+five separate migrations, not one. Treating the numeric prefix as the version
+causes files sharing a prefix to be silently skipped — see issue #1746 for the
+precedent.
+
+### Ordering rule
+
+Migrations are applied in **lexicographic order of the filename**. Because
+`_` (ASCII `0x5F`) sorts after any lowercase letter, a letter suffix sorts
+after the bare number:
+
+```
+017_add_soft_delete_markets.sql
+017b_...
+017c_...
+018_add_varchar_constraints.sql
+```
+
+Choose suffixes so that lexicographic order matches the intended apply order.
+When adding a migration, use the next unused number; if that number is already
+taken, append the next free letter suffix (`017b`, `017c`, …) rather than
+renumbering existing files.
+
+### Registry and rollback requirements
+
+Each migration must be registered in the `MIGRATIONS` array in
+`services/api/src/migrations.rs`:
+
+| Field | Requirement |
+|-------|-------------|
+| `version` | Unique string equal to the filename stem (e.g. `"017b_add_markets_status_index"`) |
+| `name` | Equal to the filename stem |
+| Rollback | A matching `rollbacks/<stem>_down.sql` file must exist |
+
+A migration file that is not in the registry, a registry entry with no
+matching file, a missing rollback, an orphan rollback, or a duplicate
+`version` will all fail the registry check.
 
 ## Migration Registry Check
 
@@ -60,14 +147,23 @@ consistent with the files on disk. It checks that:
 CI runs this check on every pull request (see the migration registry job in
 `.github/workflows/test.yml`); a non-zero exit fails the job.
 
-Run it locally from the workspace root:
+The registry check is `scripts/check_migrations_registry.sh`. It runs in CI
+(the migrations workflow) and can be run locally from the repository root:
 
 ```bash
 bash scripts/check_migrations_registry.sh
 ```
 
+It fails on:
+
+- migration files present on disk but missing from the `MIGRATIONS` registry,
+- registry entries with no matching migration file,
+- missing or orphaned rollback scripts,
+- duplicate `version` strings in the registry.
+
+Run it before opening a PR that adds or renames a migration.
+
 ## Migration Immutability Guarantee
-=======
 
 Migration files are embedded at compile time and their SHA-256 checksums are
 stored in `schema_migrations` when first applied. At every startup the
@@ -124,6 +220,7 @@ exact changes made by their paired migration.
 | `016_add_markets_deadline_index.sql` | `rollbacks/016_add_markets_deadline_index_down.sql` |
 | `017_add_soft_delete_markets.sql` | `rollbacks/017_add_soft_delete_markets_down.sql` |
 | `018_add_varchar_constraints.sql` | `rollbacks/018_add_varchar_constraints_down.sql` |
+| `019_add_markets_consistency_constraints.sql` | `rollbacks/019_add_markets_consistency_constraints_down.sql` |
 
 ### Rolling back a single migration
 
@@ -155,7 +252,7 @@ done
 
 When rolling back multiple migrations, respect foreign-key dependencies:
 
-1. `018` → `017` → `016` → `015` → `014` → `013` → `012` → `011` → `010b` → `010a` → `009` → `008` → `007` → `006` → `005` → `004` → `003` → `002` → `001` → `000`
+1. `019` → `018` → `017` → `016` → `015` → `014` → `013` → `012` → `011` → `010b` → `010a` → `009` → `008` → `007` → `006` → `005` → `004` → `003` → `002` → `001` → `000`
 
 `analytics_events` (006) references `content_management` (005), and
 `audit_logs` (007) references several earlier tables — roll them back before
@@ -190,58 +287,4 @@ Pool sizing and timeouts are fully env-configurable — no code changes needed f
 | `DB_POOL_MIN_CONNECTIONS` | `5` | Minimum idle connections kept open |
 | `DB_POOL_MAX_CONNECTIONS` | `25` | Maximum concurrent connections |
 | `DB_POOL_ACQUIRE_TIMEOUT_SECS` | `5` | Seconds to wait for a free connection before error |
-| `DB_POOL_IDLE_TIMEOUT_SECS` | _(sqlx default)_ | Seconds before idle connections are reaped (0 = disabled) |
-| `DB_POOL_MAX_LIFETIME_SECS` | _(sqlx default)_ | Max lifetime of a connection in seconds (0 = disabled) |
-| `DB_QUERY_TIMEOUT_SECS` | `30` | Per-query execution timeout; queries exceeding this return an error |
-
-**Sizing guidance:**
-- Small / dev: `DB_POOL_MIN_CONNECTIONS=2 DB_POOL_MAX_CONNECTIONS=5`
-- Medium: `DB_POOL_MIN_CONNECTIONS=5 DB_POOL_MAX_CONNECTIONS=25` (default)
-- Large / high-traffic: `DB_POOL_MIN_CONNECTIONS=10 DB_POOL_MAX_CONNECTIONS=100`
-
-Pool metrics are exposed on the `/metrics` Prometheus endpoint under the `db_pool_*` family.
-
-## Apply Migrations
-
-Run from the workspace root:
-
-```bash
-for f in services/api/database/migrations/*.sql; do
-  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
-done
-```
-
-Or use the provided script:
-
-```bash
-bash services/api/scripts/run_migrations.sh
-```
-
-## Seeding
-
-```bash
-for f in services/api/database/seeds/*.sql; do
-  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
-done
-```
-
-## Backup Strategy
-
-- Daily logical backups with `pg_dump`, 30-day retention.
-- Weekly full snapshot, 90-day retention.
-- Quarterly restore drills in staging.
-- Encrypt backup storage at rest.
-
-## Data Retention Policy
-
-- `analytics_events`: 13 months raw, then archive/aggregate.
-- `audit_logs` / `audit_log`: 24 months minimum for compliance.
-- `contact_form_submissions`: 12 months unless legal hold.
-- `newsletter_subscribers` / `waitlist_entries`: retain active records; hard-delete on GDPR request.
-
-## Notes
-
-- UUID primary keys via `gen_random_uuid()` (most tables); `audit_log` uses `BIGSERIAL`.
-- All tables include `created_at` / `updated_at` timestamps.
-- Soft deletes via `deleted_at` in `content_management`, `audit_logs`, `newsletter_subscribers`, and `markets`. All query helpers filter `WHERE deleted_at IS NULL` by default. Rows soft-deleted for more than 30 days are eligible for hard-deletion via the `cleanup_soft_deleted_markets()` database function.
-- Indexes on high-frequency query fields (`email`, `status`, `created_at`).
+| `DB_POOL_IDLE_TIMEOUT_SECS` | _(sqlx default)
