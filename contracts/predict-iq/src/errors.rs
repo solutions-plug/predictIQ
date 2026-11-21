@@ -247,4 +247,13 @@ pub enum ErrorCode {
 
     /// A guardian's voting power is zero or above the per-entry maximum.
     InvalidVotingPower = 208,
+
+    /// The voting deadline for the pending upgrade proposal has passed; votes are no longer accepted.
+    UpgradeVotingDeadlinePassed = 209,
+
+    /// The pending upgrade proposal has been cancelled and can no longer be voted on or executed.
+    UpgradeCancelled = 210,
+
+    /// No upgrade proposal is pending; cancellation or voting cannot proceed.
+    UpgradeNotPending = 211,
 }

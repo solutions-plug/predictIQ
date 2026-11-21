@@ -20,6 +20,7 @@ mod tests {
         routing::get,
         Router,
     };
+    use predictiq_api::compression::{body_size_limit_middleware, BodySizeLimit};
     use predictiq_api::security::{global_rate_limit_middleware, RateLimitConfig, RateLimiter};
     use tower::ServiceExt; // for `oneshot`
 
@@ -100,6 +101,65 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp_b.status(), StatusCode::OK);
+    }
+
+    // ── Body-size limit ──────────────────────────────────────────────────────
+
+    /// Build a minimal router with the body-size limit middleware applied once.
+    fn body_limit_app(limit: BodySizeLimit) -> Router {
+        Router::new()
+            .route("/ping", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(
+                limit,
+                body_size_limit_middleware,
+            ))
+    }
+
+    fn post_request(ip: &str, body_len: usize) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("/ping")
+            .header("x-forwarded-for", ip)
+            .body(Body::from(vec![b'x'; body_len]))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_body_size_limit_read_once_and_applied_consistently() {
+        // Configure a small limit at startup.
+        let limit = BodySizeLimit::new(16);
+        assert_eq!(limit.bytes(), 16);
+
+        // Request exactly at the limit must succeed.
+        let resp_ok = body_limit_app(limit)
+            .oneshot(post_request("1.2.3.4", 16))
+            .await
+            .unwrap();
+        assert_eq!(resp_ok.status(), StatusCode::OK);
+
+        // Request over the limit must be rejected with 413.
+        let resp_over = body_limit_app(limit)
+            .oneshot(post_request("1.2.3.4", 17))
+            .await
+            .unwrap();
+        assert_eq!(resp_over.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+        // Mutating the environment after startup must not change the limit.
+        std::env::set_var("BODY_SIZE_LIMIT", "1");
+        let resp_after_env = body_limit_app(limit)
+            .oneshot(post_request("1.2.3.4", 16))
+            .await
+            .unwrap();
+        assert_eq!(resp_after_env.status(), StatusCode::OK);
+        std::env::remove_var("BODY_SIZE_LIMIT");
+
+        // The stored limit is unchanged and still enforced consistently.
+        assert_eq!(limit.bytes(), 16);
+        let resp_over_again = body_limit_app(limit)
+            .oneshot(post_request("1.2.3.4", 17))
+            .await
+            .unwrap();
+        assert_eq!(resp_over_again.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     // ── Cleanup / map-size bound ─────────────────────────────────────────────

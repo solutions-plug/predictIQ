@@ -258,6 +258,24 @@ pub struct DbPoolConfig {
     pub lock_timeout_ms: u64,
 }
 
+/// Default maximum request body size: 1 MiB.
+///
+/// Used by the body-size middleware in `compression.rs`.  The value is resolved
+/// once at startup (see [`Config::request_body_max_bytes`]) rather than being
+/// read from the environment on every request.
+pub const DEFAULT_REQUEST_BODY_MAX_BYTES: usize = 1024 * 1024;
+
+/// Parse the `REQUEST_BODY_MAX_BYTES` environment variable.
+///
+/// Returns `DEFAULT_REQUEST_BODY_MAX_BYTES` when the variable is unset or
+/// cannot be parsed as a positive integer.  A value of `0` is rejected (it
+/// would block every request with a body) and falls back to the default.
+pub fn parse_request_body_max_bytes(raw: Option<&str>) -> usize {
+    raw.and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_REQUEST_BODY_MAX_BYTES)
+}
+
 #[derive(Clone)]
 pub struct Config {
     pub bind_addr: SocketAddr,
@@ -411,6 +429,12 @@ pub struct Config {
     /// Global rate limit window in seconds. Default: 60.
     /// Set via `GLOBAL_RATE_LIMIT_WINDOW_SECS`. Must be > 0.
     pub global_rate_limit_window_secs: u64,
+    /// Maximum accepted request body size in bytes, resolved **once** at
+    /// startup from `REQUEST_BODY_MAX_BYTES`.  Defaults to
+    /// [`DEFAULT_REQUEST_BODY_MAX_BYTES`] (1 MiB).  The body-size middleware
+    /// reads this value from shared state instead of re-reading the
+    /// environment on every request.
+    pub request_body_max_bytes: usize,
 }
 
 impl Config {
@@ -495,6 +519,10 @@ impl Config {
         // must never be logged.
         #[allow(deprecated)]
         let database_url = db_credentials.to_connection_string().expose_secret().to_string();
+
+        // Resolve the request body-size limit exactly once, at startup.
+        let request_body_max_bytes =
+            parse_request_body_max_bytes(env::var("REQUEST_BODY_MAX_BYTES").ok().as_deref());
 
         Self {
             bind_addr,
@@ -704,6 +732,7 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(60),
+            request_body_max_bytes,
         }
     }
 
@@ -733,6 +762,7 @@ impl Config {
         self.sendgrid_webhook_secret
     }
 
+    /// Emit a `tracing::warn!` if `SENDGRID_KEY_ROTATED_AT`
     /// The check is best-effort: if the date cannot be parsed the function logs
     /// a warning and returns — it never hard-errors so a misconfigured date
     /// doesn't prevent startup.

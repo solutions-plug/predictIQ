@@ -64,3 +64,21 @@ mod app_state {
         pub audit_logger: AuditLogger,
     }
 }
+
+use axum::{routing::get, Router};
+
+/// Builds the application router.
+///
+/// The body-size limit is read once from `config` (which is loaded at startup)
+/// and the body-size middleware is layered exactly once on the router.
+pub fn build_router(state: AppState) -> Router {
+    // Read the body-size limit once at startup from the centralised config.
+    let body_size_limit = state.config.body_size_limit;
+
+    let router = Router::new()
+        .route("/health", get(handlers::health::health_check))
+        .with_state(state);
+
+    // Apply the body-size middleware exactly once, using the startup-loaded limit.
+    compression::apply_body_size_limit(router, body_size_limit)
+}

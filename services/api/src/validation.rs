@@ -30,11 +30,30 @@ pub fn parse_request_body_max_bytes(val: Option<&str>) -> usize {
 }
 
 /// Read once at first use and cached for the process lifetime.
+///
+/// This is the fallback used when no limit has been installed in shared state
+/// (e.g. in unit tests). Production code installs the limit once at startup via
+/// [`init_body_limit`] so the middleware never touches the environment.
 fn body_limit() -> usize {
     static LIMIT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *LIMIT.get_or_init(|| {
         parse_request_body_max_bytes(std::env::var("REQUEST_BODY_MAX_BYTES").ok().as_deref())
     })
+}
+
+/// Shared, process-wide body-size limit, loaded once at startup.
+static BODY_LIMIT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+/// Install the body-size limit into shared state. Subsequent calls are no-ops,
+/// so the first value wins and the limit is read exactly once per process.
+pub fn init_body_limit(limit: usize) {
+    let _ = BODY_LIMIT.set(limit);
+}
+
+/// Resolve the configured body-size limit from shared state, falling back to
+/// the lazily-read environment value if startup did not install one.
+pub fn configured_body_limit() -> usize {
+    *BODY_LIMIT.get_or_init(body_limit)
 }
 
 /// Maximum time allowed to read a request body.
@@ -55,7 +74,7 @@ pub async fn request_size_validation_middleware(
     req: Request,
     next: Next,
 ) -> Response {
-    let limit = body_limit();
+    let limit = configured_body_limit();
 
     // Fast path: Content-Length header present
     if let Some(cl) = req.headers().get("content-length") {
@@ -191,6 +210,67 @@ pub async fn request_validation_middleware(req: Request, next: Next) -> Response
     }
 
     next.run(req).await
+}
+
+// ── Path parameter validation ─────────────────────────────────────────────────
+
+/// Expected length of a hex-encoded user address (e.g. a 20-byte EVM address).
+const USER_ADDRESS_HEX_LEN: usize = 40;
+
+/// Maximum accepted length of a market id.
+const MARKET_ID_MAX_LEN: usize = 64;
+
+/// Validate a user address path parameter.
+///
+/// Accepts a `0x`-prefixed, 40-character hex string (case-insensitive). The
+/// value is returned unchanged on success so callers can use it directly as a
+/// cache key or RPC argument.
+pub fn validate_user_address(value: &str) -> Result<String, ValidationError> {
+    let trimmed = value.trim();
+    let hex = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"));
+
+    let valid = match hex {
+        Some(h) => h.len() == USER_ADDRESS_HEX_LEN && h.chars().all(|c| c.is_ascii_hexdigit()),
+        None => false,
+    };
+
+    if !valid {
+        return Err(ValidationError {
+            error:   "invalid_user_address",
+            field:   "user_address".to_string(),
+            message: "User address must be a 0x-prefixed 40-character hex string.".to_string(),
+        });
+    }
+
+    Ok(trimmed.to_string())
+}
+
+/// Validate a market id path parameter.
+///
+/// Accepts 1..=`MARKET_ID_MAX_LEN` ASCII alphanumeric characters plus `-` and
+/// `_`. The value is returned unchanged on success.
+pub fn validate_market_id(value: &str) -> Result<String, ValidationError> {
+    let trimmed = value.trim();
+    let valid = !trimmed.is_empty()
+        && trimmed.len() <= MARKET_ID_MAX_LEN
+        && trimmed
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+
+    if !valid {
+        return Err(ValidationError {
+            error:   "invalid_market_id",
+            field:   "market_id".to_string(),
+            message: format!(
+                "Market id must be 1-{} characters of ASCII alphanumerics, '-' or '_'.",
+                MARKET_ID_MAX_LEN
+            ),
+        });
+    }
+
+    Ok(trimmed.to_string())
 }
 
 #[derive(Debug, Serialize)]
@@ -346,6 +426,37 @@ pub fn validate_email(email: &str) -> Result<(), ValidationError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn body_limit_is_read_once_and_consistent() {
+        // The first installed value wins; later attempts are ignored.
+        init_body_limit(4_096);
+        init_body_limit(8_192);
+        assert_eq!(configured_body_limit(), 4_096);
+        assert_eq!(configured_body_limit(), 4_096);
+    }
+
+    #[test]
+    fn user_address_accepts_valid_and_rejects_invalid() {
+        let addr = "0x52908400098527886E0F7030069857D2E4169EE7";
+        assert_eq!(validate_user_address(addr).unwrap(), addr);
+
+        assert!(validate_user_address("").is_err());
+        assert!(validate_user_address("0x").is_err());
+        assert!(validate_user_address("52908400098527886E0F7030069857D2E4169EE7").is_err());
+        assert!(validate_user_address("0xZZ908400098527886E0F7030069857D2E4169EE7").is_err());
+        assert!(validate_user_address("0x52908400098527886E0F7030069857D2E4169EE").is_err());
+    }
+
+    #[test]
+    fn market_id_accepts_valid_and_rejects_invalid() {
+        assert_eq!(validate_market_id("market-1_A").unwrap(), "market-1_A");
+
+        assert!(validate_market_id("").is_err());
+        assert!(validate_market_id("bad id").is_err());
+        assert!(validate_market_id("bad/id").is_err());
+        assert!(validate_market_id(&"a".repeat(MARKET_ID_MAX_LEN + 1)).is_err());
+    }
 
     #[test]
     fn parse_request_body_max_bytes_table() {

@@ -18,7 +18,7 @@ mod tests {
         validation::{
             content_type_validation_middleware, parse_request_body_max_bytes,
             request_size_validation_middleware, request_validation_middleware,
-            DEFAULT_REQUEST_BODY_MAX_BYTES,
+            validate_market_id, validate_user_address, DEFAULT_REQUEST_BODY_MAX_BYTES,
         },
     };
     use tower::ServiceExt;
@@ -146,6 +146,111 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ── User address path param validation ────────────────────────────────────
+
+    #[test]
+    fn valid_user_addresses_pass_through_unchanged() {
+        let valid = [
+            "0x0000000000000000000000000000000000000000",
+            "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+            "0xABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD",
+            "0x1234567890abcdef1234567890abcdef12345678",
+        ];
+
+        for address in valid {
+            let result = validate_user_address(address);
+            assert!(result.is_ok(), "expected {address} to be valid");
+            assert_eq!(result.unwrap(), address);
+        }
+    }
+
+    #[test]
+    fn malformed_user_addresses_are_rejected() {
+        let invalid = [
+            "",
+            "0x",
+            "0x123",
+            "0xZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ",
+            "abcdefabcdefabcdefabcdefabcdefabcdefabcd",
+            "0xabcdefabcdefabcdefabcdefabcdefabcdefabcde",
+            "0xabcdefabcdefabcdefabcdefabcdefabcdefabc",
+            "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd0",
+            "0xabcdefabcdefabcdefabcdefabcdefabcdefabcz",
+            "0xabcdefabcdefabcdefabcdefabcdefabcdefab d",
+            "0xabcdefabcdefabcdefabcdefabcdefabcdefab-d",
+            "0xabcdefabcdefabcdefabcdefabcdefabcdefab'c",
+            "0xabcdefabcdefabcdefabcdefabcdefabcdefab;c",
+            " 0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+            "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd ",
+            "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd\n",
+            "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd/../",
+        ];
+
+        for address in invalid {
+            assert!(
+                validate_user_address(address).is_err(),
+                "expected {address:?} to be rejected"
+            );
+        }
+    }
+
+    // ── Market id path param validation ───────────────────────────────────────
+
+    #[test]
+    fn valid_market_ids_pass_through_unchanged() {
+        let valid = [
+            "1",
+            "42",
+            "0",
+            "1234567890",
+            "market-1",
+            "market_1",
+            "MARKET-1",
+            "abc123",
+            "a",
+            "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+        ];
+
+        for market_id in valid {
+            let result = validate_market_id(market_id);
+            assert!(result.is_ok(), "expected {market_id} to be valid");
+            assert_eq!(result.unwrap(), market_id);
+        }
+    }
+
+    #[test]
+    fn malformed_market_ids_are_rejected() {
+        let invalid = [
+            "",
+            " ",
+            "market 1",
+            "market/1",
+            "market\\1",
+            "market'1",
+            "market;1",
+            "market--1",
+            "-market",
+            "market-",
+            "_market",
+            "market_",
+            "1 OR 1=1",
+            "1' OR '1'='1",
+            "<script>",
+            "market?1",
+            "market#1",
+            "market%201",
+            "market\u{0000}1",
+            "market\n1",
+        ];
+
+        for market_id in invalid {
+            assert!(
+                validate_market_id(market_id).is_err(),
+                "expected {market_id:?} to be rejected"
+            );
+        }
     }
 
     // ── Path parameter validation ─────────────────────────────────────────────

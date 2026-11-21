@@ -141,7 +141,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use validator::ValidateEmail;
 
-use crate::{blockchain::HealthStatus, cache::{keys, InvalidationTag}, db::DbError, email::webhook::sendgrid_webhook_handler, pagination::{PaginatedResponse, PaginationQuery}, body_redact, AppState, batch_53_implementations::RequeueResult};
+use crate::{blockchain::HealthStatus, cache::{keys, InvalidationTag}, db::DbError, email::webhook::sendgrid_webhook_handler, pagination::{PaginatedResponse, PaginationQuery}, body_redact, AppState, batch_53_implementations::RequeueResult, validation};
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ApiError {
@@ -1162,6 +1162,140 @@ pub async fn revoke_api_key(
         (status = 200, description = "Platform statistics"),
     )
 )]
+/// Validate a user address path parameter before it is used in cache keys or RPC calls.
+fn validate_user_address_param(address: &str) -> Result<(), ApiError> {
+    validation::validate_user_address(address)
+        .map_err(|e| ApiError::bad_request(e.to_string()))
+}
+
+/// Validate a market id path parameter before it is used in cache keys or RPC calls.
+fn validate_market_id_param(market_id: &str) -> Result<i64, ApiError> {
+    validation::validate_market_id_str(market_id)
+        .map_err(|e| ApiError::bad_request(e.to_string()))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/users/{address}/positions",
+    tag = "users",
+    params(
+        ("address" = String, Path, description = "User Stellar address"),
+    ),
+    responses(
+        (status = 200, description = "User positions"),
+        (status = 400, description = "Invalid user address", body = ApiError),
+    )
+)]
+pub async fn user_positions(
+    State(state): State<Arc<AppState>>,
+    Path(address): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    // Reject malformed addresses before any cache lookup or RPC call.
+    validate_user_address_param(&address)?;
+
+    let start = Instant::now();
+    let cache_key = keys::api_user_positions(&address);
+    let ttl = Duration::from_secs(60);
+    let endpoint = "user_positions";
+
+    let (payload, hit) = state
+        .cache
+        .get_or_set_json(&cache_key, ttl, || async {
+            let positions = state.db.user_positions_cached(&address).await?;
+            Ok(positions)
+        })
+        .await
+        .map_err(into_api_error)?;
+
+    if hit {
+        state.metrics.observe_hit("api", endpoint);
+    } else {
+        state.metrics.observe_miss("api", endpoint);
+    }
+    state.metrics.observe_request(endpoint, 200, start.elapsed().as_secs_f64());
+
+    Ok((StatusCode::OK, Json(payload)))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/markets/{market_id}",
+    tag = "markets",
+    params(
+        ("market_id" = String, Path, description = "Market id"),
+    ),
+    responses(
+        (status = 200, description = "Market details"),
+        (status = 400, description = "Invalid market id", body = ApiError),
+        (status = 404, description = "Market not found", body = ApiError),
+    )
+)]
+pub async fn market_detail(
+    State(state): State<Arc<AppState>>,
+    Path(market_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    // Reject malformed market ids before any cache lookup or RPC call.
+    let market_id = validate_market_id_param(&market_id)?;
+
+    let start = Instant::now();
+    let cache_key = keys::api_market_detail(market_id);
+    let ttl = Duration::from_secs(60);
+    let endpoint = "market_detail";
+
+    let (payload, hit) = state
+        .cache
+        .get_or_set_json(&cache_key, ttl, || async {
+            let market = state
+                .db
+                .market_by_id_cached(market_id)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("market not found"))?;
+            Ok(market)
+        })
+        .await
+        .map_err(into_api_error)?;
+
+    if hit {
+        state.metrics.observe_hit("api", endpoint);
+    } else {
+        state.metrics.observe_miss("api", endpoint);
+    }
+    state.metrics.observe_request(endpoint, 200, start.elapsed().as_secs_f64());
+
+    Ok((StatusCode::OK, Json(payload)))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/dead-letter-jobs",
+    tag = "admin",
+    params(PaginationQuery),
+    responses(
+        (status = 200, description = "Paginated list of dead-letter jobs"),
+        (status = 400, description = "Invalid pagination parameters", body = ApiError),
+    )
+)]
+pub async fn dead_letter_jobs(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<PaginationQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    let start = Instant::now();
+    let limit = query.limit();
+    let offset = query.offset();
+    let endpoint = "dead_letter_jobs";
+
+    let (jobs, total) = state
+        .db
+        .dead_letter_jobs_paginated(limit, offset)
+        .await
+        .map_err(into_api_error)?;
+
+    let response = PaginatedResponse::new(jobs, total, limit, offset);
+    state.metrics.observe_request(endpoint, 200, start.elapsed().as_secs_f64());
+
+    Ok((StatusCode::OK, Json(response)))
+}
+
 pub async fn statistics(State(state): State<Arc<AppState>>) -> Result<impl IntoResponse, ApiError> {
     let start = Instant::now();
     let cache_key = keys::api_statistics();
@@ -1203,6 +1337,9 @@ pub async fn featured_markets(
     let start = Instant::now();
     let limit = query.limit();
     let cursor = query.cursor();
+    // Validate pagination inputs before they reach cache keys or RPC calls.
+    validation::validate_market_id(limit as i64)
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
     let cache_key = keys::api_featured_markets();
     let ttl = Duration::from_secs(2 * 60);
     let endpoint = "featured_markets";
