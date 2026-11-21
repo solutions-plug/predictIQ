@@ -385,12 +385,18 @@ pub enum ConfirmResult {
 }
 
 struct PendingEntry {
-    token: String,
+    /// SHA-256 hex of the raw confirmation token. The raw token is never
+    /// persisted — only this hash (issue #1859).
+    token_hash: String,
     expires_at: Instant,
 }
 
 /// Minimal in-memory store that replicates the token lifecycle enforced by
 /// `newsletter_upsert_pending` / `newsletter_confirm_by_token` in `db.rs`.
+///
+/// Confirmation tokens are stored only as SHA-256 hashes (issue #1859),
+/// mirroring the unsubscribe-token path. Lookups hash the incoming raw token
+/// before comparing, so a DB read exposes no usable confirmation tokens.
 pub struct TokenStore {
     pending: HashMap<String, PendingEntry>,
     confirmed: HashMap<String, bool>,
@@ -407,22 +413,30 @@ impl TokenStore {
     }
 
     /// Upsert a pending token for `email`. Resets any prior pending entry.
+    ///
+    /// The raw `token` is hashed with [`hash_unsubscribe_token`] (the same
+    /// SHA-256 helper used for unsubscribe tokens) before storage; only the
+    /// hash is retained.
     pub fn subscribe(&mut self, email: &str, token: &str) {
         self.pending.insert(
             email.to_string(),
             PendingEntry {
-                token: token.to_string(),
+                token_hash: hash_unsubscribe_token(token),
                 expires_at: Instant::now() + self.token_ttl,
             },
         );
     }
 
     /// Consume the token. Returns the outcome without panicking.
+    ///
+    /// The incoming raw `token` is hashed before lookup, matching the DB
+    /// query on `token_hash`.
     pub fn confirm(&mut self, token: &str) -> ConfirmResult {
+        let token_hash = hash_unsubscribe_token(token);
         let email = self
             .pending
             .iter()
-            .find(|(_, e)| e.token == token)
+            .find(|(_, e)| e.token_hash == token_hash)
             .map(|(email, _)| email.clone());
 
         let Some(email) = email else {
@@ -444,6 +458,12 @@ impl TokenStore {
 
     pub fn is_confirmed(&self, email: &str) -> bool {
         self.confirmed.get(email).copied().unwrap_or(false)
+    }
+
+    /// Returns the stored (hashed) confirmation token for `email`, if any.
+    /// Used by tests to assert the raw token is never persisted.
+    pub fn stored_token_hash(&self, email: &str) -> Option<&str> {
+        self.pending.get(email).map(|e| e.token_hash.as_str())
     }
 }
 
@@ -783,6 +803,50 @@ mod tests {
         s.subscribe("user@example.com", "tok-1");
         assert_eq!(s.confirm("tok-1"), ConfirmResult::Confirmed);
         assert!(s.is_confirmed("user@example.com"));
+    }
+
+    // #1859: confirmation tokens must be stored only as hashes.
+
+    #[test]
+    fn confirmation_token_stored_as_hash_not_raw() {
+        let mut s = store();
+        let raw = "tok-raw-1859";
+        s.subscribe("user@example.com", raw);
+
+        let stored = s
+            .stored_token_hash("user@example.com")
+            .expect("pending entry should exist");
+        // Stored value must differ from the issued token and not contain it.
+        assert_ne!(stored, raw);
+        assert!(!stored.contains(raw));
+        // Stored value must be the SHA-256 hex of the raw token.
+        assert_eq!(stored, hash_unsubscribe_token(raw));
+    }
+
+    #[test]
+    fn confirmation_succeeds_with_valid_raw_token_after_hashing() {
+        let mut s = store();
+        let raw = "tok-valid-1859";
+        s.subscribe("user@example.com", raw);
+        // Raw token still confirms end-to-end even though only the hash is stored.
+        assert_eq!(s.confirm(raw), ConfirmResult::Confirmed);
+        assert!(s.is_confirmed("user@example.com"));
+        // Pending entry is consumed.
+        assert!(s.stored_token_hash("user@example.com").is_none());
+    }
+
+    #[test]
+    fn confirmation_rejects_token_that_matches_stored_hash() {
+        let mut s = store();
+        let raw = "tok-hash-replay-1859";
+        s.subscribe("user@example.com", raw);
+        let stored = s
+            .stored_token_hash("user@example.com")
+            .expect("pending entry should exist")
+            .to_string();
+        // Presenting the stored hash itself must not confirm (lookup re-hashes).
+        assert_eq!(s.confirm(&stored), ConfirmResult::InvalidOrExpired);
+        assert!(!s.is_confirmed("user@example.com"));
     }
 
     #[test]
