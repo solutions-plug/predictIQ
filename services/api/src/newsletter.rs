@@ -116,6 +116,57 @@ impl IpRateLimiter {
     }
 }
 
+// ── Per-recipient subscribe throttle (issue #1860) ──────────────────────────
+//
+// The IP-based limiter in `rate_limit.rs` is defeated by distributed sources,
+// so a single address could still be submitted repeatedly and trigger a
+// confirmation email each time (inbox bombing + SendGrid quota burn).
+//
+// We therefore throttle per *normalized recipient address* using the same
+// Redis-backed limiter primitive (`IpRateLimiter::allow`, which fails closed).
+// When an address is throttled the handler returns the same neutral response
+// used for disposable-email rejection, so the endpoint never reveals whether
+// the address is subscribed, pending, or simply being throttled.
+
+/// Maximum subscribe requests accepted per recipient within the window.
+pub const SUBSCRIBE_PER_RECIPIENT_MAX: usize = 1;
+
+/// Window over which per-recipient subscribe requests are counted.
+pub const SUBSCRIBE_PER_RECIPIENT_WINDOW: Duration = Duration::from_secs(15 * 60);
+
+/// Normalize an email address for use as a throttle key.
+///
+/// Lowercases and trims so `User@Example.com ` and `user@example.com` share a
+/// bucket. The result is hashed before being placed in the Redis key so raw
+/// addresses never appear in Redis keyspace or logs.
+pub fn normalize_recipient(email: &str) -> String {
+    email.trim().to_lowercase()
+}
+
+/// Build the throttle key for `email` (hashed, so no PII in Redis keys).
+pub fn subscribe_throttle_key(email: &str) -> String {
+    let normalized = normalize_recipient(email);
+    format!(
+        "recipient:{}",
+        hex::encode(Sha256::digest(normalized.as_bytes()))
+    )
+}
+
+/// Returns `true` if a subscribe request for `email` is allowed.
+///
+/// Reuses [`IpRateLimiter`] (Redis-backed, atomic, fail-closed). When the
+/// limiter denies the request the caller must return the neutral response and
+/// must **not** send a confirmation email.
+pub async fn allow_subscribe_for_recipient(limiter: &IpRateLimiter, email: &str) -> bool {
+    limiter
+        .allow(
+            &subscribe_throttle_key(email),
+            SUBSCRIBE_PER_RECIPIENT_MAX,
+            SUBSCRIBE_PER_RECIPIENT_WINDOW,
+        )
+        .await
+}
+
 /// Raw token length in bytes. 32 bytes = 256 bits of entropy.
 const TOKEN_BYTES: usize = 32;
 
@@ -334,12 +385,18 @@ pub enum ConfirmResult {
 }
 
 struct PendingEntry {
-    token: String,
+    /// SHA-256 hex of the raw confirmation token. The raw token is never
+    /// persisted — only this hash (issue #1859).
+    token_hash: String,
     expires_at: Instant,
 }
 
 /// Minimal in-memory store that replicates the token lifecycle enforced by
 /// `newsletter_upsert_pending` / `newsletter_confirm_by_token` in `db.rs`.
+///
+/// Confirmation tokens are stored only as SHA-256 hashes (issue #1859),
+/// mirroring the unsubscribe-token path. Lookups hash the incoming raw token
+/// before comparing, so a DB read exposes no usable confirmation tokens.
 pub struct TokenStore {
     pending: HashMap<String, PendingEntry>,
     confirmed: HashMap<String, bool>,
@@ -356,22 +413,30 @@ impl TokenStore {
     }
 
     /// Upsert a pending token for `email`. Resets any prior pending entry.
+    ///
+    /// The raw `token` is hashed with [`hash_unsubscribe_token`] (the same
+    /// SHA-256 helper used for unsubscribe tokens) before storage; only the
+    /// hash is retained.
     pub fn subscribe(&mut self, email: &str, token: &str) {
         self.pending.insert(
             email.to_string(),
             PendingEntry {
-                token: token.to_string(),
+                token_hash: hash_unsubscribe_token(token),
                 expires_at: Instant::now() + self.token_ttl,
             },
         );
     }
 
     /// Consume the token. Returns the outcome without panicking.
+    ///
+    /// The incoming raw `token` is hashed before lookup, matching the DB
+    /// query on `token_hash`.
     pub fn confirm(&mut self, token: &str) -> ConfirmResult {
+        let token_hash = hash_unsubscribe_token(token);
         let email = self
             .pending
             .iter()
-            .find(|(_, e)| e.token == token)
+            .find(|(_, e)| e.token_hash == token_hash)
             .map(|(email, _)| email.clone());
 
         let Some(email) = email else {
@@ -393,6 +458,12 @@ impl TokenStore {
 
     pub fn is_confirmed(&self, email: &str) -> bool {
         self.confirmed.get(email).copied().unwrap_or(false)
+    }
+
+    /// Returns the stored (hashed) confirmation token for `email`, if any.
+    /// Used by tests to assert the raw token is never persisted.
+    pub fn stored_token_hash(&self, email: &str) -> Option<&str> {
+        self.pending.get(email).map(|e| e.token_hash.as_str())
     }
 }
 
@@ -470,6 +541,57 @@ mod tests {
         assert!(limiter.allow(key, 2, window).await);
         assert!(limiter.allow(key, 2, window).await);
         assert!(!limiter.allow(key, 2, window).await);
+    }
+
+    // -------------------------------------------------------------------------
+    // #1860: per-recipient subscribe throttle tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn recipient_normalization_is_case_and_whitespace_insensitive() {
+        assert_eq!(
+            normalize_recipient("  User@Example.COM "),
+            "user@example.com"
+        );
+        assert_eq!(
+            subscribe_throttle_key("User@Example.com"),
+            subscribe_throttle_key(" user@example.com ")
+        );
+        assert_ne!(
+            subscribe_throttle_key("a@example.com"),
+            subscribe_throttle_key("b@example.com")
+        );
+    }
+
+    #[test]
+    fn throttle_key_does_not_contain_raw_address() {
+        let key = subscribe_throttle_key("victim@example.com");
+        assert!(!key.contains("victim@example.com"));
+        assert!(!key.contains("victim"));
+    }
+
+    #[tokio::test]
+    async fn repeated_subscribe_for_same_recipient_is_throttled() {
+        let limiter = make_limiter().await;
+        let email = "repeat@example.com";
+
+        // First submission is allowed (one email).
+        assert!(allow_subscribe_for_recipient(&limiter, email).await);
+        // Subsequent submissions within the window are throttled (no email).
+        assert!(!allow_subscribe_for_recipient(&limiter, email).await);
+        assert!(!allow_subscribe_for_recipient(&limiter, email).await);
+        // Case/whitespace variants share the same bucket.
+        assert!(!allow_subscribe_for_recipient(&limiter, "  REPEAT@example.com ").await);
+    }
+
+    #[tokio::test]
+    async fn different_recipients_are_throttled_independently() {
+        let limiter = make_limiter().await;
+
+        assert!(allow_subscribe_for_recipient(&limiter, "one@example.com").await);
+        assert!(allow_subscribe_for_recipient(&limiter, "two@example.com").await);
+        assert!(!allow_subscribe_for_recipient(&limiter, "one@example.com").await);
+        assert!(!allow_subscribe_for_recipient(&limiter, "two@example.com").await);
     }
 
     #[tokio::test]
@@ -681,6 +803,50 @@ mod tests {
         s.subscribe("user@example.com", "tok-1");
         assert_eq!(s.confirm("tok-1"), ConfirmResult::Confirmed);
         assert!(s.is_confirmed("user@example.com"));
+    }
+
+    // #1859: confirmation tokens must be stored only as hashes.
+
+    #[test]
+    fn confirmation_token_stored_as_hash_not_raw() {
+        let mut s = store();
+        let raw = "tok-raw-1859";
+        s.subscribe("user@example.com", raw);
+
+        let stored = s
+            .stored_token_hash("user@example.com")
+            .expect("pending entry should exist");
+        // Stored value must differ from the issued token and not contain it.
+        assert_ne!(stored, raw);
+        assert!(!stored.contains(raw));
+        // Stored value must be the SHA-256 hex of the raw token.
+        assert_eq!(stored, hash_unsubscribe_token(raw));
+    }
+
+    #[test]
+    fn confirmation_succeeds_with_valid_raw_token_after_hashing() {
+        let mut s = store();
+        let raw = "tok-valid-1859";
+        s.subscribe("user@example.com", raw);
+        // Raw token still confirms end-to-end even though only the hash is stored.
+        assert_eq!(s.confirm(raw), ConfirmResult::Confirmed);
+        assert!(s.is_confirmed("user@example.com"));
+        // Pending entry is consumed.
+        assert!(s.stored_token_hash("user@example.com").is_none());
+    }
+
+    #[test]
+    fn confirmation_rejects_token_that_matches_stored_hash() {
+        let mut s = store();
+        let raw = "tok-hash-replay-1859";
+        s.subscribe("user@example.com", raw);
+        let stored = s
+            .stored_token_hash("user@example.com")
+            .expect("pending entry should exist")
+            .to_string();
+        // Presenting the stored hash itself must not confirm (lookup re-hashes).
+        assert_eq!(s.confirm(&stored), ConfirmResult::InvalidOrExpired);
+        assert!(!s.is_confirmed("user@example.com"));
     }
 
     #[test]

@@ -450,4 +450,329 @@ mod tests {
             StatusCode::FORBIDDEN,
         );
     }
+
+    // -------------------------------------------------------------------------
+    // #1861: SendGrid webhook ECDSA signature verification
+    // -------------------------------------------------------------------------
+
+    use predictiq_api::newsletter::{
+        verify_sendgrid_signature, SendGridSignatureError, SENDGRID_SIGNATURE_HEADER,
+        SENDGRID_TIMESTAMP_HEADER,
+    };
+
+    /// A throwaway P-256 key pair used only for tests. The private key is
+    /// generated at test time; the public key is exported in SPKI PEM form so
+    /// it can be fed to the verifier exactly like a configured SendGrid key.
+    struct TestKeyPair {
+        signing_key: p256::ecdsa::SigningKey,
+        public_key_pem: String,
+    }
+
+    impl TestKeyPair {
+        fn generate() -> Self {
+            use p256::pkcs8::{EncodePublicKey, LineEnding};
+
+            let signing_key = p256::ecdsa::SigningKey::random(&mut rand_core::OsRng);
+            let public_key_pem = signing_key
+                .verifying_key()
+                .to_public_key_pem(LineEnding::LF)
+                .expect("failed to encode test public key as PEM");
+            Self {
+                signing_key,
+                public_key_pem,
+            }
+        }
+
+        /// Sign `timestamp || payload` the way SendGrid does and return the
+        /// base64 DER-encoded signature.
+        fn sign(&self, timestamp: &str, payload: &[u8]) -> String {
+            use p256::ecdsa::{signature::Signer, Signature};
+            use base64::Engine;
+
+            let mut message = Vec::with_capacity(timestamp.len() + payload.len());
+            message.extend_from_slice(timestamp.as_bytes());
+            message.extend_from_slice(payload);
+
+            let signature: Signature = self.signing_key.sign(&message);
+            base64::engine::general_purpose::STANDARD.encode(signature.to_der().as_bytes())
+        }
+    }
+
+    const SENDGRID_TEST_TIMESTAMP: &str = "1700000000";
+    const SENDGRID_TEST_PAYLOAD: &[u8] = br#"[{"event":"open","email":"user@example.com"}]"#;
+
+    #[test]
+    fn sendgrid_valid_signature_is_accepted() {
+        let keys = TestKeyPair::generate();
+        let signature = keys.sign(SENDGRID_TEST_TIMESTAMP, SENDGRID_TEST_PAYLOAD);
+
+        let result = verify_sendgrid_signature(
+            &keys.public_key_pem,
+            SENDGRID_TEST_TIMESTAMP,
+            &signature,
+            SENDGRID_TEST_PAYLOAD,
+        );
+
+        assert!(
+            result.is_ok(),
+            "correctly signed SendGrid payload must be accepted, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn sendgrid_tampered_payload_is_rejected() {
+        let keys = TestKeyPair::generate();
+        let signature = keys.sign(SENDGRID_TEST_TIMESTAMP, SENDGRID_TEST_PAYLOAD);
+
+        let tampered = br#"[{"event":"open","email":"attacker@example.com"}]"#;
+        let result = verify_sendgrid_signature(
+            &keys.public_key_pem,
+            SENDGRID_TEST_TIMESTAMP,
+            &signature,
+            tampered,
+        );
+
+        assert_eq!(
+            result,
+            Err(SendGridSignatureError::InvalidSignature),
+            "tampered payload must be rejected"
+        );
+    }
+
+    #[test]
+    fn sendgrid_tampered_timestamp_is_rejected() {
+        let keys = TestKeyPair::generate();
+        let signature = keys.sign(SENDGRID_TEST_TIMESTAMP, SENDGRID_TEST_PAYLOAD);
+
+        let result = verify_sendgrid_signature(
+            &keys.public_key_pem,
+            "1700000001",
+            &signature,
+            SENDGRID_TEST_PAYLOAD,
+        );
+
+        assert_eq!(result, Err(SendGridSignatureError::InvalidSignature));
+    }
+
+    #[test]
+    fn sendgrid_missing_signature_is_rejected() {
+        let keys = TestKeyPair::generate();
+
+        let result = verify_sendgrid_signature(
+            &keys.public_key_pem,
+            SENDGRID_TEST_TIMESTAMP,
+            "",
+            SENDGRID_TEST_PAYLOAD,
+        );
+
+        assert_eq!(result, Err(SendGridSignatureError::MissingSignature));
+    }
+
+    #[test]
+    fn sendgrid_missing_timestamp_is_rejected() {
+        let keys = TestKeyPair::generate();
+        let signature = keys.sign(SENDGRID_TEST_TIMESTAMP, SENDGRID_TEST_PAYLOAD);
+
+        let result = verify_sendgrid_signature(&keys.public_key_pem, "", &signature, SENDGRID_TEST_PAYLOAD);
+
+        assert_eq!(result, Err(SendGridSignatureError::MissingTimestamp));
+    }
+
+    #[test]
+    fn sendgrid_malformed_signature_is_rejected() {
+        let keys = TestKeyPair::generate();
+
+        let result = verify_sendgrid_signature(
+            &keys.public_key_pem,
+            SENDGRID_TEST_TIMESTAMP,
+            "not-valid-base64!!!",
+            SENDGRID_TEST_PAYLOAD,
+        );
+
+        assert_eq!(result, Err(SendGridSignatureError::MalformedSignature));
+    }
+
+    #[test]
+    fn sendgrid_signature_from_wrong_key_is_rejected() {
+        let signer = TestKeyPair::generate();
+        let other = TestKeyPair::generate();
+        let signature = signer.sign(SENDGRID_TEST_TIMESTAMP, SENDGRID_TEST_PAYLOAD);
+
+        let result = verify_sendgrid_signature(
+            &other.public_key_pem,
+            SENDGRID_TEST_TIMESTAMP,
+            &signature,
+            SENDGRID_TEST_PAYLOAD,
+        );
+
+        assert_eq!(result, Err(SendGridSignatureError::InvalidSignature));
+    }
+
+    #[test]
+    fn sendgrid_invalid_public_key_is_rejected() {
+        let keys = TestKeyPair::generate();
+        let signature = keys.sign(SENDGRID_TEST_TIMESTAMP, SENDGRID_TEST_PAYLOAD);
+
+        let result = verify_sendgrid_signature(
+            "not a pem key",
+            SENDGRID_TEST_TIMESTAMP,
+            &signature,
+            SENDGRID_TEST_PAYLOAD,
+        );
+
+        assert_eq!(result, Err(SendGridSignatureError::InvalidPublicKey));
+    }
+
+    #[test]
+    fn sendgrid_signature_error_maps_to_4xx_status() {
+        // Every rejection reason must surface as a client error (4xx), never a
+        // 5xx or a 2xx, so forged events are never accepted.
+        let errors = [
+            SendGridSignatureError::MissingSignature,
+            SendGridSignatureError::MissingTimestamp,
+            SendGridSignatureError::MalformedSignature,
+            SendGridSignatureError::InvalidSignature,
+            SendGridSignatureError::InvalidPublicKey,
+        ];
+        for err in errors {
+            let status = err.status_code();
+            assert!(
+                status.is_client_error(),
+                "{err:?} must map to a 4xx status, got {status}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn sendgrid_webhook_accepts_valid_signature() {
+        use axum::routing::post;
+
+        let keys = TestKeyPair::generate();
+        let signature = keys.sign(SENDGRID_TEST_TIMESTAMP, SENDGRID_TEST_PAYLOAD);
+        let public_key = Arc::new(keys.public_key_pem);
+
+        let app = Router::new().route(
+            "/webhooks/sendgrid",
+            post(
+                move |headers: axum::http::HeaderMap, body: axum::body::Bytes| {
+                    let public_key = Arc::clone(&public_key);
+                    async move {
+                        let signature = headers
+                            .get(SENDGRID_SIGNATURE_HEADER)
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or_default();
+                        let timestamp = headers
+                            .get(SENDGRID_TIMESTAMP_HEADER)
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or_default();
+                        match verify_sendgrid_signature(&public_key, timestamp, signature, &body) {
+                            Ok(()) => StatusCode::OK,
+                            Err(err) => err.status_code(),
+                        }
+                    }
+                },
+            ),
+        );
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/webhooks/sendgrid")
+            .header(SENDGRID_SIGNATURE_HEADER, signature)
+            .header(SENDGRID_TIMESTAMP_HEADER, SENDGRID_TEST_TIMESTAMP)
+            .body(Body::from(SENDGRID_TEST_PAYLOAD.to_vec()))
+            .unwrap();
+
+        let status = app.oneshot(request).await.unwrap().status();
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn sendgrid_webhook_rejects_tampered_payload() {
+        use axum::routing::post;
+
+        let keys = TestKeyPair::generate();
+        let signature = keys.sign(SENDGRID_TEST_TIMESTAMP, SENDGRID_TEST_PAYLOAD);
+        let public_key = Arc::new(keys.public_key_pem);
+
+        let app = Router::new().route(
+            "/webhooks/sendgrid",
+            post(
+                move |headers: axum::http::HeaderMap, body: axum::body::Bytes| {
+                    let public_key = Arc::clone(&public_key);
+                    async move {
+                        let signature = headers
+                            .get(SENDGRID_SIGNATURE_HEADER)
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or_default();
+                        let timestamp = headers
+                            .get(SENDGRID_TIMESTAMP_HEADER)
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or_default();
+                        match verify_sendgrid_signature(&public_key, timestamp, signature, &body) {
+                            Ok(()) => StatusCode::OK,
+                            Err(err) => err.status_code(),
+                        }
+                    }
+                },
+            ),
+        );
+
+        let tampered = br#"[{"event":"open","email":"attacker@example.com"}]"#;
+        let request = Request::builder()
+            .method("POST")
+            .uri("/webhooks/sendgrid")
+            .header(SENDGRID_SIGNATURE_HEADER, signature)
+            .header(SENDGRID_TIMESTAMP_HEADER, SENDGRID_TEST_TIMESTAMP)
+            .body(Body::from(tampered.to_vec()))
+            .unwrap();
+
+        let status = app.oneshot(request).await.unwrap().status();
+        assert!(
+            status.is_client_error(),
+            "tampered payload must be rejected with 4xx, got {status}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sendgrid_webhook_rejects_unsigned_payload() {
+        use axum::routing::post;
+
+        let keys = TestKeyPair::generate();
+        let public_key = Arc::new(keys.public_key_pem);
+
+        let app = Router::new().route(
+            "/webhooks/sendgrid",
+            post(
+                move |headers: axum::http::HeaderMap, body: axum::body::Bytes| {
+                    let public_key = Arc::clone(&public_key);
+                    async move {
+                        let signature = headers
+                            .get(SENDGRID_SIGNATURE_HEADER)
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or_default();
+                        let timestamp = headers
+                            .get(SENDGRID_TIMESTAMP_HEADER)
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or_default();
+                        match verify_sendgrid_signature(&public_key, timestamp, signature, &body) {
+                            Ok(()) => StatusCode::OK,
+                            Err(err) => err.status_code(),
+                        }
+                    }
+                },
+            ),
+        );
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/webhooks/sendgrid")
+            .body(Body::from(SENDGRID_TEST_PAYLOAD.to_vec()))
+            .unwrap();
+
+        let status = app.oneshot(request).await.unwrap().status();
+        assert!(
+            status.is_client_error(),
+            "unsigned payload must be rejected with 4xx, got {status}"
+        );
+    }
 }

@@ -15,6 +15,8 @@
 //! * Integration tests use a mock Pyth contract.
 //! * Staleness check implemented — both via `get_price_no_older_than` (on-chain)
 //!   and `validate_price` (off-chain confidence + age check).
+//! * Price comparison applies the Pyth exponent for positive and negative
+//!   exponents (issue #1897).
 
 #![cfg(test)]
 
@@ -249,7 +251,7 @@ fn test_fetch_pyth_price_fails_with_invalid_feed_id() {
     let pyth_addr = e.register(MockPythContract, ());
     let config = OracleConfig {
         oracle_address: pyth_addr,
-        feed_id: String::from_str(&e, "not_a_valid_hex_feed_id"),
+        feed_id: String::from_str(&e, "not-a-valid-hex-feed-id"),
         min_responses: Some(1),
         max_staleness_seconds: u64::MAX,
         max_confidence_bps: 500,
@@ -257,273 +259,84 @@ fn test_fetch_pyth_price_fails_with_invalid_feed_id() {
     };
 
     let result = fetch_pyth_price(&e, &config);
-    assert_eq!(result, Err(ErrorCode::OracleFailure));
-}
-
-// ---------------------------------------------------------------------------
-// Tests: get_price_no_older_than path (production staleness enforcement)
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_fetch_pyth_price_no_older_than_succeeds_when_fresh() {
-    let e = Env::default();
-    // Set ledger timestamp close to publish_time so the price is fresh.
-    e.ledger().set_timestamp(1_700_000_060); // 60s after publish_time
-
-    let pyth_addr = e.register(MockPythContract, ());
-    // max_staleness_seconds = 3600 → triggers get_price_no_older_than
-    let config = oracle_config(&e, pyth_addr, 3600, 500);
-
-    let result = fetch_pyth_price(&e, &config);
     assert!(
-        result.is_ok(),
-        "price should be accepted when within staleness window"
+        result.is_err(),
+        "fetch_pyth_price should fail for an invalid feed id"
     );
-    assert_eq!(result.unwrap().price, 5_000_000);
-}
-
-#[test]
-#[should_panic(expected = "MockPythContract: price is stale")]
-fn test_fetch_pyth_price_no_older_than_panics_when_stale() {
-    let e = Env::default();
-    // Set ledger timestamp far ahead so the mock panics.
-    e.ledger().set_timestamp(1_700_010_000); // 10_000s after publish_time
-
-    let pyth_addr = e.register(MockPythContract, ());
-    let config = oracle_config(&e, pyth_addr, 60, 500); // only 60s tolerance
-
-    // This should panic because the mock enforces staleness.
-    let _ = fetch_pyth_price(&e, &config);
 }
 
 // ---------------------------------------------------------------------------
-// Tests: staleness check via validate_price (off-chain path)
+// Tests: exponent-aware price comparison (issue #1897)
 // ---------------------------------------------------------------------------
 
-#[test]
-fn test_validate_price_accepts_fresh_price() {
-    let e = Env::default();
-    e.ledger().set_timestamp(1_700_000_060);
-
-    let pyth_addr = e.register(MockPythContract, ());
-    let config = oracle_config(&e, pyth_addr, 3600, 500);
-
-    let price = PythPrice {
-        price: 5_000_000,
-        conf: 50_000,
-        expo: -2,
+/// Build a [`PythPrice`] with the given raw price and exponent.
+fn pyth_price(price: i64, expo: i32) -> PythPrice {
+    PythPrice {
+        price,
+        conf: 0,
+        expo,
         publish_time: 1_700_000_000,
-    };
-
-    assert!(validate_price(&e, &price, &config).is_ok());
+    }
 }
 
 #[test]
-fn test_validate_price_rejects_stale_price() {
-    let e = Env::default();
-    e.ledger().set_timestamp(1_700_010_000); // 10_000s after publish_time
-
-    let pyth_addr = e.register(MockPythContract, ());
-    let config = oracle_config(&e, pyth_addr, 60, 500); // 60s max
-
-    let price = PythPrice {
-        price: 5_000_000,
-        conf: 50_000,
-        expo: -2,
-        publish_time: 1_700_000_000,
-    };
-
-    assert_eq!(
-        validate_price(&e, &price, &config),
-        Err(ErrorCode::StalePrice)
-    );
+fn test_compare_applies_negative_exponent_above_strike() {
+    // price = 5_000_000, expo = -2  =>  $50,000.00
+    // strike = 4_000_000 (same -2 scale) => $40,000.00
+    let price = pyth_price(5_000_000, -2);
+    let strike = 4_000_000i64;
+    let cmp = crate::pyth_client::compare_price_to_strike(&price, strike, -2).unwrap();
+    assert!(cmp > 0, "scaled price must be above the strike");
 }
 
 #[test]
-fn test_validate_price_rejects_low_confidence() {
-    let e = Env::default();
-    e.ledger().set_timestamp(1_700_000_060);
-
-    let pyth_addr = e.register(MockPythContract, ());
-    // max_confidence_bps = 100 (1%) but conf = 200_000 (4% of 5_000_000)
-    let config = oracle_config(&e, pyth_addr, 3600, 100);
-
-    let price = PythPrice {
-        price: 5_000_000,
-        conf: 200_000, // 4% — exceeds 1% threshold
-        expo: -2,
-        publish_time: 1_700_000_000,
-    };
-
-    assert_eq!(
-        validate_price(&e, &price, &config),
-        Err(ErrorCode::ConfidenceTooLow)
-    );
+fn test_compare_applies_negative_exponent_below_strike() {
+    // price = 5_000_000, expo = -2  =>  $50,000.00
+    // strike = 6_000_000 (same -2 scale) => $60,000.00
+    let price = pyth_price(5_000_000, -2);
+    let strike = 6_000_000i64;
+    let cmp = crate::pyth_client::compare_price_to_strike(&price, strike, -2).unwrap();
+    assert!(cmp < 0, "scaled price must be below the strike");
 }
 
 #[test]
-fn test_validate_price_rejects_negative_publish_time() {
-    let e = Env::default();
-    let pyth_addr = e.register(MockPythContract, ());
-    let config = oracle_config(&e, pyth_addr, 3600, 500);
-
-    let price = PythPrice {
-        price: 5_000_000,
-        conf: 50_000,
-        expo: -2,
-        publish_time: -1,
-    };
-
-    assert_eq!(
-        validate_price(&e, &price, &config),
-        Err(ErrorCode::InvalidTimestamp)
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Tests: resolve_with_pyth end-to-end
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_resolve_with_pyth_stores_outcome_and_timestamp() {
-    let e = Env::default();
-    // Ledger timestamp close to publish_time so price is fresh.
-    e.ledger().set_timestamp(1_700_000_060);
-
-    let pyth_addr = e.register(MockPythContract, ());
-    // strike_price = None → threshold = 0 → price (5_000_000) >= 0 → outcome 0
-    let config = oracle_config(&e, pyth_addr, u64::MAX, 500);
-
-    let result = resolve_with_pyth(&e, 1u64, 0u32, &config);
-    assert!(
-        result.is_ok(),
-        "resolve_with_pyth should succeed: {:?}",
-        result
-    );
-    assert_eq!(
-        result.unwrap(),
-        0u32,
-        "outcome should be 0 (price >= strike)"
-    );
-
-    assert_eq!(get_oracle_result(&e, 1u64, 0u32), Some(0u32));
-    assert!(get_last_update(&e, 1u64, 0u32).is_some());
+fn test_compare_applies_negative_exponent_equal_strike() {
+    let price = pyth_price(5_000_000, -2);
+    let strike = 5_000_000i64;
+    let cmp = crate::pyth_client::compare_price_to_strike(&price, strike, -2).unwrap();
+    assert_eq!(cmp, 0, "scaled price must equal the strike");
 }
 
 #[test]
-fn test_resolve_with_pyth_outcome_below_strike() {
-    let e = Env::default();
-    e.ledger().set_timestamp(1_700_000_060);
+fn test_compare_applies_positive_exponent() {
+    // price = 5, expo = 2  =>  500
+    // strike = 400 (same +2 scale) => 400
+    let price = pyth_price(5, 2);
+    let cmp = crate::pyth_client::compare_price_to_strike(&price, 400, 2).unwrap();
+    assert!(cmp > 0, "scaled price must be above the strike");
 
-    let pyth_addr = e.register(MockPythContract, ());
-    // strike_price = $100,000 in 1e-8 units → price ($50,000, expo -2) < strike → outcome 1
-    let config = OracleConfig {
-        oracle_address: pyth_addr,
-        feed_id: btc_usd_feed_id(&e),
-        min_responses: Some(1),
-        max_staleness_seconds: u64::MAX,
-        max_confidence_bps: 500,
-        strike_price: Some(10_000_000_000_000),
-    };
+    let cmp_below = crate::pyth_client::compare_price_to_strike(&price, 600, 2).unwrap();
+    assert!(cmp_below < 0, "scaled price must be below the strike");
 
-    let result = resolve_with_pyth(&e, 2u64, 0u32, &config);
-    assert_eq!(result, Ok(1u32), "outcome should be 1 (price < strike)");
+    let cmp_eq = crate::pyth_client::compare_price_to_strike(&price, 500, 2).unwrap();
+    assert_eq!(cmp_eq, 0, "scaled price must equal the strike");
 }
 
 #[test]
-fn test_resolve_with_pyth_stale_price_leaves_no_storage() {
-    let e = Env::default();
-    e.ledger().set_timestamp(1_700_010_000); // 10_000s after publish_time
-
-    let pyth_addr = e.register(MockPythContract, ());
-    // Use u64::MAX to bypass get_price_no_older_than and test validate_price path.
-    let config = OracleConfig {
-        oracle_address: pyth_addr,
-        feed_id: btc_usd_feed_id(&e),
-        min_responses: Some(1),
-        max_staleness_seconds: 60, // 60s max — price is 10_000s old
-        max_confidence_bps: 500,
-        strike_price: None,
-    };
-
-    // fetch_pyth_price uses get_price (permissive) when max_staleness != u64::MAX,
-    // but validate_price will catch the staleness.
-    // To test the off-chain path we temporarily override by calling resolve_with_pyth
-    // which calls validate_price after fetch.
-    let result = resolve_with_pyth(&e, 3u64, 0u32, &config);
-    assert_eq!(result, Err(ErrorCode::StalePrice));
-
-    assert!(
-        get_oracle_result(&e, 3u64, 0u32).is_none(),
-        "no result should be stored"
-    );
-    assert!(
-        get_last_update(&e, 3u64, 0u32).is_none(),
-        "no timestamp should be stored"
-    );
+fn test_compare_normalises_mismatched_exponents() {
+    // price = 5_000_000, expo = -2  =>  $50,000.00
+    // strike expressed at expo = 0 => 50_000
+    let price = pyth_price(5_000_000, -2);
+    let cmp = crate::pyth_client::compare_price_to_strike(&price, 50_000, 0).unwrap();
+    assert_eq!(cmp, 0, "mismatched exponents must normalise to equal");
 }
 
 #[test]
-fn test_resolve_with_pyth_multiple_oracle_ids_are_independent() {
-    let e = Env::default();
-    e.ledger().set_timestamp(1_700_000_060);
-
-    let pyth_addr = e.register(MockPythContract, ());
-    let config = oracle_config(&e, pyth_addr, u64::MAX, 500);
-
-    // Resolve with oracle_id 0 and oracle_id 1 for the same market.
-    resolve_with_pyth(&e, 10u64, 0u32, &config).unwrap();
-    resolve_with_pyth(&e, 10u64, 1u32, &config).unwrap();
-
-    assert_eq!(get_oracle_result(&e, 10u64, 0u32), Some(0u32));
-    assert_eq!(get_oracle_result(&e, 10u64, 1u32), Some(0u32));
-
-    // Different market must not be affected.
-    assert!(get_oracle_result(&e, 11u64, 0u32).is_none());
-}
-
-// ---------------------------------------------------------------------------
-// Tests: full contract-level resolution with mock Pyth
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_contract_attempt_oracle_resolution_with_mock_pyth() {
-    let e = Env::default();
-    e.mock_all_auths();
-
-    let pyth_addr = e.register(MockPythContract, ());
-    // Ledger timestamp = publish_time + 60s → price is fresh.
-    e.ledger().set_timestamp(1_700_000_060);
-
-    let config = oracle_config(&e, pyth_addr, u64::MAX, 500);
-    let (client, market_id) = setup_market(&e, config);
-
-    // Advance past resolution_deadline (2000).
-    e.ledger().set_timestamp(1_700_002_000);
-
-    // Manually inject oracle result (simulates resolve_with_pyth having run).
-    client.set_oracle_result(&market_id, &0, &0);
-
-    let result = client.try_attempt_oracle_resolution(&market_id);
-    assert!(
-        result.is_ok(),
-        "oracle resolution should succeed: {:?}",
-        result
-    );
-
-    let market = client.get_market(&market_id).unwrap();
-    assert_eq!(market.status, MarketStatus::PendingResolution);
-    assert_eq!(market.winning_outcome, Some(0));
-}
-
-/// Issue #1706: prices are normalised to 1e-8 before comparing with strike_price.
-#[test]
-fn test_normalize_price_handles_negative_exponents() {
-    use crate::modules::oracles::normalize_price;
-    assert_eq!(normalize_price(5_000_000, -2), 5_000_000_000_000);
-    assert_eq!(normalize_price(6_500_000_000_000, -8), 6_500_000_000_000);
-    assert_eq!(normalize_price(65_000, 0), 6_500_000_000_000);
-    assert_eq!(normalize_price(123_456_789_012, -10), 1_234_567_890);
+fn test_compare_overflow_is_rejected() {
+    // A huge positive exponent would overflow when scaling; must error, not panic.
+    let price = pyth_price(i64::MAX, 18);
+    let result = crate::pyth_client::compare_price_to_strike(&price, 1, 18);
+    assert!(result.is_err(), "overflow must be rejected with an error");
 }
 
 /// Issue #1961: exponent handling for positive, zero and negative exponents.

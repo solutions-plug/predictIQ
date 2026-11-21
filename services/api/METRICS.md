@@ -23,6 +23,20 @@ adding or modifying metrics.
 | `rate_limit_rejections_total` | Counter | `route` | Rate-limit middleware |
 | `cache_circuit_breaker_state` | Gauge | *(none)* | Health endpoint |
 
+## Rate-Limit Metrics
+
+`rate_limit_rejections_total` counts requests rejected by the rate-limit
+middleware. The enforced limit is **100 requests per minute per IP** (see
+`RATE_LIMIT_MAX_REQUESTS` / `RATE_LIMIT_WINDOW` in
+`services/api/src/rate_limit.rs`). The limit is keyed **per client IP**, not
+per API key, so the `route` label is the only dimension exported — the
+client IP is deliberately never used as a label value (see the hard bans
+below).
+
+When the limit or its keying changes, update `services/api/src/rate_limit.rs`,
+`API_SPEC.md`, and `services/api/tests/rate_limiting_tests.rs` together so the
+metric, docs, and tests cannot drift.
+
 ## Cardinality Policy
 
 ### Maximum Unique Values

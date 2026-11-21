@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regression checks for issues #1775, #1782, #1783, #1784, #1872, #1917.
+# Regression checks for issues #1775, #1782, #1783, #1784, #1872, #1877, #1917.
 set -euo pipefail
 cd "$(dirname "$0")/../modules"
 fail() { echo "FAIL: $1" >&2; exit 1; }
@@ -25,6 +25,18 @@ grep -q 'route_table_ids *= *\[aws_route_table.private.id\]' "$ROOT_TF" || fail 
 grep -q 'ecr.api' "$ROOT_TF" || fail "ECR api interface endpoint missing (#1872)"
 grep -q 'ecr.dkr' "$ROOT_TF" || fail "ECR dkr interface endpoint missing (#1872)"
 grep -q 'secretsmanager' "$ROOT_TF" || fail "Secrets Manager interface endpoint missing (#1872)"
+
+# #1877: separate CMKs for logs and secrets, log groups encrypted, secrets rotated.
+grep -q 'aws_kms_key' main.tf || fail "no KMS CMKs declared (#1877)"
+grep -q 'aws_kms_alias' main.tf || fail "KMS CMKs lack aliases (#1877)"
+grep -q 'enable_key_rotation *= *true' main.tf || fail "KMS key rotation off (#1877)"
+! grep -qE 'aws_cloudwatch_log_group[^{]*\{' main.tf || true
+if grep -q 'aws_cloudwatch_log_group' main.tf; then
+  awk '/resource "aws_cloudwatch_log_group"/{f=1} f&&/kms_key_id/{found=1} f&&/^}/{if(!found)exit 1; f=0; found=0} END{exit 0}' main.tf \
+    || fail "a CloudWatch log group lacks kms_key_id (#1877)"
+fi
+grep -q 'aws_secretsmanager_secret_rotation' main.tf || fail "secrets lack rotation (#1877)"
+grep -qE 'output "(logs|secrets)_kms_key_arn"' ../outputs.tf || fail "KMS key ARNs not exposed (#1877)"
 
 # #1917: every aws_cloudwatch_log_group must set a non-empty kms_key_id,
 # and the referenced aws_kms_key resource must exist in the configuration.

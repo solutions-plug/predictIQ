@@ -293,6 +293,111 @@ variable "acm_certificate_arn" {
 }
 
 variable "hmac_key" {
-  d
+  description = "HMAC key used to sign and verify request payloads. Stored in AWS Secrets Manager."
+  type        = string
+  sensitive   = true
 
-/* … truncated 915 chars — edit only what you need near the top … */
+  validation {
+    condition     = length(var.hmac_key) >= 32
+    error_message = "HMAC key must be at least 32 characters for adequate security."
+  }
+}
+
+variable "sendgrid_api_key" {
+  description = "SendGrid API key for transactional email. Stored in AWS Secrets Manager."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = can(regex("^SG\\.", var.sendgrid_api_key))
+    error_message = "SendGrid API key must start with 'SG.'."
+  }
+}
+
+variable "api_signing_key" {
+  description = "Private key used to sign API responses. Stored in AWS Secrets Manager."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(var.api_signing_key) >= 32
+    error_message = "API signing key must be at least 32 characters."
+  }
+}
+
+variable "jwt_secret" {
+  description = "Secret used to sign and verify JWT access tokens. Stored in AWS Secrets Manager."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(var.jwt_secret) >= 32
+    error_message = "JWT secret must be at least 32 characters."
+  }
+}
+
+variable "encryption_key" {
+  description = "Symmetric key used to encrypt sensitive data at rest. Stored in AWS Secrets Manager."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(var.encryption_key) >= 32
+    error_message = "Encryption key must be at least 32 characters."
+  }
+}
+
+variable "stripe_secret_key" {
+  description = "Stripe secret API key for payment processing. Stored in AWS Secrets Manager."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = can(regex("^sk_", var.stripe_secret_key))
+    error_message = "Stripe secret key must start with 'sk_'."
+  }
+}
+
+variable "stripe_webhook_secret" {
+  description = "Stripe webhook signing secret. Stored in AWS Secrets Manager."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = can(regex("^whsec_", var.stripe_webhook_secret))
+    error_message = "Stripe webhook secret must start with 'whsec_'."
+  }
+}
+
+variable "smtp_password" {
+  description = "SMTP password for outbound email. Stored in AWS Secrets Manager."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(var.smtp_password) >= 8
+    error_message = "SMTP password must be at least 8 characters."
+  }
+}
+
+variable "oauth_client_secret" {
+  description = "OAuth client secret for third-party identity providers. Stored in AWS Secrets Manager."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(var.oauth_client_secret) >= 16
+    error_message = "OAuth client secret must be at least 16 characters."
+  }
+}
+
+variable "webhook_signing_secret" {
+  description = "Secret used to sign outbound webhook payloads. Stored in AWS Secrets Manager."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(var.webhook_signing_secret) >= 32
+    error_message = "Webhook signing secret must be at least 32 characters."
+  }
+}
