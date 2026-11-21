@@ -67,3 +67,37 @@ describe("server startup — tracing wiring (issue #1134)", () => {
     expect(initTracingMock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("initTracing configuration", () => {
+  const saved = { ...process.env };
+  beforeEach(() => {
+    jest.resetModules();
+    jest.dontMock("../tracing");
+    shutdownMock.mockClear();
+    delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+    delete process.env.OTEL_SERVICE_NAME;
+  });
+  afterEach(() => {
+    process.env = { ...saved };
+  });
+
+  it("takes the exporter endpoint from OTEL_EXPORTER_OTLP_ENDPOINT", () => {
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector:4317";
+    const { OTLPTraceExporter } = require("@opentelemetry/exporter-trace-otlp-grpc");
+    require("../tracing").initTracing();
+    expect(OTLPTraceExporter).toHaveBeenCalledWith({ url: "http://collector:4317" });
+  });
+
+  it("falls back to the default endpoint when unset", () => {
+    const { OTLPTraceExporter } = require("@opentelemetry/exporter-trace-otlp-grpc");
+    require("../tracing").initTracing();
+    expect(OTLPTraceExporter).toHaveBeenCalledWith({ url: "http://localhost:4317" });
+  });
+
+  it("shuts down the SDK cleanly", async () => {
+    const tracing = require("../tracing");
+    tracing.initTracing();
+    await tracing.shutdownTracing();
+    expect(shutdownMock).toHaveBeenCalledTimes(1);
+  });
+});
