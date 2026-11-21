@@ -126,7 +126,15 @@ mod tests {
         );
     }
 
-    // ── admin trust_proxy modes ───────────────────────────────────────────────
+    // ── admin limiter proxy trust ─────────────────────────────────────────────
+    //
+    // The admin limiter's proxy trust setting is configurable. When trust is
+    // disabled (the default), the client IP is the peer address and spoofed
+    // `X-Forwarded-For` values are ignored. When trust is enabled, the client
+    // IP is taken from the left-most `X-Forwarded-For` entry, so a caller can
+    // rotate spoofed XFF values to obtain a fresh bucket per request. These
+    // tests pin both behaviours: if the trust setting changes, they must be
+    // updated deliberately in review.
 
     /// With trust disabled (the default), a spoofed `X-Forwarded-For` header
     /// must not change the bucket: requests from the same peer share it.
@@ -185,7 +193,8 @@ mod tests {
         }
         assert_eq!(
             status(app.clone(), req_with_peer("5.5.5.5", Some("6.6.6.6"))).await,
-            StatusCode::TOO_MANY_REQUESTS
+            StatusCode::TOO_MANY_REQUESTS,
+            "spoofed address 5.5.5.5 should be rate-limited"
         );
 
         // A different forwarded client from the same peer is unaffected.
@@ -193,6 +202,40 @@ mod tests {
             status(app, req_with_peer("5.5.5.5", Some("7.7.7.7"))).await,
             StatusCode::OK,
             "distinct forwarded client must get its own bucket"
+        );
+    }
+
+    /// When proxy trust is disabled, the limiter keys on the real client IP
+    /// rather than `X-Forwarded-For`, so differing XFF values from the same
+    /// client share a single bucket.
+    #[tokio::test]
+    async fn admin_keys_on_real_client_ip_when_proxy_trust_disabled() {
+        let limiter = Arc::new(RateLimiter::new());
+        let config = RateLimitConfig::new(30, Duration::from_secs(60));
+
+        // Simulate the limiter resolving the real peer IP (proxy trust off):
+        // all requests share the "admin:<real-ip>" key regardless of XFF.
+        for _ in 0..30 {
+            assert!(limiter.check("admin:7.7.7.7", &config).await);
+        }
+
+        let app = Router::new()
+            .route("/", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(
+                limiter,
+                admin_rate_limit_middleware,
+            ));
+
+        // The real client IP is exhausted; a spoofed XFF must not help.
+        assert_eq!(
+            status(app.clone(), req_with_peer("7.7.7.7", Some("8.8.8.8"))).await,
+            StatusCode::TOO_MANY_REQUESTS,
+            "real client IP 7.7.7.7 should be rate-limited"
+        );
+        assert_eq!(
+            status(app, req_with_peer("7.7.7.7", Some("9.9.9.9"))).await,
+            StatusCode::TOO_MANY_REQUESTS,
+            "with proxy trust off, a differing XFF must not grant a fresh bucket"
         );
     }
 

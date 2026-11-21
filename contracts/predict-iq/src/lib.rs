@@ -361,6 +361,16 @@ impl PredictIQ {
         crate::modules::circuit_breaker::unpause(&e)
     }
 
+    /// Pause as admin or guardian (admin works even when a guardian is set).
+    pub fn pause_as(e: Env, caller: Address) -> Result<(), ErrorCode> {
+        crate::modules::circuit_breaker::pause_as(&e, caller)
+    }
+
+    /// Unpause as admin or guardian (admin works even when a guardian is set).
+    pub fn unpause_as(e: Env, caller: Address) -> Result<(), ErrorCode> {
+        crate::modules::circuit_breaker::unpause_as(&e, caller)
+    }
+
     pub fn get_resolution_metrics(
         e: Env,
         market_id: u64,

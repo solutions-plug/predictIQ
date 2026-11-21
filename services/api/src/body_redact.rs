@@ -146,11 +146,19 @@ fn redact_map(mut map: Map<String, Value>) -> Map<String, Value> {
         let lower = key.to_lowercase();
         if SENSITIVE_FIELDS.iter().any(|s| lower.contains(s)) {
             map.insert(key, Value::String("[REDACTED]".to_owned()));
-        } else if let Some(Value::Object(nested)) = map.get(&key).cloned() {
-            map.insert(key, Value::Object(redact_map(nested)));
+        } else if let Some(nested) = map.get(&key).cloned() {
+            map.insert(key, redact_value(nested));
         }
     }
     map
+}
+
+fn redact_value(value: Value) -> Value {
+    match value {
+        Value::Object(m) => Value::Object(redact_map(m)),
+        Value::Array(items) => Value::Array(items.into_iter().map(redact_value).collect()),
+        other => other,
+    }
 }
 
 #[cfg(test)]
@@ -200,6 +208,25 @@ mod tests {
     fn non_json_body_returned_as_is() {
         let body = "plain text error body";
         assert_eq!(redact_sensitive(body), body);
+    }
+
+    #[test]
+    fn sensitive_fields_inside_arrays_redacted() {
+        let body = r#"{"users":[{"password":"p1","name":"A"},{"nested":[{"api_key":"k"}]}]}"#;
+        let v: serde_json::Value = serde_json::from_str(&redact_sensitive(body)).unwrap();
+        assert_eq!(v["users"][0]["password"], "[REDACTED]");
+        assert_eq!(v["users"][0]["name"], "A");
+        assert_eq!(v["users"][1]["nested"][0]["api_key"], "[REDACTED]");
+    }
+
+    #[test]
+    fn redacted_output_contains_no_secret_values() {
+        let body = r#"{"market_id":7,"outcome":"yes","auth_token":"tok-123","meta":{"client_secret":"cs-456"}}"#;
+        let out = redact_sensitive(body);
+        assert!(!out.contains("tok-123") && !out.contains("cs-456"));
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["market_id"], 7);
+        assert_eq!(v["outcome"], "yes");
     }
 
     #[test]

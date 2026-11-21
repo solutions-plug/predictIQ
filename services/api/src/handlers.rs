@@ -984,6 +984,49 @@ pub async fn newsletter_gdpr_delete(
         .into_response())
 }
 
+/// Revoke an API key by id.
+///
+/// Sets `revoked_at` on the target key so that subsequent requests
+/// authenticated with it are rejected. Revoking an already-revoked key is
+/// idempotent and returns success.
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/api-keys/{id}/revoke",
+    tag = "admin",
+    params(
+        ("id" = Uuid, Path, description = "API key id to revoke"),
+    ),
+    responses(
+        (status = 200, description = "API key revoked"),
+        (status = 404, description = "API key not found", body = ApiError),
+    )
+)]
+pub async fn revoke_api_key(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    let revoked = state
+        .db
+        .revoke_api_key(id)
+        .await
+        .map_err(into_api_error)?;
+
+    if !revoked {
+        return Err(ApiError::not_found("API key not found."));
+    }
+
+    tracing::info!(api_key_id = %id, "api key revoked");
+
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "success": true,
+            "id": id,
+            "revoked": true,
+        })),
+    ))
+}
+
 #[utoipa::path(
     get,
     path = "/api/v1/statistics",
