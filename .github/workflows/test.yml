@@ -918,6 +918,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check migrations dir, registry and rollbacks agree
         run: scripts/check_migrations_registry.sh
+      - name: Test migration registry script
+        run: bash tests/check_migrations_registry_test.sh
 
   validate-migration-rollbacks:
     name: Validate Migration Rollback Scripts

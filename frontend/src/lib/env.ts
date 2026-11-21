@@ -63,6 +63,10 @@ export function getApiOrigin(): string {
  * Build an absolute API URL for a given path (e.g. `/api/v1/markets/1/claim`).
  * Resolves against the configured API origin so requests never hit the
  * Next.js host, and normalises the leading slash on the path.
+ *
+ * Admin pages must not use relative URLs: those resolve against the Next.js
+ * origin and are rejected by the API. This accessor keeps the base URL in one
+ * place instead of reading process.env inline.
  */
 export function getApiUrl(path: string): string {
   const normalised = path.startsWith('/') ? path : `/${path}`;
@@ -77,6 +81,16 @@ export function getApiUrl(path: string): string {
  */
 export function getMarketDisputeUrl(marketId: string | number): string {
   return getApiUrl(`/api/v1/markets/${encodeURIComponent(String(marketId))}/disputes`);
+}
+
+/**
+ * Build the auth headers for admin API requests, reusing the admin API key
+ * established for the admin gate. Returns an empty object when no key is set
+ * so callers can spread it unconditionally.
+ */
+export function getAdminAuthHeaders(): Record<string, string> {
+  const apiKey = process.env.NEXT_PUBLIC_ADMIN_API_KEY;
+  return apiKey ? { 'X-Admin-API-Key': apiKey } : {};
 }
 
 // Validate once at module load so any import of this file fails fast —
