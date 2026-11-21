@@ -14,6 +14,9 @@ mod tests {
     /// Must stay in sync — the yaml_paths_match_spec_routes test enforces this.
     const SPEC_ROUTES: &[(&str, &str)] = &[
         ("GET", "/health"),
+        ("GET", "/health/live"),
+        ("GET", "/health/ready"),
+        ("GET", "/metrics"),
         ("GET", "/api/v1/statistics"),
         ("GET", "/api/v1/markets/featured"),
         ("GET", "/api/v1/content"),
@@ -30,6 +33,9 @@ mod tests {
         ("DELETE", "/api/v1/newsletter/unsubscribe"),
         ("POST", "/api/v1/newsletter/gdpr/export"),
         ("DELETE", "/api/v1/newsletter/gdpr/delete"),
+        ("POST", "/api/v1/newsletter/gdpr/request-token"),
+        ("GET", "/api/v1/newsletter/gdpr/request-token/{token}"),
+        ("DELETE", "/api/v1/newsletter/gdpr/request-token/{token}"),
         ("GET", "/api/v1/email/preview/{template_name}"),
         ("POST", "/api/v1/email/test"),
         ("GET", "/api/v1/email/analytics"),
@@ -39,6 +45,9 @@ mod tests {
         ("POST", "/api/v1/email/queue/dead-letter/{job_id}/requeue"),
         ("GET", "/api/v1/audit/logs"),
         ("GET", "/api/v1/audit/statistics"),
+        ("GET", "/api/v1/admin/api-keys"),
+        ("POST", "/api/v1/admin/api-keys/{key_id}/rotate"),
+        ("DELETE", "/api/v1/admin/api-keys/{key_id}"),
         ("POST", "/webhooks/sendgrid"),
     ];
 
@@ -55,6 +64,9 @@ mod tests {
         ("POST", "/api/v1/email/queue/dead-letter/{job_id}/requeue"),
         ("GET", "/api/v1/audit/logs"),
         ("GET", "/api/v1/audit/statistics"),
+        ("GET", "/api/v1/admin/api-keys"),
+        ("POST", "/api/v1/admin/api-keys/{key_id}/rotate"),
+        ("DELETE", "/api/v1/admin/api-keys/{key_id}"),
     ];
 
     const OPENAPI_YAML: &str = include_str!("../openapi.yaml");
@@ -182,6 +194,9 @@ mod tests {
             "requeueEmailDeadLetterJob",
             "getAuditLogs",
             "getAuditStatistics",
+            "listApiKeys",
+            "rotateApiKey",
+            "revokeApiKey",
         ];
         for op_id in admin_operation_ids {
             assert!(

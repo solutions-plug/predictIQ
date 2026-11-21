@@ -132,6 +132,50 @@ fn test_unpause_allows_operations() {
     assert!(result.is_ok());
 }
 
+// Issue #1848: admin can pause/unpause even when a guardian is configured
+
+#[test]
+fn test_admin_can_pause_and_unpause_with_guardian_set() {
+    let (_env, client, admin, _guardian) = setup();
+
+    // Admin pauses while a guardian is configured
+    let pause_result = client.try_pause_as_admin(&admin);
+    assert!(pause_result.is_ok());
+    assert_eq!(
+        client.get_circuit_breaker_state(),
+        CircuitBreakerState::Paused
+    );
+
+    // Admin unpauses while a guardian is configured
+    let unpause_result = client.try_unpause_as_admin(&admin);
+    assert!(unpause_result.is_ok());
+    assert_eq!(
+        client.get_circuit_breaker_state(),
+        CircuitBreakerState::Closed
+    );
+}
+
+#[test]
+fn test_guardian_can_pause_and_unpause_with_guardian_set() {
+    let (_env, client, _admin, guardian) = setup();
+
+    // Guardian pauses
+    let pause_result = client.try_pause_as_guardian(&guardian);
+    assert!(pause_result.is_ok());
+    assert_eq!(
+        client.get_circuit_breaker_state(),
+        CircuitBreakerState::Paused
+    );
+
+    // Guardian unpauses
+    let unpause_result = client.try_unpause_as_guardian(&guardian);
+    assert!(unpause_result.is_ok());
+    assert_eq!(
+        client.get_circuit_breaker_state(),
+        CircuitBreakerState::Closed
+    );
+}
+
 #[test]
 fn test_multiple_pause_unpause_cycles() {
     let (_env, client, _admin, _guardian) = setup();
