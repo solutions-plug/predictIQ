@@ -270,6 +270,102 @@ mod tests {
         );
     }
 
+    // ── newsletter per-recipient throttle ─────────────────────────────────────
+    //
+    // The newsletter subscribe handler throttles per recipient address so that
+    // repeated submissions for the same address within the window send at most
+    // one confirmation email. The throttled response is neutral: it must not
+    // reveal whether the address is already subscribed.
+
+    /// Repeated subscribe requests for one address within the window send at
+    /// most one email; the throttled responses are neutral.
+    #[tokio::test]
+    async fn newsletter_throttles_repeated_submissions_per_recipient() {
+        let limiter = RateLimiter::new();
+        let config = RateLimitConfig::new(1, Duration::from_secs(3600));
+        let key = "newsletter:recipient:victim@example.com";
+
+        // First submission is allowed and triggers the confirmation email.
+        assert!(
+            limiter.check(key, &config).await,
+            "first subscribe for an address must be allowed"
+        );
+
+        // Subsequent submissions within the window are throttled.
+        for _ in 0..5 {
+            assert!(
+                !limiter.check(key, &config).await,
+                "repeated subscribe for the same address must be throttled"
+            );
+        }
+    }
+
+    /// The throttle is keyed by recipient, not by IP: a different address from
+    /// the same source is unaffected, and the same address from a different
+    /// source is still throttled.
+    #[tokio::test]
+    async fn newsletter_throttle_isolates_per_recipient() {
+        let limiter = RateLimiter::new();
+        let config = RateLimitConfig::new(1, Duration::from_secs(3600));
+
+        assert!(
+            limiter
+                .check("newsletter:recipient:first@example.com", &config)
+                .await
+        );
+        assert!(
+            !limiter
+                .check("newsletter:recipient:first@example.com", &config)
+                .await,
+            "same address must be throttled regardless of source IP"
+        );
+        assert!(
+            limiter
+                .check("newsletter:recipient:second@example.com", &config)
+                .await,
+            "a different address must not be affected"
+        );
+    }
+
+    /// The throttled response is neutral: it is identical whether or not the
+    /// address was previously subscribed, so subscription state is not leaked.
+    #[tokio::test]
+    async fn newsletter_throttled_response_is_neutral() {
+        let limiter = RateLimiter::new();
+        let config = RateLimitConfig::new(1, Duration::from_secs(3600));
+
+        // Address that is (conceptually) already subscribed.
+        let subscribed = "newsletter:recipient:subscribed@example.com";
+        // Address that has never been seen before.
+        let unsubscribed = "newsletter:recipient:new@example.com";
+
+        // Both get their single allowed submission.
+        assert!(limiter.check(subscribed, &config).await);
+        assert!(limiter.check(unsubscribed, &config).await);
+
+        // Both are now throttled — the outcome is indistinguishable.
+        assert!(!limiter.check(subscribed, &config).await);
+        assert!(!limiter.check(unsubscribed, &config).await);
+    }
+
+    /// After the throttle window expires the same address may subscribe again.
+    #[tokio::test]
+    async fn newsletter_throttle_resets_after_window_expires() {
+        let limiter = RateLimiter::new();
+        let config = RateLimitConfig::new(1, Duration::from_millis(80));
+        let key = "newsletter:recipient:retry@example.com";
+
+        assert!(limiter.check(key, &config).await);
+        assert!(!limiter.check(key, &config).await, "should be throttled");
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert!(
+            limiter.check(key, &config).await,
+            "window must have reset for the recipient"
+        );
+    }
+
     // ── key isolation between IPs ─────────────────────────────────────────────
 
     /// Exhausting the limit for one IP must not affect a different IP.

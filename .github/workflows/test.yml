@@ -921,6 +921,19 @@ jobs:
       - name: Test migration registry script
         run: bash tests/check_migrations_registry_test.sh
 
+  # ── #1853: verify migration registry and numbering (fast, no DB services) ───
+  migrations-registry-check:
+    name: Migrations Registry & Numbering Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify migration registry and numbering
+        # The script emits ::error:: annotations and exits non-zero on drift,
+        # which fails this job and surfaces the output in the PR checks.
+        run: scripts/check_migrations_registry.sh
+
   validate-migration-rollbacks:
     name: Validate Migration Rollback Scripts
     runs-on: ubuntu-latest
@@ -1552,6 +1565,7 @@ jobs:
       - documentation-sync
       - openapi-drift-check
       - validate-migration-registry
+      - migrations-registry-check
       - validate-migration-rollbacks
       - rollback-idempotency
       - api-criterion-benchmarks

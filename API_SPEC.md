@@ -107,7 +107,7 @@ Quick reference for the most common codes:
 
 The API implements rate limiting to ensure fair usage:
 
-- **Global limit:** 100 requests per 60 seconds per client IP (`GLOBAL_RATE_LIMIT_MAX`, `GLOBAL_RATE_LIMIT_WINDOW_SECS`)
+- **Global limit:** 100 requests per 60 seconds **per client IP** (`GLOBAL_RATE_LIMIT_MAX`, `GLOBAL_RATE_LIMIT_WINDOW_SECS`)
 - **Admin routes:** 30 requests per 60 seconds (`ADMIN_RATE_LIMIT_MAX`, `ADMIN_RATE_LIMIT_WINDOW_SECS`)
 - **Headers:**
   - `X-RateLimit-Limit`: Maximum requests per window
@@ -116,6 +116,19 @@ The API implements rate limiting to ensure fair usage:
 
 When rate limited (HTTP 429), the response includes a `Retry-After` header indicating
 how many seconds to wait before retrying.
+
+### Keying
+
+The global limit is keyed **per client IP address**, not per API key. Multiple API keys
+used from the same IP share a single 100 requests/minute budget. Size retry/backoff logic
+against this per-IP limit rather than per-key quotas.
+
+The enforced values are defined by the named constants in
+[`services/api/src/rate_limit.rs`](services/api/src/rate_limit.rs)
+(`GLOBAL_RATE_LIMIT_MAX`, `GLOBAL_RATE_LIMIT_WINDOW_SECS`, `ADMIN_RATE_LIMIT_MAX`,
+`ADMIN_RATE_LIMIT_WINDOW_SECS`). The behaviour is pinned by
+[`services/api/tests/rate_limiting_tests.rs`](services/api/tests/rate_limiting_tests.rs);
+if the code and this document ever disagree, the constants and those tests are authoritative.
 
 ---
 

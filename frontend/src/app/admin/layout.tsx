@@ -1,155 +1,108 @@
-'use client';
+"use client";
 
-import React, { useEffect, useState } from 'react';
-import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import { useI18n } from '../../lib/hooks/useI18n';
-import { api, ApiError, ADMIN_KEY_STORAGE } from '../../lib/api/admin-client';
-import '../../styles/admin.css';
+import { useEffect, useState } from "react";
+import { resolveApiOrigin } from "@/lib/env";
 
-function AdminAuthGate({ children }: { children: React.ReactNode }) {
-  const { t } = useI18n();
-  const [key, setKey] = useState('');
-  const [ok, setOk] = useState(false);
-  const [error, setError] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
+const STORAGE_KEY = "predictiq.admin.apiKey";
+
+/**
+ * Cheap authenticated endpoint used to validate the entered admin key.
+ * `GET /api/v1/admin/api-keys` requires ApiKeyAuth and returns a small payload,
+ * so a 2xx confirms the key is valid without mutating anything.
+ */
+const VALIDATION_PATH = "/api/v1/admin/api-keys";
+
+export default function AdminLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  const [apiKey, setApiKey] = useState<string>("");
+  const [unlocked, setUnlocked] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+  const [checking, setChecking] = useState<boolean>(false);
 
   useEffect(() => {
-    const k = sessionStorage.getItem(ADMIN_KEY_STORAGE);
-    if (!k) return;
-    setKey(k);
-    api
-      .listApiKeys(k)
-      .then(() => setOk(true))
-      .catch(() => {
-        sessionStorage.removeItem(ADMIN_KEY_STORAGE);
-        setKey('');
-        setError('Session expired. Please log in again.');
-      });
+    const stored = window.localStorage.getItem(STORAGE_KEY);
+    if (stored) {
+      setApiKey(stored);
+    }
   }, []);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    setIsLoading(true);
+  async function handleUnlock(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError(null);
+    setChecking(true);
+
     try {
-      await api.listApiKeys(key);
-      sessionStorage.setItem(ADMIN_KEY_STORAGE, key);
-      setOk(true);
+      const origin = resolveApiOrigin();
+      const response = await fetch(`${origin}${VALIDATION_PATH}`, {
+        method: "GET",
+        headers: {
+          "X-API-Key": apiKey,
+        },
+      });
+
+      if (!response.ok) {
+        setUnlocked(false);
+        setError(
+          response.status === 401
+            ? "Invalid API key. Please check the key and try again."
+            : `Key validation failed (HTTP ${response.status}). Please try again.`,
+        );
+        return;
+      }
+
+      window.localStorage.setItem(STORAGE_KEY, apiKey);
+      setUnlocked(true);
     } catch (err) {
-      const unauthorized = err instanceof ApiError && (err.status === 401 || err.status === 403);
+      setUnlocked(false);
       setError(
-        unauthorized
-          ? 'Invalid API key. Please try again.'
-          : 'Failed to validate API key. Please try again.'
+        err instanceof Error
+          ? `Could not reach the API: ${err.message}`
+          : "Could not reach the API to validate the key.",
       );
     } finally {
-      setIsLoading(false);
+      setChecking(false);
     }
-  };
+  }
 
-  const handleLogout = () => {
-    sessionStorage.removeItem(ADMIN_KEY_STORAGE);
-    setKey('');
-    setOk(false);
-    setError('');
-  };
-
-  if (!ok) {
-    return (
-      <form className="admin-auth-form" onSubmit={handleSubmit}>
-        <label>
-          {t('admin.apiKey')}
-          <input
-            value={key}
-            onChange={(e) => setKey(e.target.value)}
-            required
-            type="password"
-            disabled={isLoading}
-          />
-        </label>
-        {error && <div className="admin-auth-error">{error}</div>}
-        <button type="submit" disabled={isLoading}>
-          {isLoading ? 'Validating...' : t('admin.continue')}
-        </button>
-      </form>
-    );
+  if (unlocked) {
+    return <>{children}</>;
   }
 
   return (
-    <div>
-      <button onClick={handleLogout} className="admin-logout-btn">
-        Logout
-      </button>
-      {children}
+    <div className="flex min-h-screen items-center justify-center p-6">
+      <form
+        onSubmit={handleUnlock}
+        className="w-full max-w-sm space-y-4 rounded-lg border p-6"
+      >
+        <h1 className="text-lg font-semibold">Admin access</h1>
+        <p className="text-sm text-gray-600">
+          Enter your admin API key to continue.
+        </p>
+        <input
+          type="password"
+          value={apiKey}
+          onChange={(e) => setApiKey(e.target.value)}
+          placeholder="API key"
+          autoComplete="off"
+          className="w-full rounded border px-3 py-2"
+          required
+        />
+        {error ? (
+          <p role="alert" className="text-sm text-red-600">
+            {error}
+          </p>
+        ) : null}
+        <button
+          type="submit"
+          disabled={checking || apiKey.length === 0}
+          className="w-full rounded bg-black px-3 py-2 text-white disabled:opacity-50"
+        >
+          {checking ? "Validating…" : "Unlock"}
+        </button>
+      </form>
     </div>
-  );
-}
-
-function AdminNavLink({ href, label }: { href: string; label: string }) {
-  const pathname = usePathname();
-  const isActive = pathname === href || pathname?.startsWith(`${href}/`);
-  return (
-    <Link
-      href={href}
-      className={`admin-nav-link ${isActive ? 'active' : ''}`}
-      aria-current={isActive ? 'page' : undefined}
-    >
-      {label}
-    </Link>
-  );
-}
-
-export default function AdminLayout({ children }: { children: React.ReactNode }) {
-  const { t } = useI18n();
-  const navItems = [
-    { href: '/admin/email/preview', label: t('admin.emailPreview') },
-    { href: '/admin/email/analytics', label: t('admin.emailAnalytics') },
-    { href: '/admin/blockchain/replay', label: t('admin.blockchainReplay') },
-    { href: '/admin/content', label: t('admin.contentManagement') },
-    { href: '/admin/audit', label: t('admin.auditLog') },
-    { href: '/admin/api-keys', label: t('admin.apiKeys') },
-  ];
-
-  return (
-    <AdminAuthGate>
-      <div className="admin-layout">
-        {/* Skip navigation for accessibility */}
-        <a href="#admin-main-content" className="skip-link">
-          {t('admin.skipToContent')}
-        </a>
-
-        {/* Admin Top Navigation */}
-        <header className="admin-header" role="banner">
-          <div className="admin-header-container">
-            <div className="admin-brand-inner">
-              <Link href="/" className="admin-brand" aria-label={t('admin.home')}>
-                <span className="admin-brand-name">
-                  Predict<span className="admin-brand-name-accent">IQ</span>
-                </span>
-              </Link>
-              <span className="admin-brand-badge">{t('admin.badge')}</span>
-            </div>
-
-            <nav className="admin-nav" aria-label={t('admin.subNav')}>
-              {navItems.map((item) => (
-                <AdminNavLink key={item.href} href={item.href} label={item.label} />
-              ))}
-            </nav>
-
-            <div>
-              <Link href="/" className="admin-exit-link">
-                {t('appShell.exitToSite')}
-              </Link>
-            </div>
-          </div>
-        </header>
-
-        {/* Main Admin Content */}
-        <main id="admin-main-content" className="admin-main" role="main">
-          {children}
-        </main>
-      </div>
-    </AdminAuthGate>
   );
 }

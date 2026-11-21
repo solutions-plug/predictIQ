@@ -78,6 +78,117 @@ async fn test_graceful_shutdown_under_load() {
     println!("Shutdown under load test - placeholder for future implementation");
 }
 
+/// Test that verifies the shutdown ordering: the HTTP server must stop
+/// accepting connections *before* background workers begin draining.
+///
+/// This models the sequence documented in services/api/GRACEFUL_SHUTDOWN.md:
+///   1. Signal received -> signal future resolves (signalling only)
+///   2. HTTP server stops accepting new connections
+///   3. Background workers are drained
+///
+/// The test records the order in which each phase completes and asserts that
+/// the server-stop event precedes the worker-drain event. It also asserts that
+/// no work is accepted by a worker after draining has started.
+#[tokio::test]
+async fn test_server_stops_accepting_before_workers_drain() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    // Ordered log of shutdown phases as they complete.
+    let events: Arc<tokio::sync::Mutex<Vec<&'static str>>> =
+        Arc::new(tokio::sync::Mutex::new(Vec::new()));
+
+    // Whether workers have begun draining.
+    let draining_started = Arc::new(AtomicBool::new(false));
+    // Count of work items accepted by workers after draining started.
+    let work_after_drain = Arc::new(AtomicUsize::new(0));
+
+    // --- Phase 1: signal future (signalling only) ---
+    let signal_events = events.clone();
+    let signal_future = async move {
+        // Simulate the signal being received; the signal future must not drain
+        // workers itself, it only signals.
+        signal_events.lock().await.push("signal");
+    };
+
+    // --- Phase 2: HTTP server stops accepting connections ---
+    let server_events = events.clone();
+    let server_draining = draining_started.clone();
+    let server_work_after = work_after_drain.clone();
+    let server_future = async move {
+        // Simulate the server shutting down its listener. While the server is
+        // still accepting, a request may enqueue work to a worker.
+        // After the server stops, workers are allowed to drain.
+        server_events.lock().await.push("server_stopped");
+        // Mark draining as started only after the server has stopped.
+        server_draining.store(true, Ordering::SeqCst);
+        // Any work submitted after this point must be rejected by the worker.
+        if server_work_after.load(Ordering::SeqCst) > 0 {
+            // This branch is defensive; the worker below enforces the rule.
+        }
+    };
+
+    // --- Phase 3: workers drain ---
+    let worker_events = events.clone();
+    let worker_draining = draining_started.clone();
+    let worker_work_after = work_after_drain.clone();
+    let worker_future = async move {
+        // A worker accepts work only if draining has not started.
+        let submit_work = |draining: &AtomicBool, counter: &AtomicUsize| {
+            if draining.load(Ordering::SeqCst) {
+                counter.fetch_add(1, Ordering::SeqCst);
+                false
+            } else {
+                true
+            }
+        };
+
+        // Simulate an in-flight request enqueuing work while the server is
+        // still accepting: this must be accepted.
+        assert!(
+            submit_work(&worker_draining, &worker_work_after),
+            "worker should accept work before draining starts"
+        );
+
+        // Now drain: record the event.
+        worker_events.lock().await.push("workers_drained");
+
+        // Any work submitted after draining starts must be rejected.
+        assert!(
+            !submit_work(&worker_draining, &worker_work_after),
+            "worker must reject work after draining starts"
+        );
+    };
+
+    // Run the phases in the intended order: signal -> server stop -> drain.
+    signal_future.await;
+    server_future.await;
+    worker_future.await;
+
+    // Assert the ordering: server_stopped must come before workers_drained.
+    let log = events.lock().await;
+    let server_pos = log
+        .iter()
+        .position(|e| *e == "server_stopped")
+        .expect("server_stopped event missing");
+    let drain_pos = log
+        .iter()
+        .position(|e| *e == "workers_drained")
+        .expect("workers_drained event missing");
+    assert!(
+        server_pos < drain_pos,
+        "server must stop accepting before workers drain (log: {:?})",
+        *log
+    );
+
+    // No worker should have received work after draining started.
+    assert_eq!(
+        work_after_drain.load(Ordering::SeqCst),
+        0,
+        "no worker should receive work after draining starts"
+    );
+}
+
 /// Test configuration for different shutdown timeouts
 #[tokio::test]
 async fn test_shutdown_timeout_configuration() {

@@ -25,6 +25,12 @@ path = "fuzz_targets/fuzz_withdraw.rs"
 test = false
 doc = false
 
+[[bin]]
+name = "fuzz_create_market"
+path = "fuzz_targets/fuzz_create_market.rs"
+test = false
+doc = false
+
 [dependencies]
 libfuzzer-sys = "0.4"
 

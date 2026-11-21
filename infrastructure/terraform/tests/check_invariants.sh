@@ -19,6 +19,21 @@ grep -q ALBRequestCountPerTarget modules/ecs/main.tf || fail "request-count scal
 grep -q '"APP_ENV"' main.tf || fail "ECS task definition must provide APP_ENV"
 ! grep -q '"ENVIRONMENT"' main.tf || fail "ECS task definition must not provide ENVIRONMENT (use APP_ENV)"
 
+# DB_HOST must be the bare RDS hostname (no port suffix) and DB_PORT must be set.
+db_host_line=$(grep -E 'name[[:space:]]*=[[:space:]]*"DB_HOST"' main.tf || true)
+[ -n "$db_host_line" ] || fail "DB_HOST not set in task definition"
+if echo "$db_host_line" | grep -qE ':[0-9]+'; then
+  fail "DB_HOST contains a port suffix"
+fi
+if echo "$db_host_line" | grep -q 'address'; then
+  :
+elif echo "$db_host_line" | grep -q 'endpoint'; then
+  fail "DB_HOST must use the RDS address attribute, not endpoint"
+fi
+grep -qE 'name[[:space:]]*=[[:space:]]*"DB_PORT"' main.tf || fail "DB_PORT not set in task definition"
+grep -qE 'DB_PORT[^\n]*aws_db_instance[^\n]*\.port|aws_db_instance[^\n]*\.port[^\n]*DB_PORT' main.tf \
+  || fail "DB_PORT must match the RDS instance port"
+
 # Alarm dimensions must reference real resources: every var.* used in a dimension
 # must be declared in the monitoring module and wired from a module output in main.tf
 # that is actually defined by the source module.
@@ -49,4 +64,5 @@ grep -q 'aws_sns_topic_subscription' modules/monitoring/main.tf \
 grep -q 'aws_sns_topic_subscription' main.tf \
   || grep -q 'aws_sns_topic_subscription' modules/monitoring/main.tf \
   || fail "missing SNS subscription referencing alerts topic"
+
 echo "OK"

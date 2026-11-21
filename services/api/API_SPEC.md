@@ -26,6 +26,12 @@ API-Version: v1
 
 Omitting the header defaults to the current version.
 
+## Rate Limits
+
+Requests are limited to **100 requests per minute per IP address**. The limit is keyed on the client IP address, not on the API key — multiple API keys used from the same IP share a single budget.
+
+The enforced value is defined by the `RATE_LIMIT_PER_MINUTE` constant in [`src/rate_limit.rs`](src/rate_limit.rs). The behaviour is pinned by [`tests/rate_limiting_tests.rs`](tests/rate_limiting_tests.rs); if the constant and this document ever disagree, the tests are authoritative.
+
 ## Migration Guide
 
 ### v1 → (upcoming v2)

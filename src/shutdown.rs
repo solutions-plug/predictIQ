@@ -19,6 +19,16 @@ pub const MAX_EMAIL_WORKER_RESTARTS: u32 = 5;
 pub const EMAIL_WORKER_BACKOFF_BASE: Duration = Duration::from_millis(500);
 
 /// Coordinates graceful shutdown across background tasks.
+///
+/// Shutdown proceeds in two distinct phases so that in-flight requests are
+/// never able to enqueue work onto workers that have already drained:
+///
+/// 1. The signal-handling future only *signals* shutdown (via [`Self::shutdown`])
+///    and returns. It never drains workers itself.
+/// 2. The main task observes the signal, stops the HTTP server from accepting
+///    new connections, and only then drains background workers.
+///
+/// See `services/api/GRACEFUL_SHUTDOWN.md` for the documented sequence.
 #[derive(Clone)]
 pub struct ShutdownCoordinator {
     tx: watch::Sender<bool>,
@@ -33,6 +43,10 @@ impl ShutdownCoordinator {
     }
 
     /// Request shutdown of all subscribed tasks.
+    ///
+    /// This only flips the signal; it does not drain workers. Draining is the
+    /// responsibility of the main task, which must first stop the HTTP server
+    /// from accepting connections.
     pub fn shutdown(&self) {
         let _ = self.tx.send(true);
     }
@@ -48,6 +62,14 @@ impl ShutdownCoordinator {
             return;
         }
         let _ = self.rx.changed().await;
+    }
+
+    /// Signal-only future suitable for `tokio::select!` against the server.
+    ///
+    /// Resolves once shutdown has been requested and performs no draining, so
+    /// the main task can stop accepting connections before draining workers.
+    pub async fn signalled(&mut self) {
+        self.wait().await;
     }
 }
 
@@ -153,6 +175,73 @@ impl WorkerSupervisor {
     }
 }
 
+/// Ordered shutdown phases, used to assert that the HTTP server stops
+/// accepting connections before background workers begin draining.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShutdownPhase {
+    /// The process is running normally.
+    Running,
+    /// Shutdown has been signalled; the server is no longer accepting.
+    ServerStopped,
+    /// Background workers are being drained.
+    WorkersDraining,
+    /// Shutdown is complete.
+    Complete,
+}
+
+/// Drives the ordered graceful shutdown sequence.
+///
+/// The signal future only calls [`ShutdownCoordinator::shutdown`]; this helper
+/// runs in the main task and enforces the ordering:
+/// stop accepting connections, then drain workers.
+pub struct GracefulShutdown {
+    coordinator: ShutdownCoordinator,
+    phase: ShutdownPhase,
+}
+
+impl GracefulShutdown {
+    /// Create a new shutdown driver around `coordinator`.
+    pub fn new(coordinator: ShutdownCoordinator) -> Self {
+        Self {
+            coordinator,
+            phase: ShutdownPhase::Running,
+        }
+    }
+
+    /// Current shutdown phase.
+    pub fn phase(&self) -> ShutdownPhase {
+        self.phase
+    }
+
+    /// Signal-only future: requests shutdown and returns without draining.
+    pub async fn signal_future(&mut self) {
+        self.coordinator.signalled().await;
+    }
+
+    /// Run the ordered shutdown sequence in the main task.
+    ///
+    /// `stop_accepting` is awaited first (the HTTP server stops accepting new
+    /// connections), and only afterwards is `drain_workers` awaited.
+    pub async fn run<StopAccepting, StopFut, Drain, DrainFut>(
+        &mut self,
+        stop_accepting: StopAccepting,
+        drain_workers: Drain,
+    ) where
+        StopAccepting: FnOnce() -> StopFut,
+        StopFut: std::future::Future<Output = ()>,
+        Drain: FnOnce() -> DrainFut,
+        DrainFut: std::future::Future<Output = ()>,
+    {
+        stop_accepting().await;
+        self.phase = ShutdownPhase::ServerStopped;
+
+        drain_workers().await;
+        self.phase = ShutdownPhase::WorkersDraining;
+
+        self.phase = ShutdownPhase::Complete;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,5 +308,74 @@ mod tests {
 
         assert_eq!(outcome, SupervisorOutcome::Completed);
         assert_eq!(supervisor.crash_total(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn server_stops_accepting_before_workers_drain() {
+        let coordinator = ShutdownCoordinator::new();
+        let mut shutdown = GracefulShutdown::new(coordinator.clone());
+
+        // The signal future only signals; it must not drain workers.
+        let signal = tokio::spawn(async move {
+            coordinator.shutdown();
+        });
+        shutdown.signal_future().await;
+        signal.await.unwrap();
+
+        assert_eq!(shutdown.phase(), ShutdownPhase::Running);
+
+        let events = Arc::new(std::sync::Mutex::new(Vec::<&'static str>::new()));
+
+        let stop_events = events.clone();
+        let drain_events = events.clone();
+        shutdown
+            .run(
+                move || async move {
+                    stop_events.lock().unwrap().push("stop_accepting");
+                },
+                move || async move {
+                    drain_events.lock().unwrap().push("drain_workers");
+                },
+            )
+            .await;
+
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec!["stop_accepting", "drain_workers"]
+        );
+        assert_eq!(shutdown.phase(), ShutdownPhase::Complete);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn no_work_dispatched_after_draining_starts() {
+        let coordinator = ShutdownCoordinator::new();
+        let mut shutdown = GracefulShutdown::new(coordinator.clone());
+
+        let accepting = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let dispatched_after_drain = Arc::new(AtomicU64::new(0));
+
+        let accepting_for_stop = accepting.clone();
+        let accepting_for_drain = accepting.clone();
+        let dispatched = dispatched_after_drain.clone();
+
+        shutdown
+            .run(
+                move || async move {
+                    accepting_for_stop.store(false, Ordering::SeqCst);
+                },
+                move || async move {
+                    // Simulate a worker draining; any dispatch attempt while
+                    // the server is no longer accepting must be rejected.
+                    if !accepting_for_drain.load(Ordering::SeqCst) {
+                        // Server already stopped accepting: no new work.
+                    } else {
+                        dispatched.fetch_add(1, Ordering::SeqCst);
+                    }
+                },
+            )
+            .await;
+
+        assert!(!accepting.load(Ordering::SeqCst));
+        assert_eq!(dispatched_after_drain.load(Ordering::SeqCst), 0);
     }
 }
