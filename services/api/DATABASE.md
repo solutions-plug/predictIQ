@@ -24,6 +24,24 @@ admin operations and are never updated or soft-deleted. The former `audit_logs`
 table (UUID primary key, soft-deletable) was unused and has been removed; see the
 migration note below. GDPR logging tests target `audit_log`.
 
+## `markets` Consistency Constraints
+
+The `markets` table mirrors on-chain state. The invariants below are enforced at
+the database level so that direct writes and migrations cannot persist
+contradictory state (see `contracts/predict-iq/INVARIANTS.md`).
+
+| Constraint | Type | Invariant enforced |
+|---|---|---|
+| `markets_on_chain_market_id_key` | UNIQUE | Each on-chain market identifier maps to exactly one row; no duplicate mirrors of the same market. |
+| `markets_outcome_count_check` | CHECK | A market has at least two outcomes (`outcome_count >= 2`), matching the contract's minimum outcome count. |
+| `markets_status_check` | CHECK | `status` is one of the contract's valid lifecycle states (`active`, `closed`, `resolved`, `cancelled`). |
+| `markets_resolved_status_check` | CHECK | A market may only carry a `resolved_outcome` when `status = 'resolved'`; unresolved markets must leave it `NULL`. |
+| `markets_resolved_outcome_check` | CHECK | When present, `resolved_outcome` is a valid outcome index (`resolved_outcome >= 0` and `< outcome_count`). |
+| `markets_deadline_check` | CHECK | `deadline` is strictly after `created_at`, so a market cannot be created already expired. |
+
+Any insert or update that violates one of these constraints fails at the
+database level with a constraint-violation error.
+
 ## Migration Files
 
 | # | File | Description |
@@ -49,6 +67,7 @@ migration note below. GDPR logging tests target `audit_log`.
 | 017 | `017_add_soft_delete_markets.sql` | Adds `deleted_at` to `markets` + cleanup function |
 | 018 | `018_add_varchar_constraints.sql` | CHECK constraints on user-supplied TEXT columns |
 | 019 | `019_create_watched_transactions.sql` | Canonical `watched_transactions` table (guarded, idempotent) |
+| 019 | `019_add_markets_consistency_constraints.sql` | UNIQUE + CHECK constraints enforcing `markets` invariants |
 
 > **Note:** Two migration files share the `010_` prefix. Apply them in lexicographic
 > order (`010_add_soft_delete_newsletter.sql` before `010_create_audit_log.sql`).
@@ -95,6 +114,92 @@ Final `watched_transactions` column set (after all migrations):
 Applying all migrations to an empty database and to one that already has the
 old `watched_transactions` table both yield this same schema. Backfilling data
 into `watched_transactions` is out of scope.
+
+## Migration Naming and Numbering Rules
+
+Every schema change lives in its own file under
+`services/api/database/migrations/`. The filename determines both the
+**version** recorded in `schema_migrations` and the **order** in which
+migrations are applied, so the format is enforced by tooling.
+
+### Filename format
+
+```
+<prefix>_<description>.sql
+```
+
+| Part | Rule | Examples |
+|------|------|----------|
+| `<prefix>` | Zero-padded number, optionally followed by a single lowercase letter suffix | `017`, `017b`, `017c` |
+| `<description>` | Lowercase words separated by underscores, describing the change | `add_soft_delete_markets` |
+| Extension | Always `.sql` | — |
+
+The **filename stem** (the filename without the `.sql` extension) is the
+canonical identifier for a migration, e.g. `017b_add_markets_status_index`.
+
+### The numeric prefix is not the version
+
+The numeric prefix is **not** the migration version. The version is the
+**full filename stem**, and that is the value stored in the
+`schema_migrations` table and compared against the embedded migration at
+startup.
+
+This means files that share a numeric prefix are all distinct migrations and
+are all applied. For example, `017`, `017b`, `017c`, `017d` and `017e` are
+five separate migrations, not one. Treating the numeric prefix as the version
+causes files sharing a prefix to be silently skipped — see issue #1746 for the
+precedent.
+
+### Ordering rule
+
+Migrations are applied in **lexicographic order of the filename**. Because
+`_` (ASCII `0x5F`) sorts after any lowercase letter, a letter suffix sorts
+after the bare number:
+
+```
+017_add_soft_delete_markets.sql
+017b_...
+017c_...
+018_add_varchar_constraints.sql
+```
+
+Choose suffixes so that lexicographic order matches the intended apply order.
+When adding a migration, use the next unused number; if that number is already
+taken, append the next free letter suffix (`017b`, `017c`, …) rather than
+renumbering existing files.
+
+### Registry and rollback requirements
+
+Each migration must be registered in the `MIGRATIONS` array in
+`services/api/src/migrations.rs`:
+
+| Field | Requirement |
+|-------|-------------|
+| `version` | Unique string equal to the filename stem (e.g. `"017b_add_markets_status_index"`) |
+| `name` | Equal to the filename stem |
+| Rollback | A matching `rollbacks/<stem>_down.sql` file must exist |
+
+A migration file that is not in the registry, a registry entry with no
+matching file, a missing rollback, an orphan rollback, or a duplicate
+`version` will all fail the registry check.
+
+### Registry check
+
+The registry check is `scripts/check_migrations_registry.sh`. It runs in CI
+(the migrations workflow) and can be run locally from the repository root:
+
+```bash
+bash scripts/check_migrations_registry.sh
+```
+
+It fails on:
+
+- migration files present on disk but missing from the `MIGRATIONS` registry,
+- registry entries with no matching migration file,
+- missing or orphaned rollback scripts,
+- duplicate `version` strings in the registry.
+
+Run it before opening a PR that adds or renames a migration.
 
 ## Migration Immutability Guarantee
 
@@ -154,6 +259,7 @@ exact changes made by their paired migration.
 | `017_add_soft_delete_markets.sql` | `rollbacks/017_add_soft_delete_markets_down.sql` |
 | `018_add_varchar_constraints.sql` | `rollbacks/018_add_varchar_constraints_down.sql` |
 | `019_create_watched_transactions.sql` | `rollbacks/019_create_watched_transactions_down.sql` |
+| `019_add_markets_consistency_constraints.sql` | `rollbacks/019_add_markets_consistency_constraints_down.sql` |
 
 ### Rolling back a single migration
 
@@ -208,4 +314,15 @@ bash services/api/scripts/run_migrations.sh
 |---|---|
 | `performance_indexes.sql` | Source for the index
 
-/* … truncated 893 chars — edit only what you need near the top … */
+> **Rule:** No schema-altering SQL should be applied from `sql/` directly. All schema changes must go through a numbered migration in `database/migrations/`.
+
+## Connection Pool Configuration
+
+Pool sizing and timeouts are fully env-configurable — no code changes needed for different deployment sizes.
+
+| Variable | Default | Description |
+|---|---|---|
+| `DB_POOL_MIN_CONNECTIONS` | `5` | Minimum idle connections kept open |
+| `DB_POOL_MAX_CONNECTIONS` | `25` | Maximum concurrent connections |
+| `DB_POOL_ACQUIRE_TIMEOUT_SECS` | `5` | Seconds to wait for a free connection before error |
+| `DB_POOL_IDLE_TIMEOUT_SECS` | _(sqlx default)

@@ -136,3 +136,40 @@ describe('proxy connect-src / img-src allow-list', () => {
     expect(connectSrc.some((src) => thirdParty.startsWith(src))).toBe(false);
   });
 });
+
+describe('proxy API origin resolution (#1929)', () => {
+  const original = process.env.NEXT_PUBLIC_API_URL;
+  afterEach(() => {
+    if (original === undefined) delete process.env.NEXT_PUBLIC_API_URL;
+    else process.env.NEXT_PUBLIC_API_URL = original;
+    jest.resetModules();
+  });
+
+  const connectSrc = () =>
+    runProxy('/').response.headers.get('Content-Security-Policy')!.match(/connect-src\s+([^;]+)/)![1];
+
+  it('does not widen connect-src when the API origin env var is unset', () => {
+    delete process.env.NEXT_PUBLIC_API_URL;
+    expect(connectSrc()).toBe("'self'");
+  });
+
+  it('does not pass a malformed origin through into connect-src', () => {
+    process.env.NEXT_PUBLIC_API_URL = 'not a url';
+    expect(connectSrc()).toBe("'self'");
+  });
+
+  it('normalises a valid URL to its bare origin', () => {
+    process.env.NEXT_PUBLIC_API_URL = 'https://api.example.com/v1/path?x=1';
+    expect(connectSrc()).toBe("'self' https://api.example.com");
+  });
+
+  it('env.ts contract: unset or malformed NEXT_PUBLIC_API_URL fails validation instead of being accepted', () => {
+    const load = () => jest.isolateModules(() => require('../lib/env'));
+
+    delete process.env.NEXT_PUBLIC_API_URL;
+    expect(load).toThrow(/NEXT_PUBLIC_API_URL/);
+
+    process.env.NEXT_PUBLIC_API_URL = 'not a url';
+    expect(load).toThrow(/valid URL/);
+  });
+});

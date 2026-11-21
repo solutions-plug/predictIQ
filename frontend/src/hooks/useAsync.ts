@@ -11,6 +11,46 @@ export interface UseAsyncResult<T> extends UseAsyncState<T> {
 }
 
 /**
+ * Extracts a human-readable message from a failed HTTP response.
+ *
+ * Tries to parse the response body as JSON and pull out a `message` (or
+ * `error`) field, falling back to the raw text, and finally to the status
+ * text when the body is empty or not JSON.
+ */
+export async function readErrorMessage(
+  response: Response,
+  fallback?: string,
+): Promise<string> {
+  const statusText = fallback ?? `Request failed (${response.status})`;
+
+  let body: string;
+  try {
+    body = await response.text();
+  } catch {
+    return statusText;
+  }
+
+  if (!body) {
+    return statusText;
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (parsed && typeof parsed === 'object') {
+      const record = parsed as Record<string, unknown>;
+      const message = record.message ?? record.error;
+      if (typeof message === 'string' && message.trim()) {
+        return message;
+      }
+    }
+  } catch {
+    // Body is not JSON; fall through to the status text.
+  }
+
+  return statusText;
+}
+
+/**
  * Runs an async function and tracks its loading/error/data state.
  *
  * `retry()` is a no-op while a request is already in flight, so rapid

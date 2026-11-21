@@ -172,4 +172,62 @@ mod tests {
     fn unknown_charset_is_accepted() {
         assert!(is_json_content_type("application/json; charset=made-up"));
     }
+
+    // ── Middleware behaviour ─────────────────────────────────────────────────
+
+    use axum::{body::Body, http::Request, middleware, routing::any, Router};
+    use tower::ServiceExt;
+
+    fn app() -> Router {
+        Router::new()
+            .route("/", any(|| async { "inner-ok" }))
+            .layer(middleware::from_fn(require_json_content_type))
+    }
+
+    async fn send(method: Method, ct: Option<&str>) -> (StatusCode, String) {
+        let mut b = Request::builder().method(method).uri("/");
+        if let Some(ct) = ct {
+            b = b.header("content-type", ct);
+        }
+        let resp = app().oneshot(b.body(Body::empty()).unwrap()).await.unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        (status, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn missing_content_type_is_rejected_with_415() {
+        let (status, body) = send(Method::POST, None).await;
+        assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert!(body.contains("unsupported_media_type"));
+        assert!(body.contains("\"received\":\"not set\""));
+    }
+
+    #[tokio::test]
+    async fn wrong_content_type_is_rejected_with_415() {
+        for m in [Method::POST, Method::PUT, Method::PATCH] {
+            let (status, body) = send(m, Some("text/plain")).await;
+            assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+            assert!(body.contains("\"received\":\"text/plain\""));
+            assert!(body.contains("\"required\":\"application/json\""));
+        }
+    }
+
+    #[tokio::test]
+    async fn valid_json_passes_through_to_inner_service() {
+        for ct in ["application/json", "application/json; charset=utf-8"] {
+            let (status, body) = send(Method::POST, Some(ct)).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body, "inner-ok");
+        }
+    }
+
+    #[tokio::test]
+    async fn exempt_methods_skip_the_check() {
+        for m in [Method::GET, Method::DELETE] {
+            let (status, body) = send(m, None).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body, "inner-ok");
+        }
+    }
 }

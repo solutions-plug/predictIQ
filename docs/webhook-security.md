@@ -11,19 +11,58 @@ The `/webhooks/sendgrid` endpoint receives and processes email delivery status e
 3. Reject oversized payloads that could cause DoS
 4. Sanitize event data before persistence
 
-## Authentication: Cryptographic Signatures
+## Authentication: ECDSA Signature Verification
 
-SendGrid signs every webhook request with an HMAC-SHA256 signature. The signature is verified by the `sendgrid_webhook_middleware` before the request reaches the handler.
+SendGrid signs every webhook request with an **ECDSA P-256** signature over the request timestamp and body. The signature is verified by `security::sendgrid_webhook_middleware` before the request reaches the handler.
+
+> **Correction:** Earlier revisions of this document described HMAC-SHA256 verification. That was inaccurate — SendGrid's Signed Event Webhook uses ECDSA, not a shared HMAC secret. The correction originates from closed issue #1729.
 
 **Configuration:**
-- `SENDGRID_WEBHOOK_SECRET`: SendGrid's Signed Event Webhook **public key** (base64 DER, ECDSA P-256). Must be set in production. HMAC-SHA256 with a shared secret is accepted only outside production, for local testing.
+- `SENDGRID_WEBHOOK_SECRET`: SendGrid's Signed Event Webhook **public key**, base64-encoded DER (ECDSA P-256). Must be set in production.
 - Signature is in the `X-Twilio-Email-Event-Webhook-Signature` header
+- Timestamp is in the `X-Twilio-Email-Event-Webhook-Timestamp` header
 - Verification happens in `security::sendgrid_webhook_middleware` before body parsing
 
 **Production Requirements:**
-- Must match the key configured in the SendGrid dashboard
-- Mismatched secrets cause all webhook requests to be rejected with HTTP 403
-- If not set, all webhook requests are rejected (safe default)
+- The configured public key must match the key shown in the SendGrid dashboard
+- A mismatched key causes all webhook requests to be rejected with HTTP 403
+- If the key is not set, all webhook requests are rejected (safe default)
+
+**Local Testing Only:**
+- HMAC-SHA256 with a shared secret is accepted **only outside production**, to simplify local testing. It is never accepted in production.
+
+## Newsletter Confirmation and Unsubscribe Tokens
+
+The newsletter flow uses two distinct token types with different storage and validation models. They are documented together here because the difference between them is security-relevant.
+
+> **Correction:** The plaintext-versus-hashed inconsistency described below was surfaced by closed issue #1728.
+
+### Confirmation Tokens
+
+- Generated when a subscriber signs up and must confirm their email address.
+- Stored in `newsletter_subscribers.confirmation_token`.
+- **Current storage form: plaintext UUIDs.** The token is persisted as-is, not hashed.
+- Validation compares the incoming token against the stored value.
+
+**Known inconsistency:** Confirmation tokens are stored in plaintext, while unsubscribe tokens (below) are stored only as hashes. A database leak would expose usable confirmation tokens. This mismatch is tracked in issue #1728; the storage model is expected to move to hashed tokens. Until then, treat `newsletter_subscribers.confirmation_token` as sensitive data.
+
+### Unsubscribe Tokens
+
+- Generated as **32 random bytes**, hex-encoded for transport.
+- Stored **only as a SHA-256 hash** in the `unsubscribe_tokens` table. The raw token is never persisted.
+- Each row records `expires_at` and `used_at`.
+- Validation hashes the incoming token, looks up the hash, and checks that the token has not expired and has not already been used (`used_at` is null).
+
+Because only the hash is stored, a database leak does not yield usable unsubscribe links.
+
+### Summary
+
+| Token | Storage form | Validation |
+|---|---|---|
+| Confirmation | Plaintext UUID in `newsletter_subscribers.confirmation_token` | Direct comparison against stored value |
+| Unsubscribe | SHA-256 hash in `unsubscribe_tokens` | Hash incoming token, check `expires_at` and `used_at` |
+
+See `services/api/src/newsletter.rs` and `services/api/sql/newsletter_schema.sql` for the implementation.
 
 ## Replay Protection: Two-Stage Deduplication
 

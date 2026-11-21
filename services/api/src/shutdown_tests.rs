@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 use tokio::time::{sleep, timeout};
 
@@ -9,6 +10,76 @@ use crate::email::queue::EmailQueue;
 use crate::email::service::EmailService;
 use crate::metrics::Metrics;
 use crate::shutdown::ShutdownCoordinator;
+
+/// Shared, ordered log of shutdown events.
+///
+/// Each recorded event is appended in the order it occurs, so tests can assert
+/// on the relative ordering of events (indices) rather than on wall-clock
+/// timing. This mirrors the event-recording pattern used in
+/// `services/api/tests/graceful_shutdown_test.rs`.
+#[derive(Clone, Default)]
+struct ShutdownEventLog {
+    events: Arc<Mutex<Vec<&'static str>>>,
+}
+
+impl ShutdownEventLog {
+    fn new() -> Self {
+        Self {
+            events: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Record an event, returning its position in the sequence.
+    fn record(&self, event: &'static str) -> usize {
+        let mut events = self.events.lock().expect("event log poisoned");
+        events.push(event);
+        events.len() - 1
+    }
+
+    /// Index of the first occurrence of `event`, if any.
+    fn index_of(&self, event: &'static str) -> Option<usize> {
+        let events = self.events.lock().expect("event log poisoned");
+        events.iter().position(|e| *e == event)
+    }
+
+    /// All recorded events, in order.
+    fn snapshot(&self) -> Vec<&'static str> {
+        self.events.lock().expect("event log poisoned").clone()
+    }
+}
+
+const SERVER_STOPPED_ACCEPTING: &str = "server_stopped_accepting";
+const WORKER_DRAIN_STARTED: &str = "worker_drain_started";
+
+/// Assert that the server stopped accepting before any worker drain began.
+fn assert_server_stops_before_worker_drain(log: &ShutdownEventLog) {
+    let events = log.snapshot();
+
+    let server_idx = log
+        .index_of(SERVER_STOPPED_ACCEPTING)
+        .unwrap_or_else(|| panic!("server never recorded stop-accepting event; events: {events:?}"));
+
+    let drain_indices: Vec<usize> = events
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| **e == WORKER_DRAIN_STARTED)
+        .map(|(i, _)| i)
+        .collect();
+
+    assert!(
+        !drain_indices.is_empty(),
+        "no worker drain events recorded; events: {events:?}"
+    );
+
+    for drain_idx in drain_indices {
+        assert!(
+            server_idx < drain_idx,
+            "worker drain initiated before server stopped accepting \
+             (server_stopped_accepting at {server_idx}, worker_drain_started at {drain_idx}); \
+             events: {events:?}"
+        );
+    }
+}
 
 #[tokio::test]
 #[ignore] // Requires Redis and PostgreSQL
@@ -187,4 +258,119 @@ async fn test_signal_handler_setup() {
     // Just verify the function exists - actual signal testing would require
     // process-level integration tests
     assert!(true, "Signal handler setup function exists");
+}
+
+#[tokio::test]
+async fn test_server_stops_accepting_before_worker_drain() {
+    let log = ShutdownEventLog::new();
+    let shutdown_coordinator = ShutdownCoordinator::new(2);
+
+    // Server-stop step: waits for the shutdown signal, then records that it has
+    // stopped accepting new requests before any worker begins draining.
+    let server_log = log.clone();
+    let mut server_shutdown_rx = shutdown_coordinator.subscribe();
+    let server_handle = tokio::spawn(async move {
+        let _ = server_shutdown_rx.recv().await;
+        // The HTTP server stops accepting requests first.
+        server_log.record(SERVER_STOPPED_ACCEPTING);
+    });
+
+    // Two workers that record the start of their drain once signalled.
+    let workers = (0..2)
+        .map(|_| {
+            let worker_log = log.clone();
+            let coord = shutdown_coordinator.clone();
+            let mut shutdown_rx = shutdown_coordinator.subscribe();
+            tokio::spawn(async move {
+                let _ = shutdown_rx.recv().await;
+                worker_log.record(WORKER_DRAIN_STARTED);
+                coord.worker_completed().await;
+            })
+        })
+        .collect::<Vec<_>>();
+
+    // Let the tasks subscribe and park on the signal.
+    sleep(Duration::from_millis(50)).await;
+
+    let shutdown_result = timeout(
+        Duration::from_secs(2),
+        shutdown_coordinator.shutdown(Duration::from_secs(1)),
+    )
+    .await;
+
+    assert!(shutdown_result.is_ok(), "shutdown timed out");
+    assert!(shutdown_result.unwrap().is_ok(), "shutdown failed");
+
+    // Ensure the server-stop step has run to completion.
+    let server_join = timeout(Duration::from_secs(1), server_handle).await;
+    assert!(server_join.is_ok(), "server-stop task did not finish");
+    assert!(server_join.unwrap().is_ok(), "server-stop task panicked");
+
+    for worker in workers {
+        let join_result = timeout(Duration::from_secs(1), worker).await;
+        assert!(join_result.is_ok(), "worker did not finish");
+        assert!(join_result.unwrap().is_ok(), "worker panicked");
+    }
+
+    // Explicit ordering assertion: server stops accepting before any drain.
+    assert_server_stops_before_worker_drain(&log);
+}
+
+#[tokio::test]
+async fn test_server_stops_accepting_before_drain_with_busy_worker() {
+    let log = ShutdownEventLog::new();
+    let shutdown_coordinator = ShutdownCoordinator::new(1);
+
+    // Server-stop step records that it stopped accepting once signalled.
+    let server_log = log.clone();
+    let mut server_shutdown_rx = shutdown_coordinator.subscribe();
+    let server_handle = tokio::spawn(async move {
+        let _ = server_shutdown_rx.recv().await;
+        server_log.record(SERVER_STOPPED_ACCEPTING);
+    });
+
+    // A worker that is still busy with an in-flight task when the signal
+    // arrives. It only records the start of its drain after finishing the
+    // in-flight work, so ordering must still hold.
+    let worker_log = log.clone();
+    let coord = shutdown_coordinator.clone();
+    let mut worker_shutdown_rx = shutdown_coordinator.subscribe();
+    let worker_handle = tokio::spawn(async move {
+        // Simulate in-flight work that is already underway.
+        let in_flight = tokio::spawn(async {
+            sleep(Duration::from_millis(100)).await;
+        });
+
+        // Wait for the shutdown signal while the in-flight task is busy.
+        let _ = worker_shutdown_rx.recv().await;
+
+        // Finish the in-flight work before draining.
+        let _ = in_flight.await;
+
+        worker_log.record(WORKER_DRAIN_STARTED);
+        coord.worker_completed().await;
+    });
+
+    // Let the worker start its in-flight task and park on the signal.
+    sleep(Duration::from_millis(20)).await;
+
+    let shutdown_result = timeout(
+        Duration::from_secs(2),
+        shutdown_coordinator.shutdown(Duration::from_secs(1)),
+    )
+    .await;
+
+    assert!(shutdown_result.is_ok(), "shutdown timed out");
+    assert!(shutdown_result.unwrap().is_ok(), "shutdown failed");
+
+    let server_join = timeout(Duration::from_secs(1), server_handle).await;
+    assert!(server_join.is_ok(), "server-stop task did not finish");
+    assert!(server_join.unwrap().is_ok(), "server-stop task panicked");
+
+    let worker_join = timeout(Duration::from_secs(1), worker_handle).await;
+    assert!(worker_join.is_ok(), "worker did not finish");
+    assert!(worker_join.unwrap().is_ok(), "worker panicked");
+
+    // Same ordering guarantee must hold even when a worker was busy.
+    assert_server_stops_before_worker_drain(&log);
 }
