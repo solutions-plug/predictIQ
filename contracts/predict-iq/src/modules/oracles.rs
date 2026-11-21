@@ -126,7 +126,7 @@ pub fn resolve_with_pyth(
     let price = fetch_pyth_price(e, config)?;
     validate_price(e, &price, config)?;
 
-    let outcome = determine_outcome(&price, config);
+    let outcome = determine_outcome(&price, config)?;
 
     let publish_time = cast_external_timestamp(price.publish_time)?;
 
@@ -156,35 +156,45 @@ pub fn resolve_with_pyth(
 /// so feeds with any exponent (e.g. -8 for BTC, -2 for some FX feeds) resolve correctly.
 pub const STRIKE_EXPO: i32 = -8;
 
-/// Rescale `price` from `10^expo` to `10^STRIKE_EXPO`, saturating on overflow.
-pub fn normalize_price(price: i64, expo: i32) -> i128 {
-    let diff = expo - STRIKE_EXPO;
+/// Rescale `price` from `10^expo` to `10^STRIKE_EXPO` using checked arithmetic.
+///
+/// Scale: `strike_price` is an integer in units of 1e-8 (i.e. `strike_price = 6_500_000_000_000`
+/// means 65,000.00000000). Returns `ArithmeticOverflow` if rescaling would overflow.
+pub fn normalize_price_checked(price: i64, expo: i32) -> Result<i128, ErrorCode> {
+    let diff = expo
+        .checked_sub(STRIKE_EXPO)
+        .ok_or(ErrorCode::ArithmeticOverflow)?;
     let p = price as i128;
     if diff >= 0 {
-        match 10i128.checked_pow(diff as u32).and_then(|m| p.checked_mul(m)) {
-            Some(v) => v,
-            None => {
-                if p < 0 {
-                    i128::MIN
-                } else {
-                    i128::MAX
-                }
-            }
-        }
+        let m = 10i128
+            .checked_pow(diff as u32)
+            .ok_or(ErrorCode::ArithmeticOverflow)?;
+        p.checked_mul(m).ok_or(ErrorCode::ArithmeticOverflow)
     } else {
-        match 10i128.checked_pow((-diff) as u32) {
-            Some(d) => p / d,
-            None => 0,
+        // Dividing by a power of ten too large for i128 truncates any i64 price to 0.
+        match 10i128.checked_pow(diff.unsigned_abs()) {
+            Some(d) => Ok(p / d),
+            None => Ok(0),
         }
     }
 }
 
-fn determine_outcome(price: &PythPrice, config: &OracleConfig) -> u32 {
+/// Saturating variant of [`normalize_price_checked`] (kept for callers that cannot fail).
+pub fn normalize_price(price: i64, expo: i32) -> i128 {
+    match normalize_price_checked(price, expo) {
+        Ok(v) => v,
+        Err(_) if price < 0 => i128::MIN,
+        Err(_) => i128::MAX,
+    }
+}
+
+/// Outcome 0 if the normalised price is >= strike, otherwise 1.
+pub fn determine_outcome(price: &PythPrice, config: &OracleConfig) -> Result<u32, ErrorCode> {
     let threshold = config.strike_price.unwrap_or(0) as i128;
-    if normalize_price(price.price, price.expo) >= threshold {
-        0
+    if normalize_price_checked(price.price, price.expo)? >= threshold {
+        Ok(0)
     } else {
-        1
+        Ok(1)
     }
 }
 
@@ -284,4 +294,182 @@ pub fn record_oracle_response(
     responses.set(oracle_id, outcome);
     e.storage().persistent().set(&key, &responses);
     Ok(())
+}
+
+/// Issue #509: Validate oracle consensus - requires min_responses confirmations
+pub fn validate_consensus(
+    e: &Env,
+    market_id: u64,
+    config: &OracleConfig,
+) -> Result<u32, ErrorCode> {
+    let min_responses = config.min_responses.unwrap_or(1);
+
+    let key = OracleData::OracleResponses(market_id);
+    let responses: Map<u32, u32> = e
+        .storage()
+        .persistent()
+        .get(&key)
+        .ok_or(ErrorCode::OracleFailure)?;
+
+    // Check if we have enough responses
+    if responses.len() < min_responses {
+        return Err(ErrorCode::OracleFailure);
+    }
+
+    // Count votes for each outcome.
+    // Fix #1539: iterate by actual (oracle_index, outcome) pairs via Map::iter()
+    // instead of a synthetic positional index. Map::get(i) is a key lookup, not
+    // positional — with non-contiguous oracle indices the old loop silently
+    // skipped entries whose key didn't match the loop counter.
+    let mut outcome_votes: Map<u32, u32> = Map::new(e);
+    for (_oracle_index, outcome) in responses.iter() {
+        let votes = outcome_votes.get(outcome).unwrap_or(0);
+        outcome_votes.set(outcome, votes + 1);
+    }
+
+    // Find outcome with most votes (quorum).
+    // Fix #1539: iterate outcome_votes by actual (outcome_id, vote_count) pairs.
+    // The old loop used outcome_votes.get(i) which probes key i, not position i,
+    // so non-contiguous outcome IDs (e.g. outcomes 0 and 2 with len==2) would
+    // never check key 2 — its votes were silently ignored.
+    let mut consensus_outcome: Option<u32> = None;
+    let mut max_votes = 0u32;
+    for (outcome_id, votes) in outcome_votes.iter() {
+        if votes > max_votes {
+            max_votes = votes;
+            consensus_outcome = Some(outcome_id);
+        }
+    }
+
+    let winning_outcome = consensus_outcome.ok_or(ErrorCode::OracleFailure)?;
+
+    Ok(winning_outcome)
+}
+
+/// Permissionless: fetch the Pyth price for an Active market past its
+/// resolution deadline and store it as oracle 0's result.
+pub fn resolve_via_oracle(e: &Env, market_id: u64) -> Result<u32, ErrorCode> {
+    let market =
+        crate::modules::markets::get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
+    if market.status != MarketStatus::Active {
+        return Err(ErrorCode::MarketNotActive);
+    }
+    if e.ledger().timestamp() < market.resolution_deadline {
+        return Err(ErrorCode::ResolutionNotReady);
+    }
+    let outcome = resolve_with_pyth(e, market_id, 0, &market.oracle_config)?;
+    if outcome >= market.options.len() {
+        return Err(ErrorCode::InvalidOutcome);
+    }
+    Ok(outcome)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, Address, Env, String};
+
+    fn valid_config(e: &Env) -> OracleConfig {
+        OracleConfig {
+            oracle_address: Address::generate(e),
+            feed_id: String::from_str(
+                e,
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            ),
+            max_staleness_seconds: MAX_STALENESS_SECONDS,
+            max_confidence_bps: 100,
+            strike_price: Some(100),
+            min_responses: Some(1),
+        }
+    }
+
+    #[test]
+    fn verify_oracle_health_accepts_valid_feed_id() {
+        let e = Env::default();
+        let config = valid_config(&e);
+        assert!(verify_oracle_health(&e, &config));
+        assert!(validate_oracle_config(&e, &config).is_ok());
+    }
+
+    #[test]
+    fn verify_oracle_health_rejects_wrong_length_feed_id() {
+        let e = Env::default();
+        let mut config = valid_config(&e);
+        config.feed_id = String::from_str(&e, "0123456789abcdef");
+        assert!(!verify_oracle_health(&e, &config));
+        assert_eq!(
+            validate_oracle_config(&e, &config),
+            Err(ErrorCode::OracleFailure)
+        );
+    }
+
+    #[test]
+    fn verify_oracle_health_rejects_non_hex_feed_id() {
+        let e = Env::default();
+        let mut config = valid_config(&e);
+        config.feed_id = String::from_str(
+            &e,
+            "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+        );
+        assert!(!verify_oracle_health(&e, &config));
+        assert_eq!(
+            validate_oracle_config(&e, &config),
+            Err(ErrorCode::OracleFailure)
+        );
+    }
+
+    #[test]
+    fn verify_oracle_health_rejects_empty_feed_id() {
+        let e = Env::default();
+        let mut config = valid_config(&e);
+        config.feed_id = String::from_str(&e, "");
+        assert!(!verify_oracle_health(&e, &config));
+        assert_eq!(
+            validate_oracle_config(&e, &config),
+            Err(ErrorCode::OracleFailure)
+        );
+    }
+
+    /// Issue #1707: min_responses = 3 with a single fresh report must be rejected.
+    #[test]
+    fn staleness_requires_min_responses_reports() {
+        let e = Env::default();
+        let id = e.register(crate::PredictIQ, ());
+        let mut config = valid_config(&e);
+        config.min_responses = Some(3);
+        e.as_contract(&id, || {
+            e.storage()
+                .persistent()
+                .set(&OracleData::LastUpdate(1, 0), &e.ledger().timestamp());
+            assert_eq!(
+                validate_oracle_staleness(&e, 1, &config),
+                Err(ErrorCode::OracleFailure)
+            );
+            for i in 1..3u64 {
+                e.storage()
+                    .persistent()
+                    .set(&OracleData::LastUpdate(1, i), &e.ledger().timestamp());
+            }
+            assert_eq!(validate_oracle_staleness(&e, 1, &config), Ok(()));
+        });
+    }
+
+    /// Issue #1960: zero, partial and full response sets.
+    #[test]
+    fn staleness_zero_partial_full_responses() {
+        let e = Env::default();
+        let id = e.register(crate::PredictIQ, ());
+        let mut config = valid_config(&e);
+        config.min_responses = Some(2);
+        e.as_contract(&id, || {
+            assert_eq!(validate_oracle_staleness(&e, 1, &config), Err(ErrorCode::OracleFailure));
+            e.storage().persistent().set(&OracleData::LastUpdate(1, 0), &e.ledger().timestamp());
+            assert_eq!(validate_oracle_staleness(&e, 1, &config), Err(ErrorCode::OracleFailure));
+            // Re-reporting from the same oracle must not count twice.
+            e.storage().persistent().set(&OracleData::LastUpdate(1, 0), &e.ledger().timestamp());
+            assert_eq!(validate_oracle_staleness(&e, 1, &config), Err(ErrorCode::OracleFailure));
+            e.storage().persistent().set(&OracleData::LastUpdate(1, 1), &e.ledger().timestamp());
+            assert_eq!(validate_oracle_staleness(&e, 1, &config), Ok(()));
+        });
+    }
 }

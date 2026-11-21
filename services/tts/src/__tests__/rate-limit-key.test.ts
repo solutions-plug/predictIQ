@@ -42,6 +42,39 @@ describe("rateLimitKeyGenerator", () => {
   });
 });
 
+describe("rateLimitKeyGenerator — identity derivation contract (#1940)", () => {
+  it("key is stable: the same client IP always derives the same key", () => {
+    const a = rateLimitKeyGenerator(mockRequest("10.0.0.1"));
+    const b = rateLimitKeyGenerator(mockRequest("10.0.0.1"));
+    expect(a).toBe(b);
+    expect(a).toBe("ip:10.0.0.1");
+  });
+
+  it("missing identifier falls back to the documented default key 'ip:unknown'", () => {
+    const req = { headers: {} } as unknown as Request;
+    expect(rateLimitKeyGenerator(req)).toBe("ip:unknown");
+  });
+
+  it("spoofed X-Forwarded-For / X-Real-IP / X-Client-Id headers neither split nor share the key (only req.ip counts)", () => {
+    const base = mockRequest("7.7.7.7");
+    const spoofed = {
+      ip: "7.7.7.7",
+      headers: {
+        "x-forwarded-for": "6.6.6.6",
+        "x-real-ip": "5.5.5.5",
+        "x-client-id": "attacker-1",
+      },
+    } as unknown as Request;
+    expect(rateLimitKeyGenerator(spoofed)).toBe(rateLimitKeyGenerator(base));
+
+    const otherClientSameHeaders = {
+      ip: "8.8.8.8",
+      headers: { "x-forwarded-for": "7.7.7.7" },
+    } as unknown as Request;
+    expect(rateLimitKeyGenerator(otherClientSameHeaders)).not.toBe(rateLimitKeyGenerator(base));
+  });
+});
+
 describe("Express rate limiter — rotating Authorization header", () => {
   it("still enforces the limit when the caller rotates a fake Authorization header per request", async () => {
     const limiter = rateLimit({

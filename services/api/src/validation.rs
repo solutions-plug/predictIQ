@@ -273,6 +273,72 @@ fn contains_injection(value: &str) -> bool {
 fn contains_markup(input: &str) -> bool {
     let mut chars = input.chars().peekable();
     while let Some(c) = chars.next() {
-        
+        if c == '<' {
+            if let Some(&next) = chars.peek() {
+                if next.is_ascii_alphabetic() || matches!(next, '/' | '!' | '?') {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
 
-/* … truncated 3328 chars — edit only what you need near the top … */
+// ── Disposable email blocklist ────────────────────────────────────────────────
+
+/// Environment variable holding a comma-separated list of disposable email
+/// domains to block. Loaded from configuration rather than hard-coded so the
+/// list can be updated without a code change.
+pub const DISPOSABLE_EMAIL_DOMAINS_ENV: &str = "DISPOSABLE_EMAIL_DOMAINS";
+
+/// Parse a comma-separated disposable-domain list from an optional env-var
+/// string. Entries are trimmed, lowercased, and empty entries are dropped.
+pub fn parse_disposable_email_domains(val: Option<&str>) -> Vec<String> {
+    val.map(|s| {
+        s.split(',')
+            .map(|d| d.trim().to_lowercase())
+            .filter(|d| !d.is_empty())
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// Resolve the configured disposable email blocklist.
+pub fn disposable_email_domains() -> Vec<String> {
+    parse_disposable_email_domains(
+        std::env::var(DISPOSABLE_EMAIL_DOMAINS_ENV).ok().as_deref(),
+    )
+}
+
+/// Returns `true` when the domain part of `email` is on the configured
+/// disposable blocklist. Comparison is case-insensitive.
+pub fn is_disposable_email(email: &str) -> bool {
+    let domain = match email.rsplit_once('@') {
+        Some((_, d)) => d.trim().to_lowercase(),
+        None => return false,
+    };
+    disposable_email_domains().iter().any(|blocked| blocked == &domain)
+}
+
+/// Validate an email address. Returns a generic error for both malformed and
+/// blocked (disposable) addresses so the response never reveals whether the
+/// domain is on the blocklist.
+pub fn validate_email(email: &str) -> Result<(), ValidationError> {
+    let generic = || ValidationError {
+        error: "invalid_email",
+        field: "email".to_string(),
+        message: "Please provide a valid email address.".to_string(),
+    };
+
+    let (local, domain) = match email.rsplit_once('@') {
+        Some(parts) => parts,
+        None => return Err(generic()),
+    };
+    if local.is_empty() || domain.is_empty() || !domain.contains('.') {
+        return Err(generic());
+    }
+    if is_disposable_email(email) {
+        return Err(generic());
+    }
+    Ok(())
+}
