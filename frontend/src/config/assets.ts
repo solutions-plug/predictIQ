@@ -1,44 +1,68 @@
-export interface AssetConfig {
+import { env } from "../lib/env";
+
+export interface Asset {
   code: string;
-  issuer?: string;
+  issuer: string;
+  contractId: string;
   name: string;
   decimals: number;
-  /** ISO 4217 currency code when this asset is a fiat-equivalent, otherwise undefined. */
-  fiatCurrency?: string;
 }
 
-export const SUPPORTED_ASSETS: AssetConfig[] = [
-  {
-    code: 'XLM',
-    issuer: undefined,
-    name: 'Stellar Lumens',
-    decimals: 7,
-  },
-  {
-    code: 'USDC',
-    issuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
-    name: 'USD Coin',
-    decimals: 2,
-    fiatCurrency: 'USD',
-  },
-  {
-    code: 'yXLM',
-    issuer: 'GARDNV3Q7YGT4AKSDF25LT32YSCCW4EV22Y2TV3I2PU2MMXJTEDL5T55',
-    name: 'Yield XLM',
-    decimals: 7,
-  },
-];
+type NetworkKey = "TESTNET" | "MAINNET" | "FUTURENET";
 
-/**
- * Resolve the ISO 4217 fiat currency a settlement asset is pegged to, if any.
- * Returns undefined for non-fiat-equivalent assets (e.g. XLM), so callers can
- * fall back to a neutral numeric format instead of assuming USD.
- */
-export function getFiatCurrencyForAsset(assetCode?: string | null): string | undefined {
-  if (!assetCode) {
-    return undefined;
+const ASSETS_BY_NETWORK: Record<NetworkKey, Asset[]> = {
+  TESTNET: [
+    {
+      code: "XLM",
+      issuer: "native",
+      contractId: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+      name: "Stellar Lumens",
+      decimals: 7,
+    },
+    {
+      code: "USDC",
+      issuer: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+      contractId: "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",
+      name: "USD Coin",
+      decimals: 7,
+    },
+  ],
+  MAINNET: [
+    {
+      code: "XLM",
+      issuer: "native",
+      contractId: "CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA",
+      name: "Stellar Lumens",
+      decimals: 7,
+    },
+    {
+      code: "USDC",
+      issuer: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+      contractId: "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75",
+      name: "USD Coin",
+      decimals: 7,
+    },
+  ],
+  FUTURENET: [
+    {
+      code: "XLM",
+      issuer: "native",
+      contractId: "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+      name: "Stellar Lumens",
+      decimals: 7,
+    },
+  ],
+};
+
+function resolveNetwork(): NetworkKey {
+  const network = (env.network ?? "").toUpperCase();
+  if (network in ASSETS_BY_NETWORK) {
+    return network as NetworkKey;
   }
-  const normalized = assetCode.trim().toUpperCase();
-  const asset = SUPPORTED_ASSETS.find((candidate) => candidate.code.toUpperCase() === normalized);
-  return asset?.fiatCurrency;
+  throw new Error(
+    `No asset configuration for network "${env.network}". ` +
+      `Expected one of: ${Object.keys(ASSETS_BY_NETWORK).join(", ")}.`,
+  );
 }
+
+export const SUPPORTED_ASSETS: Asset[] = ASSETS_BY_NETWORK[resolveNetwork()];

@@ -5,6 +5,11 @@
  * error codes 100-120 from the PredictIQ smart contract.
  */
 
+import {
+  validateBetAmount,
+  MIN_BET_AMOUNT,
+} from "../lib/assets";
+
 // Error code mapping (100-120)
 interface ErrorInfo {
   name: string;
@@ -211,6 +216,43 @@ describe("PredictIQ Frontend Mock Tests", () => {
       expect(parsed[0].type).toBe("market_created");
       expect(parsed[1].type).toBe("bet_placed");
       expect(parsed[2].type).toBe("market_resolved");
+    });
+  });
+
+  describe("Bet Amount Validation", () => {
+    it("rejects exponent notation", () => {
+      const result = validateBetAmount("1e3");
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("EXPONENT_NOTATION");
+        expect(result.error.message).toContain("Exponent notation");
+      }
+    });
+
+    it("rejects more than seven decimal places", () => {
+      const result = validateBetAmount("0.12345678");
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("TOO_MANY_DECIMALS");
+        expect(result.error.message).toContain("7 decimal places");
+      }
+    });
+
+    it("rejects values below the contract minimum", () => {
+      const result = validateBetAmount("0.0000001");
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("BELOW_MINIMUM");
+        expect(result.error.message).toContain("at least");
+      }
+    });
+
+    it("accepts a valid amount at the minimum with seven decimals", () => {
+      const result = validateBetAmount(MIN_BET_AMOUNT.toFixed(7));
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.value).toBe(MIN_BET_AMOUNT);
+      }
     });
   });
 });

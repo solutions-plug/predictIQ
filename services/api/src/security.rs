@@ -333,10 +333,20 @@ impl ApiKeyAuth {
 
         // Slow path: database-backed keys.
         if let Some(ref db) = self.db {
-            use sha2::{Digest, Sha256};
-            let hash = hex::encode(Sha256::digest(key.as_bytes()));
+            let hash = hash_api_key(key);
             match db.api_key_validate(&hash).await {
-                Ok(Some(_)) => return true,
+                Ok(Some(record)) => {
+                    // Defence in depth: even if the query ever stops filtering
+                    // revoked rows, never authenticate a revoked key.
+                    if record.revoked_at.is_some() {
+                        tracing::warn!(
+                            key_id = record.id,
+                            "rejected authentication attempt with revoked API key"
+                        );
+                        return false;
+                    }
+                    return true;
+                }
                 Ok(None) => {}
                 Err(e) => {
                     tracing::warn!(error = %e, "api_key_validate db error");
@@ -346,6 +356,29 @@ impl ApiKeyAuth {
 
         false
     }
+
+    /// Revoke a database-backed API key by its id.
+    ///
+    /// Sets `revoked_at` on the matching `api_keys` row so that subsequent
+    /// authentication attempts with the key are rejected by
+    /// [`ApiKeyAuth::verify_async`].  Revocation is idempotent: revoking an
+    /// already-revoked key leaves the original `revoked_at` timestamp intact.
+    ///
+    /// Returns `Ok(true)` when a live key was revoked, `Ok(false)` when no
+    /// matching (unrevoked) key exists, and `Err` on database failure.
+    pub async fn revoke(&self, key_id: i64) -> Result<bool, crate::db::DbError> {
+        let Some(ref db) = self.db else {
+            return Ok(false);
+        };
+        db.api_key_revoke(key_id).await
+    }
+}
+
+/// Hash an API key for storage/lookup using the same SHA-256 scheme as the
+/// `api_keys` table.  Kept in one place so lookup and revocation agree.
+pub fn hash_api_key(key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(key.as_bytes()))
 }
 
 #[derive(Serialize)]

@@ -172,6 +172,55 @@ APP_ENV=production
 REQUIRE_HTTPS=true
 ```
 
+## API Key Lifecycle
+
+This section describes how API keys are created, verified, rotated and revoked,
+and where the current implementation falls short of that intent.  It is based on
+`src/api_key_auth_tests.rs`, `tests/api_key_middleware_tests.rs` and the key
+admin handlers.
+
+### Creation
+
+API keys are supplied through the `API_KEYS` environment variable as a
+comma-separated list.  At startup the values are loaded into `ApiKeyAuth` and
+used for every authenticated request.  Keys managed in the `api_keys` database
+table are also honoured; static env-var keys are always checked first.
+
+### Verification
+
+Clients send the key in the `x-api-key` header.  The comparison against the
+configured keys is constant-time.  On failure the middleware returns `401` with
+a JSON body containing an `error` field and a `www-authenticate` header.
+
+See `src/api_key_auth_tests.rs` and `tests/api_key_middleware_tests.rs` for the
+exact behaviour exercised by the test suite.
+
+### Rotation with overlap
+
+Rotation is intended to be zero-downtime: a new key is issued while the old key
+remains valid for an overlap window, so clients can be updated before the old
+key stops working.  Once the overlap window ends the old key must no longer be
+accepted.
+
+> **Gap:** rotation is currently non-transactional and the overlap window is
+> unbounded — the old key is not reliably retired when the window ends.  This is
+> tracked in issue #1743.
+
+### Revocation
+
+Revocation is intended to let an operator invalidate a key immediately, without
+waiting for an overlap window to expire.
+
+> **Gap:** there is no revocation path today, even though the `api_keys` table
+> has a `revoked_at` column.  This is tracked in issue #1742.
+
+### Verifying the described behaviour
+
+- Unit tests: `src/api_key_auth_tests.rs`
+- Middleware integration tests: `tests/api_key_middleware_tests.rs`
+- Key admin routes: `GET /api/v1/admin/api-keys` and
+  `POST /api/v1/admin/api-keys/rotate` (see the runbook below)
+
 ## API Key Rotation Runbook
 
 API keys are managed in the `api_keys` database table.  Static env-var keys
