@@ -55,8 +55,11 @@ Depends on which service is crash-looping:
 - Roll back the task definition to the last known-good revision.
 
 ### Container health-check failure (ECS stops after `healthCheckGracePeriodSeconds`)
-- The container started but failed its health check (e.g., `/health` endpoint
-  not responding in time).
+- The container started but failed its health check. The task definition's
+  container `healthCheck` probes the lightweight `/healthz` endpoint on port
+  `8080` (via `wget`, no `curl` dependency); the ALB target group uses the same
+  path and port with a 10s interval and `unhealthy_threshold = 2`, so a wedged
+  task is marked unhealthy in roughly 20–30 seconds.
 - Check if the service needs more time to initialize; increase
   `healthCheckGracePeriodSeconds` as a short-term measure.
 

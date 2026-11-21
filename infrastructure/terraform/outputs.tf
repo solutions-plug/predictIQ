@@ -8,6 +8,11 @@ output "alerts_subscription_arn" {
   value       = try(aws_sns_topic_subscription.alerts[0].arn, null)
 }
 
+output "alb_access_log_bucket_name" {
+  description = "S3 bucket name receiving ALB access logs"
+  value       = aws_s3_bucket.alb_access_logs.bucket
+}
+
 output "rds_endpoint" {
   description = "RDS endpoint"
   value       = module.rds.endpoint
