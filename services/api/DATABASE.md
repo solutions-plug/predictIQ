@@ -45,7 +45,94 @@ This service uses PostgreSQL. Schema and seed scripts are in:
 > **Note:** Two migration files share the `010_` prefix. Apply them in lexicographic
 > order (`010_add_soft_delete_newsletter.sql` before `010_create_audit_log.sql`).
 
+## Migration Naming and Numbering Rules
+
+Every schema change lives in its own file under
+`services/api/database/migrations/`. The filename determines both the
+**version** recorded in `schema_migrations` and the **order** in which
+migrations are applied, so the format is enforced by tooling.
+
+### Filename format
+
+```
+<prefix>_<description>.sql
+```
+
+| Part | Rule | Examples |
+|------|------|----------|
+| `<prefix>` | Zero-padded number, optionally followed by a single lowercase letter suffix | `017`, `017b`, `017c` |
+| `<description>` | Lowercase words separated by underscores, describing the change | `add_soft_delete_markets` |
+| Extension | Always `.sql` | — |
+
+The **filename stem** (the filename without the `.sql` extension) is the
+canonical identifier for a migration, e.g. `017b_add_markets_status_index`.
+
+### The numeric prefix is not the version
+
+The numeric prefix is **not** the migration version. The version is the
+**full filename stem**, and that is the value stored in the
+`schema_migrations` table and compared against the embedded migration at
+startup.
+
+This means files that share a numeric prefix are all distinct migrations and
+are all applied. For example, `017`, `017b`, `017c`, `017d` and `017e` are
+five separate migrations, not one. Treating the numeric prefix as the version
+causes files sharing a prefix to be silently skipped — see issue #1746 for the
+precedent.
+
+### Ordering rule
+
+Migrations are applied in **lexicographic order of the filename**. Because
+`_` (ASCII `0x5F`) sorts after any lowercase letter, a letter suffix sorts
+after the bare number:
+
+```
+017_add_soft_delete_markets.sql
+017b_...
+017c_...
+018_add_varchar_constraints.sql
+```
+
+Choose suffixes so that lexicographic order matches the intended apply order.
+When adding a migration, use the next unused number; if that number is already
+taken, append the next free letter suffix (`017b`, `017c`, …) rather than
+renumbering existing files.
+
+### Registry and rollback requirements
+
+Each migration must be registered in the `MIGRATIONS` array in
+`services/api/src/migrations.rs`:
+
+| Field | Requirement |
+|-------|-------------|
+| `version` | Unique string equal to the filename stem (e.g. `"017b_add_markets_status_index"`) |
+| `name` | Equal to the filename stem |
+| Rollback | A matching `rollbacks/<stem>_down.sql` file must exist |
+
+A migration file that is not in the registry, a registry entry with no
+matching file, a missing rollback, an orphan rollback, or a duplicate
+`version` will all fail the registry check.
+
+### Registry check
+
+The registry check is `scripts/check_migrations_registry.sh`. It runs in CI
+(the migrations workflow) and can be run locally from the repository root:
+
+```bash
+bash scripts/check_migrations_registry.sh
+```
+
+It fails on:
+
+- migration files present on disk but missing from the `MIGRATIONS` registry,
+- registry entries with no matching migration file,
+- missing or orphaned rollback scripts,
+- duplicate `version` strings in the registry.
+
+Run it before opening a PR that adds or renames a migration.
+
 ## Migration Immutability Guarantee
+=======
 
 Migration files are embedded at compile time and their SHA-256 checksums are
 stored in `schema_migrations` when first applied. At every startup the
