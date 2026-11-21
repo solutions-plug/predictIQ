@@ -3070,3 +3070,44 @@ mod dispute_resolution_tests {
         );
     }
 }
+
+#[test]
+fn test_guardian_set_validation_1957() {
+    let (e, _admin, _cid, client) = setup_test_env();
+    let a = Address::generate(&e);
+    let b = Address::generate(&e);
+    let g = |addr: &Address, p: u32| types::Guardian { address: addr.clone(), voting_power: p };
+
+    let mut dup = Vec::new(&e);
+    dup.push_back(g(&a, 1));
+    dup.push_back(g(&a, 1));
+    assert_eq!(client.try_initialize_guardians(&dup), Err(Ok(ErrorCode::DuplicateGuardian)));
+
+    let mut zero = Vec::new(&e);
+    zero.push_back(g(&a, 0));
+    assert_eq!(client.try_initialize_guardians(&zero), Err(Ok(ErrorCode::InvalidVotingPower)));
+
+    let mut big = Vec::new(&e);
+    big.push_back(g(&a, u32::MAX));
+    assert_eq!(client.try_initialize_guardians(&big), Err(Ok(ErrorCode::InvalidVotingPower)));
+
+    let mut ok = Vec::new(&e);
+    ok.push_back(g(&a, 1));
+    client.initialize_guardians(&ok);
+    assert_eq!(client.try_add_guardian(&g(&a, 1)), Err(Ok(ErrorCode::DuplicateGuardian)));
+    assert_eq!(client.try_add_guardian(&g(&b, 0)), Err(Ok(ErrorCode::InvalidVotingPower)));
+}
+
+#[test]
+fn test_guardian_total_power_overflow_checked_1957() {
+    let e = Env::default();
+    let mut v = Vec::new(&e);
+    // 5000 * 1_000_000 > u32::MAX
+    for _ in 0..5000 {
+        v.push_back(types::Guardian { address: Address::generate(&e), voting_power: 1_000_000 });
+    }
+    assert_eq!(
+        crate::modules::governance::validate_guardian_set(&v),
+        Err(ErrorCode::ArithmeticOverflow)
+    );
+}

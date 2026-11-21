@@ -1,7 +1,7 @@
 use crate::errors::ErrorCode;
 use crate::modules::admin;
 use crate::types::{CircuitBreakerState, ConfigKey};
-use soroban_sdk::Env;
+use soroban_sdk::{Address, Env};
 
 /// Cool-down period before Open transitions to HalfOpen (Issue #12).
 const COOLDOWN_SECONDS: u64 = 6 * 3600; // 6 hours
@@ -114,24 +114,51 @@ pub fn require_closed(e: &Env) -> Result<(), ErrorCode> {
 }
 
 /// Issue #50: Guardian majority can pause without Admin consent.
+/// Issue #1848: the admin may also pause even when a guardian is configured,
+/// so an unavailable guardian cannot block an emergency pause.
 pub fn pause(e: &Env) -> Result<(), ErrorCode> {
-    if let Some(guardian) = admin::get_guardian(e) {
-        guardian.require_auth();
-    } else {
-        admin::require_admin(e)?;
-    }
-
+    require_guardian_or_admin(e)?;
     _set_state_internal(e, CircuitBreakerState::Paused)
 }
 
-pub fn unpause(e: &Env) -> Result<(), ErrorCode> {
-    if let Some(guardian) = admin::get_guardian(e) {
-        guardian.require_auth();
-    } else {
-        admin::require_admin(e)?;
-    }
+/// Admin-or-guardian pause. The admin may always pause, even when a guardian is set.
+pub fn pause_as(e: &Env, caller: Address) -> Result<(), ErrorCode> {
+    require_admin_or_guardian(e, &caller)?;
+    _set_state_internal(e, CircuitBreakerState::Paused)
+}
 
+/// Admin-or-guardian unpause. Same state transition as `unpause`.
+pub fn unpause_as(e: &Env, caller: Address) -> Result<(), ErrorCode> {
+    require_admin_or_guardian(e, &caller)?;
     _set_state_internal(e, CircuitBreakerState::Closed)
+}
+
+fn require_admin_or_guardian(e: &Env, caller: &Address) -> Result<(), ErrorCode> {
+    let is_admin = admin::get_admin(e).as_ref() == Some(caller);
+    let is_guardian = admin::get_guardian(e).as_ref() == Some(caller);
+    if !is_admin && !is_guardian {
+        return Err(ErrorCode::NotAuthorized);
+    }
+    caller.require_auth();
+    Ok(())
+}
+
+/// Issue #1848: the admin may also unpause even when a guardian is configured.
+pub fn unpause(e: &Env) -> Result<(), ErrorCode> {
+    require_guardian_or_admin(e)?;
+    _set_state_internal(e, CircuitBreakerState::Closed)
+}
+
+/// Issue #1848: authorize a pause/unpause via the configured guardian or, as a
+/// fallback, the admin. When no guardian is set this is admin-only, matching
+/// the previous behaviour.
+fn require_guardian_or_admin(e: &Env) -> Result<(), ErrorCode> {
+    if let Some(guardian) = admin::get_guardian(e) {
+        if guardian.try_auth().is_ok() {
+            return Ok(());
+        }
+    }
+    admin::require_admin(e)
 }
 
 /// Issue #1705: Open and Paused block high-risk operations; HalfOpen admits a
@@ -289,6 +316,7 @@ mod threshold_tests {
         set_threshold(&e, 1).unwrap();
         assert_eq!(get_threshold(&e), 1);
     }
+}
 
 #[cfg(test)]
 mod high_risk_gate_tests {

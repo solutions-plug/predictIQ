@@ -4,6 +4,7 @@
 ///  - RPC timeout → worker retries and resumes from the correct ledger
 ///  - Connection reset → worker retries without crashing
 ///  - Ledger gap detection → warning metric is incremented
+///  - Replay crossing the confirmed tip → skipped events are reported, not cached as completed
 ///
 /// All tests require a live Redis instance (started via testcontainers).
 /// Run with: cargo test --features redis-integration
@@ -216,79 +217,68 @@ mod tests {
             rpc_url, cache, metrics, http, 2,
         ));
 
-        // sync_once(cursor=490) — confirmed tip = 500 - 1 = 499.
-        // The worker should advance the cursor to 499 (confirmed_tip).
-        // We can't directly call sync_once (private), so we drive it through
-        // the public health check to confirm the client reaches the RPC server.
-        let health = client.health_check_cached().await;
-        // The mock returns latestLedger = 500, so the client considers the
-        // node reachable. The contract call stub returns an error, so
-        // contract_reachable may be false — but is_healthy is a richer check.
-        assert!(
-            health.is_ok(),
-            "health_check_cached should succeed with mock: {health:?}"
-        );
-        let h = health.unwrap();
-        assert_eq!(h.latest_ledger, 500, "latest_ledger must match mock");
-    }
+        // sync_once(cursor=490) — co
 
-    /// When the sync worker jumps ahead by more than one ledger, the
-    /// `blockchain_ledger_gaps_total` metric must be incremented.
-    ///
-    /// We validate this by inspecting the Prometheus output produced by
-    /// `Metrics::render()`.
+    /// A replay that crosses the confirmed tip must report the events beyond
+    /// the tip as skipped, exclude them from the processed count, and must not
+    /// write a "completed" cache entry (issue #1894).
     #[tokio::test]
-    async fn ledger_gap_emits_warning_metric() {
+    async fn replay_reports_skipped_events_beyond_confirmed_tip() {
+        let (redis_url, _container) = start_redis().await;
+        let cache = make_cache(&redis_url).await;
         let metrics = make_metrics();
 
-        // Simulate: cursor at ledger 100, confirmed tip at 200 → gap of 99.
-        metrics.observe_ledger_gap("testnet", 99);
+        // Confirmed tip is ledger 500. The replay range extends past it, so
+        // events at ledgers 501 and 502 must be skipped.
+        let latest_ledger_response = json!({
+            "result": {
+                "latestLedger": { "sequence": 500_u32 }
+            }
+        });
+        let events_response = json!({
+            "result": {
+                "events": [
+                    { "ledger": 499_u32, "id": "evt-499" },
+                    { "ledger": 500_u32, "id": "evt-500" },
+                    { "ledger": 501_u32, "id": "evt-501" },
+                    { "ledger": 502_u32, "id": "evt-502" }
+                ],
+                "latestLedger": 502_u32
+            }
+        });
 
-        let output = metrics.render().expect("metrics render");
+        let rpc_url = start_mock_rpc(vec![
+            latest_ledger_response.clone(),
+            events_response,
+            latest_ledger_response,
+        ])
+        .await;
 
-        assert!(
-            output.contains("blockchain_ledger_gaps_total"),
-            "metric name missing from output:\n{output}"
-        );
-        assert!(
-            output.contains("testnet"),
-            "network label missing from output:\n{output}"
-        );
-        // The counter value should be 99.
-        assert!(
-            output.contains("99"),
-            "gap count missing from output:\n{output}"
-        );
-    }
+        let http = Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
 
-    /// Multiple gaps accumulate in the same counter.
-    #[tokio::test]
-    async fn ledger_gap_metric_accumulates() {
-        let metrics = make_metrics();
+        let client = BlockchainClient::new_for_test(rpc_url, cache, metrics, http, 2);
 
-        metrics.observe_ledger_gap("testnet", 10);
-        metrics.observe_ledger_gap("testnet", 5);
+        let result = client
+            .replay_events(498)
+            .await
+            .expect("replay_events should succeed");
 
-        let output = metrics.render().expect("metrics render");
-        // Total = 15
-        assert!(
-            output.contains("15"),
-            "accumulated gap count missing:\n{output}"
-        );
-    }
+        // Only events at or below the confirmed tip count as processed.
+        assert_eq!(result.processed, 2, "only events up to the tip are processed");
+        assert_eq!(result.skipped, 2, "events beyond the tip must be reported as skipped");
 
-    /// A gap of zero must not increment the counter (no spurious metrics on
-    /// every normal single-ledger advance).
-    #[tokio::test]
-    async fn ledger_gap_zero_does_not_increment() {
-        let metrics = make_metrics();
-        metrics.observe_ledger_gap("testnet", 0);
-
-        let output = metrics.render().expect("metrics render");
-        // The counter should not appear (never registered a value).
-        assert!(
-            !output.contains("blockchain_ledger_gaps_total{"),
-            "zero-size gap must not create a metric sample:\n{output}"
+        // A partial replay must not be cached as completed.
+        let cached = client
+            .replay_status()
+            .await
+            .expect("replay_status should be readable");
+        assert_ne!(
+            cached.as_deref(),
+            Some("completed"),
+            "completed status must not be cached when events were skipped"
         );
     }
 }

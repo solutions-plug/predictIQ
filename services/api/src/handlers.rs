@@ -982,4 +982,255 @@ pub async fn newsletter_gdpr_export(
         &state.config.trusted_proxy_cidrs,
     );
     let allowed_ip = state
-        .newsletter_rate_lim
+        .newsletter_rate_limiter
+        .allow(
+            &format!("gdpr_export:ip:{ip}"),
+            state.config.gdpr_export_rate_limit as usize,
+            std::time::Duration::from_secs(state.config.gdpr_export_rate_window_secs),
+        )
+        .await;
+    if !allowed_ip {
+        return Ok((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(NewsletterResponse {
+                success: false,
+                message: "Too many requests, please try again later.".to_string(),
+            }),
+        )
+            .into_response());
+    }
+
+    let Some(email) = normalized_email(&body.email) else {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(NewsletterResponse {
+                success: false,
+                message: "Invalid email address.".to_string(),
+            }),
+        )
+            .into_response());
+    };
+
+    if let Some(resp) = check_gdpr_token(&state, &email, &body.token) {
+        return Ok(resp);
+    }
+
+    let data = state
+        .db
+        .newsletter_get_by_email(&email)
+        .await
+        .map_err(into_api_error)?;
+
+    // Per-email rate limit (separate from IP limit)
+    let allowed_email = state
+        .newsletter_rate_limiter
+        .allow(
+            &format!("gdpr_export:email:{email}"),
+            state.config.gdpr_export_rate_limit as usize,
+            std::time::Duration::from_secs(state.config.gdpr_export_rate_window_secs),
+        )
+        .await;
+    if !allowed_email {
+        return Ok((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(NewsletterResponse {
+                success: false,
+                message: "Too many requests, please try again later.".to_string(),
+            }),
+        )
+            .into_response());
+    }
+
+    let Some(data) = data else {
+        return Ok((
+            StatusCode::NOT_FOUND,
+            Json(NewsletterResponse {
+                success: false,
+                message: "No newsletter record found.".to_string(),
+            }),
+        )
+            .into_response());
+    };
+
+    Ok((
+        StatusCode::OK,
+        Json(NewsletterExportResponse {
+            success: true,
+            data,
+        }),
+    )
+        .into_response())
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/v1/newsletter/gdpr/delete",
+    tag = "newsletter",
+    request_body = NewsletterEmailRequest,
+    responses(
+        (status = 200, description = "Data deleted", body = NewsletterResponse),
+        (status = 400, description = "Invalid email", body = NewsletterResponse),
+        (status = 401, description = "Invalid or expired verification token", body = NewsletterResponse),
+    )
+)]
+pub async fn newsletter_gdpr_delete(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<NewsletterEmailRequest>,
+) -> Result<Response, ApiError> {
+    let Some(email) = normalized_email(&payload.email) else {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(NewsletterResponse {
+                success: false,
+                message: "Invalid email address.".to_string(),
+            }),
+        )
+            .into_response());
+    };
+
+    if let Some(resp) = check_gdpr_token(&state, &email, &payload.token) {
+        return Ok(resp);
+    }
+
+    let _ = state
+        .db
+        .newsletter_gdpr_delete(&email)
+        .await
+        .map_err(into_api_error)?;
+
+    let redacted_email = crate::body_redact::redact_email(&email);
+    tracing::info!("[newsletter] gdpr delete email={redacted_email}");
+
+    Ok((
+        StatusCode::OK,
+        Json(NewsletterResponse {
+            success: true,
+            message: "Data deleted.".to_string(),
+        }),
+    )
+        .into_response())
+}
+
+/// Revoke an API key by id.
+///
+/// Sets `revoked_at` on the target key so that subsequent requests
+/// authenticated with it are rejected. Revoking an already-revoked key is
+/// idempotent and returns success.
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/api-keys/{id}/revoke",
+    tag = "admin",
+    params(
+        ("id" = Uuid, Path, description = "API key id to revoke"),
+    ),
+    responses(
+        (status = 200, description = "API key revoked"),
+        (status = 404, description = "API key not found", body = ApiError),
+    )
+)]
+pub async fn revoke_api_key(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, ApiError> {
+    let revoked = state
+        .db
+        .revoke_api_key(id)
+        .await
+        .map_err(into_api_error)?;
+
+    if !revoked {
+        return Err(ApiError::not_found("API key not found."));
+    }
+
+    tracing::info!(api_key_id = %id, "api key revoked");
+
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "success": true,
+            "id": id,
+            "revoked": true,
+        })),
+    ))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/statistics",
+    tag = "markets",
+    responses(
+        (status = 200, description = "Platform statistics"),
+    )
+)]
+pub async fn statistics(State(state): State<Arc<AppState>>) -> Result<impl IntoResponse, ApiError> {
+    let start = Instant::now();
+    let cache_key = keys::api_statistics();
+    let ttl = Duration::from_secs(5 * 60);
+    let endpoint = "statistics";
+
+    let (payload, hit) = state
+        .cache
+        .get_or_set_json(&cache_key, ttl, || async {
+            let data = state.db.statistics_cached().await?;
+            Ok(data)
+        })
+        .await
+        .map_err(into_api_error)?;
+
+    if hit {
+        state.metrics.observe_hit("api", endpoint);
+    } else {
+        state.metrics.observe_miss("api", endpoint);
+    }
+    state.metrics.observe_request(endpoint, 200, start.elapsed().as_secs_f64());
+
+    Ok((StatusCode::OK, Json(payload)))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/markets/featured",
+    tag = "markets",
+    params(PaginationQuery),
+    responses(
+        (status = 200, description = "Paginated list of featured markets"),
+    )
+)]
+pub async fn featured_markets(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<PaginationQuery>,
+) -> Result<impl IntoResponse, ApiError> {
+    let start = Instant::now();
+    let limit = query.limit();
+    let cursor = query.cursor();
+    let cache_key = keys::api_featured_markets();
+    let ttl = Duration::from_secs(2 * 60);
+    let endpoint = "featured_markets";
+
+    let featured_limit = state.config.featured_limit;
+
+    let (payload, hit) = state
+        .cache
+        .get_or_set_json(&cache_key, ttl, || async {
+            let markets = state.db.featured_markets_cached(featured_limit).await?;
+            let chain_futures = markets
+                .iter()
+                .map(|m| state.blockchain.market_data_cached(m.id));
+            let chain_data = join_all(chain_futures).await;
+
+            let mut view = Vec::with_capacity(markets.len());
+            for (m, chain_result) in markets.into_iter().zip(chain_data.into_iter()) {
+                let chain = chain_result?;
+                view.push(FeaturedMarketView {
+                    id: m.id,
+                    title: m.title,
+                    volume: m.volume,
+                    ends_at: m.ends_at,
+                    onchain_volume: chain.onchain_volume,
+                    resolved_outcome: chain.resolved_outcome,
+                });
+            }
+            Ok(view)
+        })
+        .await
+        .map_err

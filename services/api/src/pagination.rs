@@ -366,4 +366,54 @@ mod tests {
         assert!(v.cursor.is_none());
         assert_eq!(v.offset, 0);
     }
+
+    // ── PaginationQuery clamping / malformed cursors ─────────────────────────
+
+    #[test]
+    fn query_limit_defaults_when_absent() {
+        assert_eq!(PaginationQuery::default().limit(), DEFAULT_LIMIT as i64);
+        assert_eq!(DEFAULT_LIMIT, 20);
+    }
+
+    #[test]
+    fn query_limit_below_minimum_clamps_to_one() {
+        for v in [0, -1, i64::MIN] {
+            let q = PaginationQuery { limit: Some(v), cursor: None };
+            assert_eq!(q.limit(), 1);
+        }
+    }
+
+    #[test]
+    fn query_limit_above_maximum_clamps_to_max() {
+        for v in [MAX_PAGE_LIMIT as i64 + 1, 10_000, i64::MAX] {
+            let q = PaginationQuery { limit: Some(v), cursor: None };
+            assert_eq!(q.limit(), MAX_PAGE_LIMIT as i64);
+        }
+    }
+
+    #[test]
+    fn query_limit_in_range_is_unchanged_and_cursor_round_trips() {
+        let q = PaginationQuery { limit: Some(50), cursor: Some("dGVzdA".into()) };
+        assert_eq!(q.limit(), 50);
+        assert_eq!(q.cursor().as_deref(), Some("dGVzdA"));
+    }
+
+    #[test]
+    fn padded_or_truncated_cursors_are_rejected_or_accepted_as_opaque() {
+        // Padding is not part of the unpadded base64url alphabet → rejected.
+        let err = validate_pagination(params_with_cursor(None, Some("dGVzdA==".into()))).unwrap_err();
+        assert_eq!(err.error, "invalid_cursor");
+        // A truncated-but-alphabet-valid cursor is opaque to this layer and accepted.
+        let v = validate_pagination(params_with_cursor(None, Some("dGVz".into()))).unwrap();
+        assert_eq!(v.cursor.as_deref(), Some("dGVz"));
+    }
+
+    #[test]
+    fn page_response_cursor_round_trips_through_validation() {
+        let items: Vec<u64> = (1..=(DEFAULT_LIMIT as u64 + 1)).collect();
+        let page = PageResponse::from_fetched(items, DEFAULT_LIMIT, |n| format!("c{n}"));
+        let cursor = page.next_cursor.clone().unwrap();
+        let v = validate_pagination(params_with_cursor(None, Some(cursor.clone()))).unwrap();
+        assert_eq!(v.cursor, Some(cursor));
+    }
 }
