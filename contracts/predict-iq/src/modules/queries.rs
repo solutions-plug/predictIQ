@@ -179,4 +179,23 @@ mod tests {
         let result = client.get_markets(&0, &0);
         assert_eq!(result.len(), 0);
     }
+
+    #[test]
+    fn test_get_markets_entrypoint_returns_created() {
+        let (e, client, _, creator) = setup();
+        let id = make_market(&e, &client, &creator);
+        let result = client.get_markets(&0, &MAX_PAGE_LIMIT);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.get(0).unwrap().id, id);
+    }
+
+    #[test]
+    fn test_get_markets_by_status_entrypoint_filters() {
+        let (e, client, _, creator) = setup();
+        make_market(&e, &client, &creator);
+        let active = client.get_markets_by_status(&MarketStatus::Active, &0, &MAX_PAGE_LIMIT);
+        assert_eq!(active.len(), 1);
+        let resolved = client.get_markets_by_status(&MarketStatus::Resolved, &0, &MAX_PAGE_LIMIT);
+        assert_eq!(resolved.len(), 0);
+    }
 }

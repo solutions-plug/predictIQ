@@ -89,5 +89,45 @@ mod tests {
         let long = format!("{}{}", "550e8400-e29b-41d4-a716-446655440000", "x".repeat(100));
         assert!(parse_valid_request_id(&long).is_none());
     }
-}
 
+    use axum::{body::Body, http::Request, middleware, routing::get, Router};
+    use tower::ServiceExt;
+
+    async fn call(id: Option<&str>) -> String {
+        let app = Router::new()
+            .route("/", get(|| async { "ok" }))
+            .layer(middleware::from_fn(correlation_id_middleware));
+        let mut b = Request::builder().uri("/");
+        if let Some(id) = id {
+            b = b.header(REQUEST_ID_HEADER, id);
+        }
+        let resp = app.oneshot(b.body(Body::empty()).unwrap()).await.unwrap();
+        resp.headers()
+            .get(REQUEST_ID_HEADER)
+            .expect("response must echo x-request-id")
+            .to_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    #[tokio::test]
+    async fn incoming_id_is_preserved_and_echoed() {
+        let id = "550e8400-e29b-41d4-a716-446655440000";
+        assert_eq!(call(Some(id)).await, id);
+    }
+
+    #[tokio::test]
+    async fn missing_id_is_generated_and_unique() {
+        let a = call(None).await;
+        let b = call(None).await;
+        assert!(!a.is_empty() && Uuid::parse_str(&a).is_ok());
+        assert_ne!(a, b);
+    }
+
+    #[tokio::test]
+    async fn invalid_incoming_id_is_replaced() {
+        let out = call(Some("not-a-uuid")).await;
+        assert_ne!(out, "not-a-uuid");
+        assert!(Uuid::parse_str(&out).is_ok());
+    }
+}

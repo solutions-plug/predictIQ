@@ -181,7 +181,7 @@ pub async fn idempotency_middleware(
 // ── Standalone testable IdempotencyStore ─────────────────────────────────────
 
 /// Cached response stored against a scoped idempotency key.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct StoredResponse {
     pub status: u16,
     pub body: String,
@@ -192,12 +192,28 @@ pub struct StoredResponse {
 pub enum IdempotencyError {
     /// The key was previously used by a different user — reject with 422.
     CrossUserCollision,
+    /// The same key was reused with a different request body — reject with 409/422.
+    BodyConflict,
+}
+
+/// Outcome of [`IdempotencyStore::begin`].
+#[derive(Debug, PartialEq)]
+pub enum BeginOutcome {
+    /// First time this key is seen: the caller must run the handler, then call `complete`.
+    Proceed,
+    /// A completed request with the same body exists: replay this response.
+    Replay(StoredResponse),
+    /// Another request with the same key and body is currently executing.
+    InFlight,
 }
 
 /// In-memory idempotency store (replace with Redis for multi-instance deployments).
 #[derive(Default, Clone)]
 pub struct IdempotencyStore {
     inner: Arc<Mutex<HashMap<String, (String, StoredResponse)>>>,
+    /// Body-aware request state: scoped key -> (body fingerprint, completed response).
+    /// `None` response means the request is still in flight.
+    requests: Arc<Mutex<HashMap<String, (String, Option<StoredResponse>)>>>,
     ttl: Duration,
 }
 
@@ -205,6 +221,7 @@ impl IdempotencyStore {
     pub fn new(ttl: Duration) -> Self {
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
+            requests: Arc::new(Mutex::new(HashMap::new())),
             ttl,
         }
     }
@@ -215,6 +232,46 @@ impl IdempotencyStore {
     /// `idempotency_cache_key` derivation so the two stay consistent.
     pub fn scoped_key(user_id: &str, route_path: &str, raw_key: &str) -> String {
         format!("{}:{}:{}", user_id, route_path, raw_key)
+    }
+
+    /// Claim a key for execution, replaying or rejecting duplicates.
+    ///
+    /// The body is fingerprinted so reuse of a key with a different body is a conflict.
+    pub fn begin(
+        &self,
+        user_id: &str,
+        route_path: &str,
+        raw_key: &str,
+        body: &[u8],
+    ) -> Result<BeginOutcome, IdempotencyError> {
+        let scoped = Self::scoped_key(user_id, route_path, raw_key);
+        let fingerprint = hex::encode(Sha256::digest(body));
+        let mut reqs = self.requests.lock().unwrap();
+        match reqs.get(&scoped) {
+            Some((fp, resp)) => {
+                if *fp != fingerprint {
+                    return Err(IdempotencyError::BodyConflict);
+                }
+                match resp {
+                    Some(r) if r.stored_at.elapsed() < self.ttl => {
+                        return Ok(BeginOutcome::Replay(r.clone()));
+                    }
+                    Some(_) => {} // expired: fall through and re-claim
+                    None => return Ok(BeginOutcome::InFlight),
+                }
+            }
+            None => {}
+        }
+        reqs.insert(scoped, (fingerprint, None));
+        Ok(BeginOutcome::Proceed)
+    }
+
+    /// Record the completed response for a key previously claimed with `begin`.
+    pub fn complete(&self, user_id: &str, route_path: &str, raw_key: &str, response: StoredResponse) {
+        let scoped = Self::scoped_key(user_id, route_path, raw_key);
+        if let Some(entry) = self.requests.lock().unwrap().get_mut(&scoped) {
+            entry.1 = Some(response);
+        }
     }
 
     /// Look up a prior response for this user + route + key combination.
@@ -326,5 +383,57 @@ mod tests {
             store.get("user-a", "/v1/admin/other", key).unwrap().unwrap().body,
             "other"
         );
+    }
+
+    // ── Replay / conflict / in-flight ────────────────────────────────────────
+
+    /// Run a handler through the store, counting executions.
+    fn run(store: &IdempotencyStore, body: &[u8], calls: &std::sync::atomic::AtomicUsize)
+        -> Result<StoredResponse, IdempotencyError>
+    {
+        match store.begin("u", "/r", "k", body)? {
+            BeginOutcome::Replay(r) => Ok(r),
+            BeginOutcome::InFlight => Ok(resp("in-flight")),
+            BeginOutcome::Proceed => {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let r = resp("created");
+                store.complete("u", "/r", "k", r.clone());
+                Ok(r)
+            }
+        }
+    }
+
+    #[test]
+    fn replay_returns_stored_response_and_runs_handler_once() {
+        let store = IdempotencyStore::new(Duration::from_secs(300));
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let first = run(&store, b"{\"a\":1}", &calls).unwrap();
+        let second = run(&store, b"{\"a\":1}", &calls).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(second.body, "created");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn same_key_different_body_is_a_conflict() {
+        let store = IdempotencyStore::new(Duration::from_secs(300));
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        run(&store, b"{\"a\":1}", &calls).unwrap();
+        let err = run(&store, b"{\"a\":2}", &calls).unwrap_err();
+        assert_eq!(err, IdempotencyError::BodyConflict);
+        assert_ne!(err, IdempotencyError::CrossUserCollision);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn in_flight_duplicate_does_not_execute_handler_twice() {
+        let store = IdempotencyStore::new(Duration::from_secs(300));
+        // First request claims the key but has not completed yet.
+        assert_eq!(store.begin("u", "/r", "k", b"x").unwrap(), BeginOutcome::Proceed);
+        // Duplicate arrives while in flight: told to wait, handler not invoked.
+        assert_eq!(store.begin("u", "/r", "k", b"x").unwrap(), BeginOutcome::InFlight);
+        // After completion the duplicate is replayed.
+        store.complete("u", "/r", "k", resp("done"));
+        assert!(matches!(store.begin("u", "/r", "k", b"x").unwrap(), BeginOutcome::Replay(r) if r.body == "done"));
     }
 }

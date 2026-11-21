@@ -34,6 +34,41 @@ mod api_key_auth_tests {
     }
 
     #[test]
+    fn test_api_key_auth_revoke_sets_revoked_at() {
+        let mut auth = ApiKeyAuth::new(vec!["test-key-123".to_string()]);
+        assert!(auth.revoke("test-key-123"));
+        assert!(auth.is_revoked("test-key-123"));
+    }
+
+    #[test]
+    fn test_api_key_auth_revoke_unknown_key() {
+        let mut auth = ApiKeyAuth::new(vec!["test-key-123".to_string()]);
+        assert!(!auth.revoke("unknown-key"));
+        assert!(!auth.is_revoked("unknown-key"));
+        assert!(!auth.is_revoked("test-key-123"));
+    }
+
+    #[test]
+    fn test_api_key_auth_rejects_revoked_key() {
+        let mut auth = ApiKeyAuth::new(vec!["test-key-123".to_string(), "another-key".to_string()]);
+        assert!(auth.verify("test-key-123"));
+
+        assert!(auth.revoke("test-key-123"));
+
+        // Revoked key is rejected, other keys still work
+        assert!(!auth.verify("test-key-123"));
+        assert!(auth.verify("another-key"));
+    }
+
+    #[test]
+    fn test_api_key_auth_revoke_is_idempotent() {
+        let mut auth = ApiKeyAuth::new(vec!["test-key-123".to_string()]);
+        assert!(auth.revoke("test-key-123"));
+        assert!(auth.revoke("test-key-123"));
+        assert!(!auth.verify("test-key-123"));
+    }
+
+    #[test]
     fn test_api_key_auth_constant_time_behavior() {
         // Test that verification time doesn't depend on how many keys match partially
         let keys = vec![
