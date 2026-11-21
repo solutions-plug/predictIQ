@@ -206,6 +206,45 @@ impl IntoResponse for ValidationError {
     }
 }
 
+// ── Outcome index validation ──────────────────────────────────────────────────
+
+/// Validate a market `outcome_index` before it is cast to `i32` and submitted
+/// on-chain.
+///
+/// Guards against two failure modes:
+/// - Overflow: `outcome_index` must fit in `i32` (the on-chain type).
+/// - Out-of-range: `outcome_index` must be strictly less than the market's
+///   outcome count, so a market cannot be resolved to a nonexistent outcome.
+///
+/// Returns the validated `i32` index on success, or a `ValidationError`
+/// (rendered as HTTP 400) describing the offending field.
+pub fn validate_outcome_index(outcome_index: u32, outcome_count: u32) -> Result<i32, ValidationError> {
+    if outcome_index > i32::MAX as u32 {
+        return Err(ValidationError {
+            error:   "invalid_outcome_index",
+            field:   "outcome_index".to_string(),
+            message: format!(
+                "outcome_index {} exceeds the maximum supported value of {}.",
+                outcome_index,
+                i32::MAX
+            ),
+        });
+    }
+
+    if outcome_index >= outcome_count {
+        return Err(ValidationError {
+            error:   "invalid_outcome_index",
+            field:   "outcome_index".to_string(),
+            message: format!(
+                "outcome_index {} is out of range for a market with {} outcome(s).",
+                outcome_index, outcome_count
+            ),
+        });
+    }
+
+    Ok(outcome_index as i32)
+}
+
 static REJECT_PATTERNS: &[&str] = &[
     "<script",
     "</script",

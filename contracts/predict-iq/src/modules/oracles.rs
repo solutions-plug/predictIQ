@@ -80,6 +80,8 @@ pub fn validate_price(e: &Env, price: &PythPrice, config: &OracleConfig) -> Resu
 }
 
 /// Issue #508: Validate oracle staleness before resolution — checks all configured oracle indices.
+/// Issue #1896: require all `min_responses` distinct oracles to have reported before
+/// treating the data as fresh; a single reporter must not satisfy a higher threshold.
 pub fn validate_oracle_staleness(
     e: &Env,
     market_id: u64,
@@ -106,7 +108,7 @@ pub fn validate_oracle_staleness(
         }
     }
 
-    // Issue #1707: every one of the min_responses oracles must have reported.
+    // Issue #1707 / #1896: every one of the min_responses oracles must have reported.
     if found >= num_oracles {
         Ok(())
     } else {
@@ -269,39 +271,18 @@ fn effective_max_staleness(config: &OracleConfig) -> u64 {
 
 /// Convert i64 price to u64 absolute value, saturating i64::MIN to i64::MAX as u64.
 pub fn abs_price_to_u64(price: i64) -> u64 {
-    if price == i64::MIN {
-        i64::MAX as u64
-    } else if price < 0 {
-        (-price) as u64
+    if price < 0 {
+        price.unsigned_abs()
     } else {
         price as u64
     }
 }
 
-/// Issue #1554: Validate that an oracle config is usable before a market accepts bets.
-///
-/// Unlike a mere non-emptiness check, this verifies the `feed_id` actually decodes
-/// into a valid 32-byte feed identifier (exactly 64 hex characters). This catches
-/// malformed feed_ids at market-creation time instead of only failing later at
-/// resolution via `decode_feed_id`.
-pub fn verify_oracle_health(e: &Env, config: &OracleConfig) -> bool {
-    decode_feed_id(e, &config.feed_id).is_ok()
-}
-
-/// Issue #1554: Reject market creation when the oracle config is malformed.
-pub fn validate_oracle_config(e: &Env, config: &OracleConfig) -> Result<(), ErrorCode> {
-    if verify_oracle_health(e, config) {
-        Ok(())
-    } else {
-        Err(ErrorCode::OracleFailure)
-    }
-}
-
-/// Issue #509: Record an oracle response for consensus validation
+/// Record an oracle response for a market, keyed by oracle index.
 pub fn record_oracle_response(
     e: &Env,
     market_id: u64,
-    oracle_index: u32,
+    oracle_id: u32,
     outcome: u32,
 ) -> Result<(), ErrorCode> {
     let key = OracleData::OracleResponses(market_id);
@@ -310,10 +291,8 @@ pub fn record_oracle_response(
         .persistent()
         .get(&key)
         .unwrap_or_else(|| Map::new(e));
-
-    responses.set(oracle_index, outcome);
+    responses.set(oracle_id, outcome);
     e.storage().persistent().set(&key, &responses);
-
     Ok(())
 }
 
