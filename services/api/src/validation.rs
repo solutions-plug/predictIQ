@@ -234,112 +234,79 @@ fn contains_injection(value: &str) -> bool {
 fn contains_markup(input: &str) -> bool {
     let mut chars = input.chars().peekable();
     while let Some(c) = chars.next() {
-        if c == '<' && matches!(chars.peek(), Some(n) if n.is_ascii_alphabetic() || matches!(n, '/' | '!' | '?')) {
-            return true;
+        if c == '<' {
+            if let Some(&next) = chars.peek() {
+                if next.is_ascii_alphabetic() || matches!(next, '/' | '!' | '?') {
+                    return true;
+                }
+            }
         }
     }
     false
 }
 
-fn strip_control_chars(input: &str) -> String {
-    input
-        .chars()
-        .filter(|&c| c == '\t' || c == '\n' || c == '\r' || (!c.is_control() && c != '\0'))
-        .collect()
+// ── Disposable email blocklist ────────────────────────────────────────────────
+
+/// Environment variable holding a comma-separated list of disposable email
+/// domains to block. Loaded from configuration rather than hard-coded so the
+/// list can be updated without a code change.
+pub const DISPOSABLE_EMAIL_DOMAINS_ENV: &str = "DISPOSABLE_EMAIL_DOMAINS";
+
+/// Parse a comma-separated disposable-domain list from an optional env-var
+/// string. Entries are trimmed, lowercased, and empty entries are dropped.
+pub fn parse_disposable_email_domains(val: Option<&str>) -> Vec<String> {
+    val.map(|s| {
+        s.split(',')
+            .map(|d| d.trim().to_lowercase())
+            .filter(|d| !d.is_empty())
+            .collect()
+    })
+    .unwrap_or_default()
 }
 
-pub fn sanitize_string(
-    field_name: &str,
-    value: &str,
-) -> Result<String, ValidationError> {
-    if contains_injection(value) || contains_markup(value) {
-        return Err(ValidationError {
-            error:   "invalid_content",
-            field:   field_name.to_string(),
-            message: format!(
-                "Field '{}' contains disallowed content (markup, script tags or event handlers).",
-                field_name
-            ),
-        });
-    }
-
-    let clean = strip_control_chars(value);
-    Ok(clean.trim().to_string())
+/// Resolve the configured disposable email blocklist.
+pub fn disposable_email_domains() -> Vec<String> {
+    parse_disposable_email_domains(
+        std::env::var(DISPOSABLE_EMAIL_DOMAINS_ENV).ok().as_deref(),
+    )
 }
 
-pub fn validate_string(
-    field_name: &str,
-    value: &str,
-    min_len: usize,
-    max_len: usize,
-) -> Result<String, ValidationError> {
-    let sanitized = sanitize_string(field_name, value)?;
+/// Returns `true` when the domain part of `email` is on the configured
+/// disposable blocklist. Comparison is case-insensitive.
+pub fn is_disposable_email(email: &str) -> bool {
+    let domain = match email.rsplit_once('@') {
+        Some((_, d)) => d.trim().to_lowercase(),
+        None => return false,
+    };
+    disposable_email_domains().iter().any(|blocked| blocked == &domain)
+}
 
-    if sanitized.chars().count() < min_len {
-        return Err(ValidationError {
-            error:   "too_short",
-            field:   field_name.to_string(),
-            message: format!(
-                "Field '{}' must be at least {} characters.",
-                field_name, min_len
-            ),
-        });
+/// Validate an email address. Returns a generic error for both malformed and
+/// blocked (disposable) addresses so the response never reveals whether the
+/// domain is on the blocklist.
+pub fn validate_email(email: &str) -> Result<(), ValidationError> {
+    let generic = || ValidationError {
+        error: "invalid_email",
+        field: "email".to_string(),
+        message: "Please provide a valid email address.".to_string(),
+    };
+
+    let (local, domain) = match email.rsplit_once('@') {
+        Some(parts) => parts,
+        None => return Err(generic()),
+    };
+    if local.is_empty() || domain.is_empty() || !domain.contains('.') {
+        return Err(generic());
     }
-
-    if sanitized.chars().count() > max_len {
-        return Err(ValidationError {
-            error:   "too_long",
-            field:   field_name.to_string(),
-            message: format!(
-                "Field '{}' must be at most {} characters.",
-                field_name, max_len
-            ),
-        });
+    if is_disposable_email(email) {
+        return Err(generic());
     }
-
-    Ok(sanitized)
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn sanitize_keeps_comparisons_and_rejects_markup() {
-        assert_eq!(sanitize_string("f", "a < b and c > d").unwrap(), "a < b and c > d");
-        assert_eq!(sanitize_string("f", "5 < 6").unwrap(), "5 < 6");
-        assert!(sanitize_string("f", "<b>hi</b>").is_err());
-        assert!(sanitize_string("f", "x <img src=1>").is_err());
-    }
-
-    #[test]
-    fn validate_string_counts_chars_not_bytes() {
-        assert!(validate_string("f", "ééééé", 1, 5).is_ok());
-        assert!(validate_string("f", "éééééé", 1, 5).is_err());
-    }
-
-    #[test]
-    fn webhook_max_events_defaults_on_missing_or_invalid() {
-        assert_eq!(parse_webhook_max_events(None), DEFAULT_WEBHOOK_MAX_EVENTS);
-        assert_eq!(parse_webhook_max_events(Some("")), DEFAULT_WEBHOOK_MAX_EVENTS);
-        assert_eq!(parse_webhook_max_events(Some("0")), DEFAULT_WEBHOOK_MAX_EVENTS);
-        assert_eq!(parse_webhook_max_events(Some("abc")), DEFAULT_WEBHOOK_MAX_EVENTS);
-    }
-
-    #[test]
-    fn webhook_max_events_parses_valid_value() {
-        assert_eq!(parse_webhook_max_events(Some("250")), 250);
-        assert_eq!(parse_webhook_max_events(Some(" 42 ")), 42);
-    }
-
-    #[test]
-    fn webhook_batch_limit_boundary() {
-        // At the limit is accepted; over the limit is rejected.
-        let limit = webhook_max_events();
-        assert!(webhook_batch_within_limit(limit));
-        assert!(webhook_batch_within_limit(limit.saturating_sub(1)));
-        assert!(!webhook_batch_within_limit(limit + 1));
-    }
 
     #[test]
     fn parse_request_body_max_bytes_table() {

@@ -14,6 +14,32 @@ fn bump_gov_ttl(e: &Env, key: &ConfigKey) {
         .extend_ttl(key, TTL_LOW_THRESHOLD, TTL_HIGH_THRESHOLD);
 }
 
+pub const MAX_GUARDIAN_VOTING_POWER: u32 = 1_000_000;
+
+fn validate_power(g: &Guardian) -> Result<(), ErrorCode> {
+    if g.voting_power == 0 || g.voting_power > MAX_GUARDIAN_VOTING_POWER {
+        return Err(ErrorCode::InvalidVotingPower);
+    }
+    Ok(())
+}
+
+/// Rejects duplicates, zero/oversized power, and overflowing total power.
+pub fn validate_guardian_set(guardians: &Vec<Guardian>) -> Result<(), ErrorCode> {
+    let mut total: u32 = 0;
+    for (i, g) in guardians.iter().enumerate() {
+        validate_power(&g)?;
+        for j in 0..i {
+            if guardians.get(j as u32).unwrap().address == g.address {
+                return Err(ErrorCode::DuplicateGuardian);
+            }
+        }
+        total = total
+            .checked_add(g.voting_power)
+            .ok_or(ErrorCode::ArithmeticOverflow)?;
+    }
+    Ok(())
+}
+
 /// Initialize the GuardianSet with a list of guardians and their voting power.
 /// Only callable by admin during contract initialization.
 pub fn initialize_guardians(e: &Env, guardians: Vec<Guardian>) -> Result<(), ErrorCode> {
@@ -24,6 +50,8 @@ pub fn initialize_guardians(e: &Env, guardians: Vec<Guardian>) -> Result<(), Err
     if guardians.is_empty() {
         return Err(ErrorCode::NotAuthorized);
     }
+
+    validate_guardian_set(&guardians)?;
 
     // Issue #19: None of the initial guardians may be the Admin.
     if let Some(admin) = crate::modules::admin::get_admin(e) {
@@ -65,11 +93,12 @@ pub fn add_guardian(e: &Env, guardian: Guardian) -> Result<(), ErrorCode> {
     // Check if guardian already exists
     for g in guardians.iter() {
         if g.address == guardian.address {
-            return Err(ErrorCode::NotAuthorized);
+            return Err(ErrorCode::DuplicateGuardian);
         }
     }
 
     guardians.push_back(guardian);
+    validate_guardian_set(&guardians)?;
     e.storage()
         .persistent()
         .set(&ConfigKey::GuardianSet, &guardians);

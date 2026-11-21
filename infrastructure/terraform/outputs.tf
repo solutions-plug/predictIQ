@@ -1,31 +1,9 @@
-output "vpc_id" {
-  description = "VPC ID"
-  value       = module.vpc.vpc_id
+output "alerts_topic_arn" {
+  description = "ARN of the SNS topic used for CloudWatch alarm notifications"
+  value       = module.monitoring.alerts_topic_arn
 }
 
-output "rds_endpoint" {
-  description = "RDS endpoint"
-  value       = module.rds.endpoint
-  sensitive   = true
-}
-
-output "redis_endpoint" {
-  description = "Redis endpoint"
-  value       = module.redis.endpoint
-  sensitive   = true
-}
-
-output "ecs_cluster_name" {
-  description = "ECS cluster name"
-  value       = module.ecs.cluster_name
-}
-
-output "ecs_service_name" {
-  description = "ECS service name"
-  value       = module.ecs.service_name
-}
-
-output "alb_dns_name" {
-  description = "ALB DNS name"
-  value       = module.ecs.alb_dns_name
+output "alerts_subscription_arn" {
+  description = "ARN of the SNS subscription that delivers alarm notifications to the configured endpoint"
+  value       = try(aws_sns_topic_subscription.alerts[0].arn, null)
 }

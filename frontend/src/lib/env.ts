@@ -50,6 +50,28 @@ export function getEnvConfig(): EnvConfig {
   return env;
 }
 
+/**
+ * Resolve a path against the configured API origin.
+ * Admin pages must not use relative URLs: those resolve against the Next.js
+ * origin and are rejected by the API. This accessor keeps the base URL in one
+ * place instead of reading process.env inline.
+ */
+export function getApiUrl(path: string): string {
+  const base = env.NEXT_PUBLIC_API_URL.replace(/\/+$/, '');
+  const suffix = path.startsWith('/') ? path : `/${path}`;
+  return `${base}${suffix}`;
+}
+
+/**
+ * Build the auth headers for admin API requests, reusing the admin API key
+ * established for the admin gate. Returns an empty object when no key is set
+ * so callers can spread it unconditionally.
+ */
+export function getAdminAuthHeaders(): Record<string, string> {
+  const apiKey = process.env.NEXT_PUBLIC_ADMIN_API_KEY;
+  return apiKey ? { 'X-Admin-API-Key': apiKey } : {};
+}
+
 // Validate once at module load so any import of this file fails fast —
 // on the server during `next build` this surfaces missing vars as a build error.
 export const env = validateEnvironment();
