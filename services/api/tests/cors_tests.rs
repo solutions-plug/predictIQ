@@ -25,30 +25,42 @@ mod tests {
 
     // ── helpers ───────────────────────────────────────────────────────────────
 
-    fn cors_layer_from(cfg: &CorsConfig) -> CorsLayer {
+    fn cors_layer_from(cfg: &CorsConfig) -> Result<CorsLayer, String> {
         use axum::http::{HeaderName, HeaderValue, Method};
 
         if cfg.dev_mode {
-            return CorsLayer::permissive();
+            return Ok(CorsLayer::permissive());
         }
 
         let origins: Vec<HeaderValue> = cfg
             .allowed_origins
             .iter()
-            .filter_map(|o| o.parse().ok())
-            .collect();
+            .map(|o| {
+                o.parse().map_err(|_| {
+                    format!("invalid CORS allowed origin entry: {o:?}")
+                })
+            })
+            .collect::<Result<_, _>>()?;
 
         let methods: Vec<Method> = cfg
             .allowed_methods
             .iter()
-            .filter_map(|m| m.parse().ok())
-            .collect();
+            .map(|m| {
+                m.parse().map_err(|_| {
+                    format!("invalid CORS allowed method entry: {m:?}")
+                })
+            })
+            .collect::<Result<_, _>>()?;
 
         let headers: Vec<HeaderName> = cfg
             .allowed_headers
             .iter()
-            .filter_map(|h| h.parse().ok())
-            .collect();
+            .map(|h| {
+                h.parse().map_err(|_| {
+                    format!("invalid CORS allowed header entry: {h:?}")
+                })
+            })
+            .collect::<Result<_, _>>()?;
 
         let layer = CorsLayer::new()
             .allow_origin(origins)
@@ -57,16 +69,17 @@ mod tests {
             .max_age(Duration::from_secs(cfg.max_age_secs));
 
         if cfg.allow_credentials {
-            layer.allow_credentials(true)
+            Ok(layer.allow_credentials(true))
         } else {
-            layer
+            Ok(layer)
         }
     }
 
     fn app(cfg: &CorsConfig) -> Router {
+        let layer = cors_layer_from(cfg).expect("test config should produce a valid CORS layer");
         Router::new()
             .route("/api/data", get(|| async { "ok" }))
-            .layer(cors_layer_from(cfg))
+            .layer(layer)
     }
 
     fn default_cfg(origins: Vec<&str>) -> CorsConfig {
@@ -349,7 +362,7 @@ mod tests {
         }
     }
 
-    // ── parse failures ────────────────────────────────────────────────────────
+    // ── invalid entries ───────────────────────────────────────────────────────
     //
     // `build_cors_layer` (and the `cors_layer_from` helper mirroring it) drops
     // entries that fail to parse instead of failing loudly. These tests pin

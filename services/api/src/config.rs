@@ -324,6 +324,11 @@ pub struct Config {
     pub email_idempotency_secret: String,
     pub api_keys: Vec<String>,
     pub admin_whitelist_ips: Vec<IpAddr>,
+    /// Whether to trust client-identity headers (`X-Forwarded-For`) supplied by
+    /// an upstream proxy. Configured via `TRUST_PROXY`; defaults to `false` so
+    /// forwarded headers are ignored unless explicitly enabled. Only enable
+    /// this when the service sits behind a trusted proxy that overwrites the
+    /// header. Consumed by the admin rate limiter in `rate_limit.rs`.
     pub trust_proxy: bool,
     pub request_signing_secret: Option<String>,
     /// SendGrid Event Webhook signing key.
@@ -613,9 +618,11 @@ impl Config {
                         .collect()
                 })
                 .unwrap_or_default(),
+            // Default to NOT trusting forwarded headers. A caller can spoof
+            // `X-Forwarded-For` to dodge the admin rate limiter, so trust must
+            // be opted into explicitly (only when behind a trusted proxy).
             trust_proxy: env::var("TRUST_PROXY")
-                .ok()
-                .and_then(|s| s.parse().ok())
+                .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
                 .unwrap_or(false),
             request_signing_secret: env::var("REQUEST_SIGNING_SECRET").ok(),
             // SendGrid Event Webhook signing key: base64-encoded DER
@@ -756,3 +763,17 @@ impl Config {
     }
 
     /// Emit a `tracing::warn!` if `SENDGRID_KEY_ROTATED_AT`
+    /// The check is best-effort: if the date cannot be parsed the function logs
+    /// a warning and returns — it never hard-errors so a misconfigured date
+    /// doesn't prevent startup.
+    pub fn warn_if_sendgrid_key_stale(&self) {
+        const MAX_AGE_DAYS: i64 = 90;
+        let rotated_at = match self.sendgrid_key_rotated_at.as_deref() {
+            Some(s) if !s.is_empty() => s,
+            _ => {
+                tracing::warn!(
+                    "SENDGRID_KEY_ROTATED_AT is not set — cannot verify SendGrid API key age. \
+                     Set this to the ISO-8601 date (YYYY-MM-DD) when the key was last rotated. \
+                     See docs/runbooks/sendgrid-api-key-rotation.md."
+                );
+                return;

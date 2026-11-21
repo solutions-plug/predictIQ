@@ -16,6 +16,8 @@ for m in FreeStorageSpace DatabaseMemoryUsagePercentage Evictions ReplicationLag
 done
 grep -q aws_appautoscaling_target modules/ecs/main.tf || fail "autoscaling target missing"
 grep -q ALBRequestCountPerTarget modules/ecs/main.tf || fail "request-count scaling missing"
+grep -q '"APP_ENV"' main.tf || fail "ECS task definition must provide APP_ENV"
+! grep -q '"ENVIRONMENT"' main.tf || fail "ECS task definition must not provide ENVIRONMENT (use APP_ENV)"
 
 # DB_HOST must be the bare RDS hostname (no port suffix) and DB_PORT must be set.
 db_host_line=$(grep -E 'name[[:space:]]*=[[:space:]]*"DB_HOST"' main.tf || true)

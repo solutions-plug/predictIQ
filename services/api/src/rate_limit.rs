@@ -217,6 +217,10 @@ pub async fn admin_rate_limit_middleware(
         state.config.trust_proxy,
         &state.config.trusted_proxy_cidrs,
     );
+    // `trust_proxy` is sourced from configuration (default: false). When it is
+    // disabled, `extract_client_ip_cidrs` ignores X-Forwarded-For and derives
+    // the client identity from the connection, so a spoofed header cannot
+    // change the rate-limit bucket.
     let config = RateLimitConfig::new(
         state.config.admin_rate_limit_max,
         std::time::Duration::from_secs(state.config.admin_rate_limit_window_secs),
