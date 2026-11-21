@@ -338,3 +338,34 @@ fn test_unpause_allows_withdraw_protocol_fees_and_claim_referral_rewards() {
     let claim_result = client.try_claim_referral_rewards(&referrer);
     assert_ne!(claim_result, Err(Ok(ErrorCode::ContractPaused)));
 }
+
+#[test]
+fn test_admin_pause_unpause_with_guardian_set() {
+    let (_env, client, admin, guardian) = setup();
+    client.pause_as(&admin);
+    assert!(client.try_set_circuit_breaker(&CircuitBreakerState::Paused).is_ok());
+    client.unpause_as(&admin);
+    // guardian still works
+    client.pause_as(&guardian);
+    client.unpause_as(&guardian);
+}
+
+#[test]
+fn test_admin_pause_unpause_without_guardian() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let id = env.register(PredictIQ, ());
+    let client = PredictIQClient::new(&env, &id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &100);
+    client.pause_as(&admin);
+    client.unpause_as(&admin);
+}
+
+#[test]
+fn test_pause_as_rejects_stranger() {
+    let (env, client, _admin, _guardian) = setup();
+    let stranger = Address::generate(&env);
+    assert_eq!(client.try_pause_as(&stranger), Err(Ok(ErrorCode::NotAuthorized)));
+    assert_eq!(client.try_unpause_as(&stranger), Err(Ok(ErrorCode::NotAuthorized)));
+}

@@ -239,4 +239,10 @@ pub enum ErrorCode {
 
     /// The oracle configuration failed validation at market creation.
     InvalidOracleConfig = 206,
+
+    /// The guardian set contains a duplicate address.
+    DuplicateGuardian = 207,
+
+    /// A guardian's voting power is zero or above the per-entry maximum.
+    InvalidVotingPower = 208,
 }

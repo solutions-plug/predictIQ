@@ -1,7 +1,7 @@
 use crate::errors::ErrorCode;
 use crate::modules::admin;
 use crate::types::{CircuitBreakerState, ConfigKey};
-use soroban_sdk::Env;
+use soroban_sdk::{Address, Env};
 
 /// Cool-down period before Open transitions to HalfOpen (Issue #12).
 const COOLDOWN_SECONDS: u64 = 6 * 3600; // 6 hours
@@ -122,6 +122,28 @@ pub fn pause(e: &Env) -> Result<(), ErrorCode> {
     }
 
     _set_state_internal(e, CircuitBreakerState::Paused)
+}
+
+/// Admin-or-guardian pause. The admin may always pause, even when a guardian is set.
+pub fn pause_as(e: &Env, caller: Address) -> Result<(), ErrorCode> {
+    require_admin_or_guardian(e, &caller)?;
+    _set_state_internal(e, CircuitBreakerState::Paused)
+}
+
+/// Admin-or-guardian unpause. Same state transition as `unpause`.
+pub fn unpause_as(e: &Env, caller: Address) -> Result<(), ErrorCode> {
+    require_admin_or_guardian(e, &caller)?;
+    _set_state_internal(e, CircuitBreakerState::Closed)
+}
+
+fn require_admin_or_guardian(e: &Env, caller: &Address) -> Result<(), ErrorCode> {
+    let is_admin = admin::get_admin(e).as_ref() == Some(caller);
+    let is_guardian = admin::get_guardian(e).as_ref() == Some(caller);
+    if !is_admin && !is_guardian {
+        return Err(ErrorCode::NotAuthorized);
+    }
+    caller.require_auth();
+    Ok(())
 }
 
 pub fn unpause(e: &Env) -> Result<(), ErrorCode> {
