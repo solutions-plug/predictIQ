@@ -106,6 +106,73 @@ record to zero; subsequent calls are no-ops (or return an error).
 
 ---
 
+## 8. Governance Authority
+
+Privileged actions are split between two roles: the **admin** (a single
+address stored in contract instance storage) and the **guardian set** (a
+multisig-style group of addresses with voting power). This section records
+which role may perform each privileged action and the invariants that must
+hold regardless of governance changes.
+
+### 8.1 Authority Matrix
+
+| Privileged action | Allowed role(s) | Enforcing function |
+| --- | --- | --- |
+| Pause the contract | Admin, or guardian set (via guardian vote) | `admin::require_admin`, `governance::vote_for_upgrade` / guardian pause path |
+| Unpause the contract | Admin, or guardian set (via guardian vote) | `admin::require_admin`, `governance::vote_for_upgrade` / guardian unpause path |
+| Initiate an upgrade | Guardian set (proposal + vote) | `governance::initiate_upgrade`, `governance::vote_for_upgrade` |
+| Set / replace the guardian set | Admin | `admin::set_guardian`, `governance::initialize_guardians` |
+| Add a guardian | Admin | `governance::add_guardian` |
+| Remove a guardian | Admin (immediate) or guardian set (via vote) | `governance::remove_guardian`, `governance::execute_guardian_removal` |
+| Rotate the admin | Current admin (propose) + new admin (accept) | `admin::propose_admin`, `admin::accept_admin` |
+
+> **Note:** Whether the admin may pause while a guardian set is configured is
+> disputed — see issue #1704. Until that issue is resolved, treat the pause
+> authority row as under change and do not rely on either reading.
+
+### 8.2 Governance Invariants
+
+**G1 — At most one guardian set.** The contract stores a single guardian
+configuration; it is never possible to have two active guardian sets at once.
+Replacing the set overwrites the previous configuration.
+
+**Enforced by:** `governance::initialize_guardians`, `admin::set_guardian`.
+
+**G2 — Non-zero voting power.** Every guardian entry in the set has voting
+power `> 0`; a guardian set with zero total voting power is invalid.
+
+**Enforced by:** `governance::initialize_guardians`, `governance::add_guardian`.
+
+> **Note:** Validation of the guardian set (duplicate entries, zero voting
+> power, empty set) is under change — see issue #1701. The invariant above is
+> the intended rule; consult #1701 for the current enforcement gaps.
+
+**G3 — Admin and guardian are distinct authorities.** The admin address and
+guardian addresses are separate roles; admin rotation does not implicitly
+grant or revoke guardian membership, and guardian changes do not alter the
+admin address.
+
+**Enforced by:** `admin::propose_admin`, `admin::accept_admin`,
+`governance::add_guardian`, `governance::remove_guardian`.
+
+**G4 — Admin rotation is two-step.** A new admin only takes effect after the
+proposed address explicitly accepts; the admin cannot be changed unilaterally
+by the proposer.
+
+**Enforced by:** `admin::propose_admin`, `admin::accept_admin`.
+
+**G5 — Guardian removal by vote is executed only once.** A passed guardian
+removal proposal is executed exactly once; re-execution is a no-op or error.
+
+**Enforced by:** `governance::execute_guardian_removal`.
+
+**G6 — Upgrades require guardian approval.** An upgrade is only applied after
+it has been initiated and has received sufficient guardian votes.
+
+**Enforced by:** `governance::initiate_upgrade`, `governance::vote_for_upgrade`.
+
+---
+
 ## Formal Verification Notes
 
 The most critical invariant for formal treatment is **Stake Conservation**
@@ -150,3 +217,16 @@ Given the WASM toolchain maturity timeline, the recommended order is:
 1. Expand proptest coverage (done — `property_invariants_test.rs`)
 2. Add cargo-fuzz targets (done — `fuzz/` directory)
 3. Engage Certora when Soroban WASM backend reaches GA
+
+## Market creation limits
+
+`create_market` enforces (see `types.rs`): at least 2 and at most 100 outcomes
+(`InvalidOutcome` / `TooManyOutcomes`), description ≤ 1024 bytes
+(`DescriptionTooLong`), and each option label non-empty and ≤ 128 bytes
+(`InvalidOptionLength`).
+
+## Oracle strike price scale
+
+`OracleConfig::strike_price` is an integer in units of 1e-8. The Pyth price is
+rescaled from `10^expo` to 1e-8 with checked arithmetic before comparison;
+overflow returns `ArithmeticOverflow`.

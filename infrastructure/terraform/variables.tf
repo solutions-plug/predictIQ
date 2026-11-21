@@ -198,6 +198,33 @@ variable "api_max_count" {
   description = "Maximum API tasks for autoscaling"
   type        = number
   default     = 10
+
+  validation {
+    condition     = var.api_max_count >= var.api_min_count && var.api_max_count <= 100
+    error_message = "api_max_count must be >= api_min_count and <= 100."
+  }
+}
+
+variable "api_cpu_target_utilization" {
+  description = "Target average CPU utilization (percent) for ECS service autoscaling"
+  type        = number
+  default     = 70
+
+  validation {
+    condition     = var.api_cpu_target_utilization >= 1 && var.api_cpu_target_utilization <= 100
+    error_message = "api_cpu_target_utilization must be between 1 and 100."
+  }
+}
+
+variable "api_request_count_target" {
+  description = "Target ALBRequestCountPerTarget for ECS service autoscaling"
+  type        = number
+  default     = 1000
+
+  validation {
+    condition     = var.api_request_count_target >= 1
+    error_message = "api_request_count_target must be >= 1."
+  }
 }
 
 variable "rds_free_storage_alarm_bytes" {
@@ -210,6 +237,27 @@ variable "alb_latency_alarm_seconds" {
   description = "Alarm when ALB p95 TargetResponseTime exceeds this many seconds"
   type        = number
   default     = 1
+}
+
+variable "alerts_sns_endpoint" {
+  description = "Endpoint (e.g. email address or HTTPS URL) subscribed to the alerts SNS topic. No default; must be supplied to receive alarm notifications."
+  type        = string
+
+  validation {
+    condition     = length(trimspace(var.alerts_sns_endpoint)) > 0
+    error_message = "alerts_sns_endpoint must be a non-empty endpoint (e.g. an email address or HTTPS URL)."
+  }
+}
+
+variable "alerts_sns_protocol" {
+  description = "Protocol for the alerts SNS topic subscription (e.g. email, https, sqs, lambda)"
+  type        = string
+  default     = "email"
+
+  validation {
+    condition     = contains(["email", "email-json", "https", "http", "sqs", "lambda", "sms"], var.alerts_sns_protocol)
+    error_message = "alerts_sns_protocol must be one of: email, email-json, https, http, sqs, lambda, sms."
+  }
 }
 
 variable "api_cpu" {
@@ -245,7 +293,7 @@ variable "acm_certificate_arn" {
 }
 
 variable "hmac_key" {
-  description = "HMAC secret key used to sign API payloads and webhook signatures. Stored in AWS Secrets Manager."
+  description = "HMAC key used to sign and verify request payloads. Stored in AWS Secrets Manager."
   type        = string
   sensitive   = true
 
