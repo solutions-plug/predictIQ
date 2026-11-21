@@ -227,4 +227,24 @@ pub enum ErrorCode {
 
     /// The winni
 
-/* … truncated 631 chars — edit only what you need near the top … */
+    /// A guardian removal proposal is already pending and has not expired or been rejected.
+    RemovalAlreadyPending = 202,
+
+    /// The market description exceeds the maximum allowed byte length.
+    DescriptionTooLong = 203,
+
+    /// An outcome label is empty or exceeds the maximum allowed byte length.
+    InvalidOptionLength = 204,
+
+    /// The settlement token is not on the admin-managed allowlist.
+    TokenNotAllowed = 205,
+
+    /// The oracle configuration failed validation at market creation.
+    InvalidOracleConfig = 206,
+
+    /// The guardian set contains a duplicate address.
+    DuplicateGuardian = 207,
+
+    /// A guardian's voting power is zero or above the per-entry maximum.
+    InvalidVotingPower = 208,
+}
