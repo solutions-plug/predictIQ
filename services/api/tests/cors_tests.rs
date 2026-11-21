@@ -349,6 +349,168 @@ mod tests {
         }
     }
 
+    // ── parse failures ────────────────────────────────────────────────────────
+    //
+    // `build_cors_layer` (and the `cors_layer_from` helper mirroring it) drops
+    // entries that fail to parse instead of failing loudly. These tests pin
+    // that contract: an unparsable value must never widen the policy.
+
+    #[tokio::test]
+    async fn invalid_origin_is_dropped_and_valid_origin_still_allowed() {
+        let cfg = default_cfg(vec![
+            "https://app.predictiq.com",
+            "not a valid header value 😀",
+        ]);
+
+        // The valid origin is still honoured.
+        let response = app(&cfg)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/data")
+                    .header("origin", "https://app.predictiq.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let acao = response
+            .headers()
+            .get("access-control-allow-origin")
+            .and_then(|v| v.to_str().ok());
+        assert_eq!(acao, Some("https://app.predictiq.com"));
+
+        // The unparsable origin was dropped, so it is not allowed.
+        let response = app(&cfg)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/data")
+                    .header("origin", "not a valid header value 😀")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let acao = response.headers().get("access-control-allow-origin");
+        assert!(
+            acao.is_none(),
+            "invalid origin must be dropped, not allowed; got: {acao:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_method_is_dropped_and_valid_method_still_works() {
+        let cfg = CorsConfig {
+            allowed_methods: vec!["GET".into(), "NOT A METHOD".into()],
+            ..default_cfg(vec!["https://app.predictiq.com"])
+        };
+
+        // The layer still builds and a valid method is advertised.
+        let response = app(&cfg)
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/api/data")
+                    .header("origin", "https://app.predictiq.com")
+                    .header("access-control-request-method", "GET")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            response.status().is_success(),
+            "preflight for valid method should succeed, got {}",
+            response.status()
+        );
+
+        let acam = response
+            .headers()
+            .get("access-control-allow-methods")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            acam.to_uppercase().contains("GET"),
+            "expected GET in allow-methods, got: {acam}"
+        );
+        assert!(
+            !acam.to_uppercase().contains("NOT A METHOD"),
+            "invalid method must not be advertised, got: {acam}"
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_header_is_dropped_and_valid_header_still_works() {
+        let cfg = CorsConfig {
+            allowed_headers: vec!["content-type".into(), "bad header name".into()],
+            ..default_cfg(vec!["https://app.predictiq.com"])
+        };
+
+        // The layer still builds and a valid header is advertised.
+        let response = app(&cfg)
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/api/data")
+                    .header("origin", "https://app.predictiq.com")
+                    .header("access-control-request-method", "GET")
+                    .header("access-control-request-headers", "content-type")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            response.status().is_success(),
+            "preflight for valid header should succeed, got {}",
+            response.status()
+        );
+
+        let acah = response
+            .headers()
+            .get("access-control-allow-headers")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            acah.to_lowercase().contains("content-type"),
+            "expected content-type in allow-headers, got: {acah}"
+        );
+        assert!(
+            !acah.to_lowercase().contains("bad header name"),
+            "invalid header must not be advertised, got: {acah}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fully_valid_configuration_yields_expected_acao_header() {
+        let cfg = CorsConfig {
+            allowed_origins: vec!["https://app.predictiq.com".into()],
+            allowed_methods: vec!["GET".into(), "POST".into()],
+            allowed_headers: vec!["content-type".into(), "authorization".into()],
+            ..default_cfg(vec![])
+        };
+
+        let response = app(&cfg)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/data")
+                    .header("origin", "https://app.predictiq.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let acao = response
+            .headers()
+            .get("access-control-allow-origin")
+            .and_then(|v| v.to_str().ok());
+        assert_eq!(acao, Some("https://app.predictiq.com"));
+    }
+
     // ── CorsConfig parsing ────────────────────────────────────────────────────
 
     #[test]

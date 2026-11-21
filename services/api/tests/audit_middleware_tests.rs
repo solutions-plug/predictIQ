@@ -56,6 +56,10 @@ mod tests {
         let router = Router::new()
             .route("/api/v1/admin/markets/42/resolve", get(|| async { "resolved" }))
             .route("/api/v1/audit/logs", get(|| async { "audit logs" }))
+            .route(
+                "/api/v1/audit/fail",
+                get(|| async { StatusCode::INTERNAL_SERVER_ERROR }),
+            )
             .layer(middleware::from_fn_with_state(
                 state.clone(),
                 |state: Arc<TestState>,
@@ -237,5 +241,35 @@ mod tests {
             !success_entries.is_empty(),
             "Expected at least one successful audit entry"
         );
+    }
+
+    #[tokio::test]
+    async fn test_handler_error_status_recorded_as_failure() {
+        let (router, logger) = app();
+        let resp = router
+            .oneshot(request_with_key("/api/v1/audit/fail", "valid-key", "TestAgent/1.0"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let entries = logger.entries().await;
+        assert_eq!(entries.len(), 1);
+        assert!(matches!(entries[0].status, AuditStatus::Failure));
+        assert_eq!(entries[0].error_message.as_deref(), Some("HTTP 500 Internal Server Error"));
+    }
+
+    #[tokio::test]
+    async fn test_unauthenticated_request_is_audited_as_failure() {
+        let (router, logger) = app();
+        let req = Request::builder()
+            .uri("/api/v1/admin/markets/42/resolve")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let entries = logger.entries().await;
+        assert_eq!(entries.len(), 1, "unauthenticated request must be audited");
+        assert_eq!(entries[0].actor, "unknown");
+        assert!(matches!(entries[0].status, AuditStatus::Failure));
+        assert_eq!(entries[0].error_message.as_deref(), Some("HTTP 401 Unauthorized"));
     }
 }

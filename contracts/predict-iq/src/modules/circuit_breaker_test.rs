@@ -132,6 +132,50 @@ fn test_unpause_allows_operations() {
     assert!(result.is_ok());
 }
 
+// Issue #1848: admin can pause/unpause even when a guardian is configured
+
+#[test]
+fn test_admin_can_pause_and_unpause_with_guardian_set() {
+    let (_env, client, admin, _guardian) = setup();
+
+    // Admin pauses while a guardian is configured
+    let pause_result = client.try_pause_as_admin(&admin);
+    assert!(pause_result.is_ok());
+    assert_eq!(
+        client.get_circuit_breaker_state(),
+        CircuitBreakerState::Paused
+    );
+
+    // Admin unpauses while a guardian is configured
+    let unpause_result = client.try_unpause_as_admin(&admin);
+    assert!(unpause_result.is_ok());
+    assert_eq!(
+        client.get_circuit_breaker_state(),
+        CircuitBreakerState::Closed
+    );
+}
+
+#[test]
+fn test_guardian_can_pause_and_unpause_with_guardian_set() {
+    let (_env, client, _admin, guardian) = setup();
+
+    // Guardian pauses
+    let pause_result = client.try_pause_as_guardian(&guardian);
+    assert!(pause_result.is_ok());
+    assert_eq!(
+        client.get_circuit_breaker_state(),
+        CircuitBreakerState::Paused
+    );
+
+    // Guardian unpauses
+    let unpause_result = client.try_unpause_as_guardian(&guardian);
+    assert!(unpause_result.is_ok());
+    assert_eq!(
+        client.get_circuit_breaker_state(),
+        CircuitBreakerState::Closed
+    );
+}
+
 #[test]
 fn test_multiple_pause_unpause_cycles() {
     let (_env, client, _admin, _guardian) = setup();
@@ -337,4 +381,155 @@ fn test_unpause_allows_withdraw_protocol_fees_and_claim_referral_rewards() {
 
     let claim_result = client.try_claim_referral_rewards(&referrer);
     assert_ne!(claim_result, Err(Ok(ErrorCode::ContractPaused)));
+}
+
+#[test]
+fn test_admin_pause_unpause_with_guardian_set() {
+    let (_env, client, admin, guardian) = setup();
+    client.pause_as(&admin);
+    assert!(client.try_set_circuit_breaker(&CircuitBreakerState::Paused).is_ok());
+    client.unpause_as(&admin);
+    // guardian still works
+    client.pause_as(&guardian);
+    client.unpause_as(&guardian);
+}
+
+#[test]
+fn test_admin_pause_unpause_without_guardian() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let id = env.register(PredictIQ, ());
+    let client = PredictIQClient::new(&env, &id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &100);
+    client.pause_as(&admin);
+    client.unpause_as(&admin);
+}
+
+#[test]
+fn test_pause_as_rejects_stranger() {
+    let (env, client, _admin, _guardian) = setup();
+    let stranger = Address::generate(&env);
+    assert_eq!(client.try_pause_as(&stranger), Err(Ok(ErrorCode::NotAuthorized)));
+    assert_eq!(client.try_unpause_as(&stranger), Err(Ok(ErrorCode::NotAuthorized)));
+}
+
+// Issue #1906: bet and claim paths must respect the circuit breaker
+
+use crate::types::{MarketTier, OracleConfig};
+use soroban_sdk::{String, Vec};
+
+/// Builds a market, places a bet on outcome 0, and resolves the market so that
+/// `claim_winnings` is callable for the bettor.
+fn setup_bet_and_resolved_market(
+    env: &Env,
+    client: &PredictIQClient<'static>,
+    admin: &Address,
+) -> (u64, Address) {
+    let options = Vec::from_array(
+        env,
+        [String::from_str(env, "Yes"), String::from_str(env, "No")],
+    );
+
+    let oracle_config = OracleConfig {
+        oracle_address: Address::generate(env),
+        feed_id: String::from_str(
+            env,
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        ),
+        min_responses: Some(1),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 100,
+        strike_price: None,
+    };
+
+    let token = Address::generate(env);
+
+    let market_id = client.create_market(
+        admin,
+        &String::from_str(env, "BreakerTest"),
+        &options,
+        &1000,
+        &2000,
+        &oracle_config,
+        &MarketTier::Basic,
+        &token,
+        &0,
+        &0,
+    );
+
+    let bettor = Address::generate(env);
+    client.place_bet(&bettor, &market_id, &0, &100, &token);
+
+    // Resolve the market in favour of outcome 0 so the bettor can claim.
+    client.resolve_market(admin, &market_id, &0);
+
+    (market_id, bettor)
+}
+
+#[test]
+fn test_open_blocks_place_bet_and_claim_winnings() {
+    let (env, client, admin, _guardian) = setup();
+
+    let (market_id, bettor) = setup_bet_and_resolved_market(&env, &client, &admin);
+
+    let token = Address::generate(&env);
+
+    client.set_circuit_breaker(&CircuitBreakerState::Open);
+    assert_eq!(client.get_circuit_breaker_state(), CircuitBreakerState::Open);
+
+    // place_bet must be rejected while Open.
+    let bet_result = client.try_place_bet(&bettor, &market_id, &0, &100, &token);
+    assert_eq!(bet_result, Err(Ok(ErrorCode::CircuitBreakerOpen)));
+    // Rejected call must not change breaker state.
+    assert_eq!(client.get_circuit_breaker_state(), CircuitBreakerState::Open);
+
+    // claim_winnings must be rejected while Open.
+    let claim_result = client.try_claim_winnings(&bettor, &market_id);
+    assert_eq!(claim_result, Err(Ok(ErrorCode::CircuitBreakerOpen)));
+    // Rejected call must not change breaker state.
+    assert_eq!(client.get_circuit_breaker_state(), CircuitBreakerState::Open);
+}
+
+#[test]
+fn test_half_open_counts_probes_on_bet_and_claim_paths() {
+    let (env, client, admin, _guardian) = setup();
+
+    let (market_id, bettor) = setup_bet_and_resolved_market(&env, &client, &admin);
+
+    let token = Address::generate(&env);
+
+    client.set_circuit_breaker(&CircuitBreakerState::HalfOpen);
+    assert_eq!(
+        client.get_circuit_breaker_state(),
+        CircuitBreakerState::HalfOpen
+    );
+
+    // First HALF_OPEN_MAX_OPS (5) probes are allowed through on the bet path.
+    for _ in 0..5 {
+        let r = client.try_place_bet(&bettor, &market_id, &0, &100, &token);
+        assert_ne!(r, Err(Ok(ErrorCode::CircuitBreakerOpen)));
+    }
+
+    // The 6th probe on the bet path trips the breaker back to Open.
+    let r = client.try_place_bet(&bettor, &market_id, &0, &100, &token);
+    assert_eq!(r, Err(Ok(ErrorCode::CircuitBreakerOpen)));
+    assert_eq!(client.get_circuit_breaker_state(), CircuitBreakerState::Open);
+
+    // Reset to HalfOpen and verify probes are counted on the claim path too.
+    client.set_circuit_breaker(&CircuitBreakerState::HalfOpen);
+    assert_eq!(
+        client.get_circuit_breaker_state(),
+        CircuitBreakerState::HalfOpen
+    );
+
+    for _ in 0..5 {
+        let r = client.try_claim_winnings(&bettor, &market_id);
+        assert_ne!(r, Err(Ok(ErrorCode::CircuitBreakerOpen)));
+    }
+
+    // The 6th probe on the claim path trips the breaker back to Open.
+    let r = client.try_claim_winnings(&bettor, &market_id);
+    assert_eq!(r, Err(Ok(ErrorCode::CircuitBreakerOpen)));
+    assert_eq!(client.get_circuit_breaker_state(), CircuitBreakerState::Open);
 }

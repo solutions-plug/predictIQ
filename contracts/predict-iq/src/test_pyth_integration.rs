@@ -525,3 +525,44 @@ fn test_normalize_price_handles_negative_exponents() {
     assert_eq!(normalize_price(65_000, 0), 6_500_000_000_000);
     assert_eq!(normalize_price(123_456_789_012, -10), 1_234_567_890);
 }
+
+/// Issue #1961: exponent handling for positive, zero and negative exponents.
+#[test]
+fn test_determine_outcome_applies_exponent() {
+    use crate::modules::oracles::{determine_outcome, PythPrice};
+    use soroban_sdk::{testutils::Address as _, Address, Env, String};
+    let e = Env::default();
+    let cfg = |strike: i64| OracleConfig {
+        oracle_address: Address::generate(&e),
+        feed_id: String::from_str(&e, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"),
+        min_responses: Some(1),
+        max_staleness_seconds: 3600,
+        max_confidence_bps: 100,
+        strike_price: Some(strike),
+    };
+    let px = |price: i64, expo: i32| PythPrice { price, conf: 0, expo, publish_time: 0 };
+    let strike = 6_500_000_000_000i64; // 65,000.00 in 1e-8 units
+    // negative exponent
+    assert_eq!(determine_outcome(&px(6_500_000_000_000, -8), &cfg(strike)), Ok(0));
+    assert_eq!(determine_outcome(&px(6_499_999_999_999, -8), &cfg(strike)), Ok(1));
+    // zero exponent
+    assert_eq!(determine_outcome(&px(65_000, 0), &cfg(strike)), Ok(0));
+    assert_eq!(determine_outcome(&px(64_999, 0), &cfg(strike)), Ok(1));
+    // positive exponent: 650 * 10^2 = 65,000
+    assert_eq!(determine_outcome(&px(650, 2), &cfg(strike)), Ok(0));
+    assert_eq!(determine_outcome(&px(649, 2), &cfg(strike)), Ok(1));
+    // Regression: raw comparison (5_000_000 < strike -> 1) vs normalised
+    // (5_000_000 * 10^-2 = 50,000 USD >= 40,000 USD strike -> 0) disagree.
+    let low_strike = 4_000_000_000_000i64;
+    assert!(5_000_000i64 < low_strike);
+    assert_eq!(determine_outcome(&px(5_000_000, -2), &cfg(low_strike)), Ok(0));
+}
+
+#[test]
+fn test_normalize_price_checked_overflow_errors() {
+    use crate::errors::ErrorCode;
+    use crate::modules::oracles::normalize_price_checked;
+    assert_eq!(normalize_price_checked(i64::MAX, 40), Err(ErrorCode::ArithmeticOverflow));
+    assert_eq!(normalize_price_checked(1, i32::MAX), Err(ErrorCode::ArithmeticOverflow));
+    assert_eq!(normalize_price_checked(1, i32::MIN), Ok(0));
+}
