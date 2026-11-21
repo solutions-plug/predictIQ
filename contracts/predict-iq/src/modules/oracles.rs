@@ -124,7 +124,7 @@ pub fn resolve_with_pyth(
     let price = fetch_pyth_price(e, config)?;
     validate_price(e, &price, config)?;
 
-    let outcome = determine_outcome(&price, config);
+    let outcome = determine_outcome(&price, config)?;
 
     let publish_time = cast_external_timestamp(price.publish_time)?;
 
@@ -154,35 +154,45 @@ pub fn resolve_with_pyth(
 /// so feeds with any exponent (e.g. -8 for BTC, -2 for some FX feeds) resolve correctly.
 pub const STRIKE_EXPO: i32 = -8;
 
-/// Rescale `price` from `10^expo` to `10^STRIKE_EXPO`, saturating on overflow.
-pub fn normalize_price(price: i64, expo: i32) -> i128 {
-    let diff = expo - STRIKE_EXPO;
+/// Rescale `price` from `10^expo` to `10^STRIKE_EXPO` using checked arithmetic.
+///
+/// Scale: `strike_price` is an integer in units of 1e-8 (i.e. `strike_price = 6_500_000_000_000`
+/// means 65,000.00000000). Returns `ArithmeticOverflow` if rescaling would overflow.
+pub fn normalize_price_checked(price: i64, expo: i32) -> Result<i128, ErrorCode> {
+    let diff = expo
+        .checked_sub(STRIKE_EXPO)
+        .ok_or(ErrorCode::ArithmeticOverflow)?;
     let p = price as i128;
     if diff >= 0 {
-        match 10i128.checked_pow(diff as u32).and_then(|m| p.checked_mul(m)) {
-            Some(v) => v,
-            None => {
-                if p < 0 {
-                    i128::MIN
-                } else {
-                    i128::MAX
-                }
-            }
-        }
+        let m = 10i128
+            .checked_pow(diff as u32)
+            .ok_or(ErrorCode::ArithmeticOverflow)?;
+        p.checked_mul(m).ok_or(ErrorCode::ArithmeticOverflow)
     } else {
-        match 10i128.checked_pow((-diff) as u32) {
-            Some(d) => p / d,
-            None => 0,
+        // Dividing by a power of ten too large for i128 truncates any i64 price to 0.
+        match 10i128.checked_pow(diff.unsigned_abs()) {
+            Some(d) => Ok(p / d),
+            None => Ok(0),
         }
     }
 }
 
-fn determine_outcome(price: &PythPrice, config: &OracleConfig) -> u32 {
+/// Saturating variant of [`normalize_price_checked`] (kept for callers that cannot fail).
+pub fn normalize_price(price: i64, expo: i32) -> i128 {
+    match normalize_price_checked(price, expo) {
+        Ok(v) => v,
+        Err(_) if price < 0 => i128::MIN,
+        Err(_) => i128::MAX,
+    }
+}
+
+/// Outcome 0 if the normalised price is >= strike, otherwise 1.
+pub fn determine_outcome(price: &PythPrice, config: &OracleConfig) -> Result<u32, ErrorCode> {
     let threshold = config.strike_price.unwrap_or(0) as i128;
-    if normalize_price(price.price, price.expo) >= threshold {
-        0
+    if normalize_price_checked(price.price, price.expo)? >= threshold {
+        Ok(0)
     } else {
-        1
+        Ok(1)
     }
 }
 
@@ -461,6 +471,25 @@ mod tests {
                     .persistent()
                     .set(&OracleData::LastUpdate(1, i), &e.ledger().timestamp());
             }
+            assert_eq!(validate_oracle_staleness(&e, 1, &config), Ok(()));
+        });
+    }
+
+    /// Issue #1960: zero, partial and full response sets.
+    #[test]
+    fn staleness_zero_partial_full_responses() {
+        let e = Env::default();
+        let id = e.register(crate::PredictIQ, ());
+        let mut config = valid_config(&e);
+        config.min_responses = Some(2);
+        e.as_contract(&id, || {
+            assert_eq!(validate_oracle_staleness(&e, 1, &config), Err(ErrorCode::OracleFailure));
+            e.storage().persistent().set(&OracleData::LastUpdate(1, 0), &e.ledger().timestamp());
+            assert_eq!(validate_oracle_staleness(&e, 1, &config), Err(ErrorCode::OracleFailure));
+            // Re-reporting from the same oracle must not count twice.
+            e.storage().persistent().set(&OracleData::LastUpdate(1, 0), &e.ledger().timestamp());
+            assert_eq!(validate_oracle_staleness(&e, 1, &config), Err(ErrorCode::OracleFailure));
+            e.storage().persistent().set(&OracleData::LastUpdate(1, 1), &e.ledger().timestamp());
             assert_eq!(validate_oracle_staleness(&e, 1, &config), Ok(()));
         });
     }

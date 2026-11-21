@@ -101,6 +101,16 @@ Run the shutdown-specific tests:
 cargo test shutdown_tests
 ```
 
+The tests in `src/shutdown_tests.rs` that cover the shutdown sequence include:
+
+- `test_shutdown_timeout_handling` — verifies that the coordinator gives up
+  waiting for workers once the timeout budget expires and logs the error.
+- `test_multiple_workers_coordination` — verifies that multiple workers are
+  signalled and drained together, and that the coordinator waits for all of
+  them.
+- The `#[ignore]`d integration tests — exercise the full sequence end to end
+  (requires Redis and PostgreSQL; run with `cargo test -- --ignored`).
+
 ### Integration Tests
 
 Run the full integration test (requires Redis and PostgreSQL):
@@ -125,7 +135,48 @@ Use the provided test scripts:
 
 ## Implementation Details
 
-### Shutdown Flow
+### Intended Shutdown Order
+
+The shutdown sequence is designed so that no in-flight request can ever reach a
+worker pool that has already been drained. The intended order is:
+
+1. **Stop accepting new HTTP connections** — the HTTP server stops listening and
+   refuses new connections.
+2. **Drain in-flight requests** — requests already accepted are allowed to
+   complete against a fully live worker pool.
+3. **Cancel the `ShutdownCoordinator` token and drain background workers** — once
+   no requests are in flight, the coordinator broadcasts the shutdown signal and
+   each worker completes its current operation or saves state.
+4. **Wait for worker completion up to the timeout** — the coordinator waits for
+   every `WorkerHandle` to report completion, bounded by the timeout budget
+   described below.
+5. **Exit** — the process terminates once workers have finished or the timeout
+   has expired.
+
+> **Current divergence (tracked by issue #1718):** the implementation in
+> `src/shutdown.rs` currently drains workers *inside* the signal future, i.e.
+> before the HTTP server stops accepting requests. In-flight requests can
+> therefore hit a dead worker pool. The ordering above is the specification the
+> fix must satisfy; see [#1718](https://github.com/hman38705/predictiq/issues/1718)
+> for the precedent. This document does not change the implementation.
+
+### Timeout Budget
+
+Two independent timeouts bound the shutdown:
+
+- **Global shutdown timeout** — hardcoded to **30 seconds** in
+  `src/shutdown.rs`. This is the maximum time the coordinator waits for all
+  workers to report completion (step 4 above).
+- **`EMAIL_QUEUE_DRAIN_TIMEOUT_SECS`** — a separate budget for the email queue
+  worker, defaulting to **60 seconds**, read from the environment in
+  `src/shutdown.rs`. It bounds how long the email queue worker may spend
+  processing remaining retries and finishing the current job.
+
+When a timeout expires, the coordinator logs an error and the caller force-exits
+rather than waiting indefinitely. Worker errors are logged individually and do
+not prevent the overall shutdown from completing.
+
+### Shutdown Flow (as currently implemented)
 
 1. Signal handler receives termination signal
 2. ShutdownCoordinator broadcasts shutdown signal to all workers
@@ -136,6 +187,9 @@ Use the provided test scripts:
 4. Coordinator waits for all workers with timeout
 5. HTTP server stops accepting new connections
 6. Application exits
+
+Note that steps 2–4 currently run before step 5, which is the divergence from
+the intended order described above (issue #1718).
 
 ### Error Handling
 
@@ -185,8 +239,8 @@ Look for these log messages:
 
 ## Future Improvements
 
-1. **Configurable Timeout**: Make shutdown timeout configurable via environment variable
-2. **Drain Mode**: Stop accepting new work before shutdown
+1. **Configurable Timeout**: Make the global shutdown timeout configurable via environment variable
+2. **Drain Mode**: Stop accepting new work before shutdown (see the intended order above and issue #1718)
 3. **Health Checks**: More detailed worker health reporting
 4. **Metrics**: Prometheus metrics for shutdown events
 5. **Job Recovery**: Better handling of interrupted jobs on restart

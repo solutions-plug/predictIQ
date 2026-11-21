@@ -168,6 +168,39 @@ Prometheus alerts are configured for:
 - Error budget low (warning)
 - Individual SLO violations
 
+### Alert Routing and Subscribers
+
+There are two alert paths. Both are defined in the repo; only the thresholds
+below are SLO-related and this section does not change them.
+
+**1. Prometheus rules → Alertmanager.** Recording rules in
+`performance/config/prometheus-slo-rules.yml` and alert rules in
+`performance/config/alerts.yaml` (each alert carries `severity` and
+`runbook_url`; see `docs/runbooks/high-error-rate.md` for the runbook format)
+fire in Prometheus. Delivery to people depends on the Alertmanager
+`route`/`receivers` configuration (example in `performance/config/README.md`).
+Prometheus does not publish to SNS directly.
+
+**2. CloudWatch alarms → SNS.** The monitoring module
+(`infrastructure/terraform/modules/monitoring/main.tf`) creates the SNS topic
+`predictiq-<env>-alerts`; its CloudWatch alarms (ECS CPU, etc.) use it as
+`alarm_actions`. Subscribers come only from two Terraform variables:
+
+| Variable | Protocol | Intended subscriber |
+|---|---|---|
+| `alert_email_endpoints` | email | on-call engineers / team alias |
+| `alert_https_endpoints` | https | PagerDuty and/or Slack webhook |
+
+**Escalation expectations.**
+- `severity: critical` (fast burn, budget exhausted): page on-call via the
+  HTTPS (PagerDuty) endpoint; acknowledge promptly and follow the linked runbook.
+- `severity: warning` (slow burn, budget low): email/Slack, handled in business hours.
+
+**Current state: no subscribers.** Both variables default to `[]`, so unless an
+environment sets them the topic has no subscriptions and no alarm notifies
+anyone. This was reported in #1775 (unmonitored metrics: #1776). Adding
+subscriptions is an infrastructure change tracked there, not in this guide.
+
 ## Best Practices
 
 ### 1. Set Realistic Targets

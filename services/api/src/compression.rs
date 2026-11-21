@@ -111,4 +111,56 @@ mod tests {
             &Extensions::new()
         ));
     }
+
+    const LARGE: &str = r#"{"payload":"this JSON body is large enough to compress"}"#;
+
+    async fn send(accept: Option<&str>, body: &'static str) -> Response<Body> {
+        let app = Router::new()
+            .route(
+                "/",
+                get(move || async move {
+                    Response::builder()
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(body))
+                        .unwrap()
+                }),
+            )
+            .layer(compression_layer());
+        let mut req = Request::builder();
+        if let Some(a) = accept {
+            req = req.header(header::ACCEPT_ENCODING, a);
+        }
+        app.oneshot(req.body(Body::empty()).unwrap()).await.unwrap()
+    }
+
+    async fn bytes(resp: Response<Body>) -> Vec<u8> {
+        axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap().to_vec()
+    }
+
+    #[tokio::test]
+    async fn gzip_header_matches_actually_compressed_body() {
+        let resp = send(Some("gzip"), LARGE).await;
+        assert_eq!(resp.headers().get(header::CONTENT_ENCODING).unwrap(), "gzip");
+        let b = bytes(resp).await;
+        assert_eq!(&b[..2], &[0x1f, 0x8b], "body must carry the gzip magic bytes");
+        assert_ne!(b, LARGE.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn no_accept_encoding_returns_uncompressed_body() {
+        let resp = send(None, LARGE).await;
+        assert!(!resp.headers().contains_key(header::CONTENT_ENCODING));
+        assert_eq!(bytes(resp).await, LARGE.as_bytes());
+    }
+
+    #[test]
+    fn small_body_with_content_length_below_threshold_is_not_compressed() {
+        let small = r#"{"ok":1}"#;
+        let mut h = HeaderMap::new();
+        h.insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+        h.insert(header::CONTENT_LENGTH, small.len().to_string().parse().unwrap());
+        assert!(!should_compress(StatusCode::OK, Version::HTTP_11, &h, &Extensions::new()));
+        h.insert(header::CONTENT_LENGTH, "32".parse().unwrap());
+        assert!(should_compress(StatusCode::OK, Version::HTTP_11, &h, &Extensions::new()));
+    }
 }

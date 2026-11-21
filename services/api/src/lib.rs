@@ -10,6 +10,10 @@ pub mod csrf;
 mod resolve_market_tests;
 #[cfg(test)]
 mod cancel_market_tests;
+#[cfg(test)]
+mod api_key_auth_tests;
+#[cfg(test)]
+mod shutdown_tests;
 pub mod blockchain;
 pub mod cache;
 pub mod compression;

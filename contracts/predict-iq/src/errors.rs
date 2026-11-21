@@ -219,11 +219,13 @@ pub enum ErrorCode {
     /// The provided base fee is outside the allowed range (0 to 10_000 bps).
     InvalidBaseFee = 170,
 
+    /// The provided native token address is not on the accepted allowlist.
+    NativeTokenNotAllowed = 171,
+
     /// A dispute bond is required to file a dispute; the caller did not provide a sufficient bond.
     DisputeBondRequired = 200,
 
-    /// The winning outcome has no stake; the market cannot be resolved to it.
-    ZeroWinningStake = 201,
+    /// The winni
 
     /// A guardian removal proposal is already pending and has not expired or been rejected.
     RemovalAlreadyPending = 202,
@@ -240,12 +242,18 @@ pub enum ErrorCode {
     /// The oracle configuration failed validation at market creation.
     InvalidOracleConfig = 206,
 
+    /// The guardian set contains a duplicate address.
+    DuplicateGuardian = 207,
+
+    /// A guardian's voting power is zero or above the per-entry maximum.
+    InvalidVotingPower = 208,
+
     /// The voting deadline for the pending upgrade proposal has passed; votes are no longer accepted.
-    UpgradeVotingDeadlinePassed = 207,
+    UpgradeVotingDeadlinePassed = 209,
 
     /// The pending upgrade proposal has been cancelled and can no longer be voted on or executed.
-    UpgradeCancelled = 208,
+    UpgradeCancelled = 210,
 
     /// No upgrade proposal is pending; cancellation or voting cannot proceed.
-    UpgradeNotPending = 209,
+    UpgradeNotPending = 211,
 }
