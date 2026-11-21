@@ -132,7 +132,20 @@ A migration file that is not in the registry, a registry entry with no
 matching file, a missing rollback, an orphan rollback, or a duplicate
 `version` will all fail the registry check.
 
-### Registry check
+## Migration Registry Check
+
+`scripts/check_migrations_registry.sh` verifies that the migration registry stays
+consistent with the files on disk. It checks that:
+
+- every migration file in `services/api/database/migrations/` is registered in
+  `services/api/src/migrations.rs`,
+- every migration has a matching rollback script in
+  `services/api/database/migrations/rollbacks/`,
+- there are no orphan rollback scripts without a corresponding migration,
+- there are no duplicate versions in the registry.
+
+CI runs this check on every pull request (see the migration registry job in
+`.github/workflows/test.yml`); a non-zero exit fails the job.
 
 The registry check is `scripts/check_migrations_registry.sh`. It runs in CI
 (the migrations workflow) and can be run locally from the repository root:
@@ -151,7 +164,6 @@ It fails on:
 Run it before opening a PR that adds or renames a migration.
 
 ## Migration Immutability Guarantee
-=======
 
 Migration files are embedded at compile time and their SHA-256 checksums are
 stored in `schema_migrations` when first applied. At every startup the
