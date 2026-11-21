@@ -51,15 +51,36 @@ export function getEnvConfig(): EnvConfig {
 }
 
 /**
- * Resolve a path against the configured API origin.
+ * Resolve the API origin used for admin auth-gate validation.
+ * Falls back to the validated NEXT_PUBLIC_API_URL and strips any trailing
+ * slash so callers can safely append `/api/v1/...` paths.
+ */
+export function getApiOrigin(): string {
+  return env.NEXT_PUBLIC_API_URL.replace(/\/+$/, '');
+}
+
+/**
+ * Build an absolute API URL for a given path (e.g. `/api/v1/markets/1/claim`).
+ * Resolves against the configured API origin so requests never hit the
+ * Next.js host, and normalises the leading slash on the path.
+ *
  * Admin pages must not use relative URLs: those resolve against the Next.js
  * origin and are rejected by the API. This accessor keeps the base URL in one
  * place instead of reading process.env inline.
  */
 export function getApiUrl(path: string): string {
-  const base = env.NEXT_PUBLIC_API_URL.replace(/\/+$/, '');
-  const suffix = path.startsWith('/') ? path : `/${path}`;
-  return `${base}${suffix}`;
+  const normalised = path.startsWith('/') ? path : `/${path}`;
+  return `${getApiOrigin()}${normalised}`;
+}
+
+/**
+ * Build the absolute API URL for a market dispute submission.
+ * Mirrors the real dispute route in services/api/openapi.yaml
+ * (`POST /api/v1/markets/{market_id}/disputes`) so the dispute flow never
+ * targets the nonexistent `/blockchain/markets/{id}/disputes` endpoint.
+ */
+export function getMarketDisputeUrl(marketId: string | number): string {
+  return getApiUrl(`/api/v1/markets/${encodeURIComponent(String(marketId))}/disputes`);
 }
 
 /**
