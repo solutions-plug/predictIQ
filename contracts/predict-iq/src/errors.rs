@@ -242,6 +242,9 @@ pub enum ErrorCode {
     /// The oracle configuration failed validation at market creation.
     InvalidOracleConfig = 206,
 
+    /// The market must define at least two outcomes.
+    InsufficientOutcomes = 212,
+
     /// The guardian set contains a duplicate address.
     DuplicateGuardian = 207,
 

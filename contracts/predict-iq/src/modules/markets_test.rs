@@ -1166,3 +1166,261 @@ fn test_create_market_rejects_invalid_oracle_config() {
         assert_eq!(r, Err(Ok(ErrorCode::InvalidOracleConfig)));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1840: OracleConfig validation on create_market
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_create_market_rejects_empty_feed_id() {
+    let (env, client, admin) = setup();
+    let (options, good, token) = creation_args(&env);
+
+    let mut cfg = good.clone();
+    cfg.feed_id = String::from_str(&env, "");
+
+    let r = client.try_create_market(
+        &admin,
+        &String::from_str(&env, "ok"),
+        &options,
+        &1000,
+        &100000,
+        &cfg,
+        &MarketTier::Basic,
+        &token,
+        &0,
+        &0,
+    );
+    assert_eq!(r, Err(Ok(ErrorCode::InvalidOracleConfig)));
+}
+
+#[test]
+fn test_create_market_rejects_zero_max_staleness() {
+    let (env, client, admin) = setup();
+    let (options, good, token) = creation_args(&env);
+
+    let mut cfg = good.clone();
+    cfg.max_staleness_seconds = 0;
+
+    let r = client.try_create_market(
+        &admin,
+        &String::from_str(&env, "ok"),
+        &options,
+        &1000,
+        &100000,
+        &cfg,
+        &MarketTier::Basic,
+        &token,
+        &0,
+        &0,
+    );
+    assert_eq!(r, Err(Ok(ErrorCode::InvalidOracleConfig)));
+}
+
+#[test]
+fn test_create_market_rejects_zero_min_responses() {
+    let (env, client, admin) = setup();
+    let (options, good, token) = creation_args(&env);
+
+    let mut cfg = good.clone();
+    cfg.min_responses = Some(0);
+
+    let r = client.try_create_market(
+        &admin,
+        &String::from_str(&env, "ok"),
+        &options,
+        &1000,
+        &100000,
+        &cfg,
+        &MarketTier::Basic,
+        &token,
+        &0,
+        &0,
+    );
+    assert_eq!(r, Err(Ok(ErrorCode::InvalidOracleConfig)));
+}
+
+#[test]
+fn test_create_market_rejects_over_limit_max_confidence() {
+    let (env, client, admin) = setup();
+    let (options, good, token) = creation_args(&env);
+
+    let mut cfg = good.clone();
+    cfg.max_confidence_bps = 10_001;
+
+    let r = client.try_create_market(
+        &admin,
+        &String::from_str(&env, "ok"),
+        &options,
+        &1000,
+        &100000,
+        &cfg,
+        &MarketTier::Basic,
+        &token,
+        &0,
+        &0,
+    );
+    assert_eq!(r, Err(Ok(ErrorCode::InvalidOracleConfig)));
+}
+
+#[test]
+fn test_create_market_accepts_valid_oracle_config() {
+    let (env, client, admin) = setup();
+    let (options, cfg, token) = creation_args(&env);
+
+    let r = client.try_create_market(
+        &admin,
+        &String::from_str(&env, "ok"),
+        &options,
+        &1000,
+        &100000,
+        &cfg,
+        &MarketTier::Basic,
+        &token,
+        &0,
+        &0,
+    );
+    assert!(r.is_ok());
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1841: outcome count and label/description length bounds
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_create_market_rejects_fewer_than_two_outcomes() {
+    let (env, client, admin) = setup();
+    let (_options, cfg, token) = creation_args(&env);
+
+    let empty = Vec::new(&env);
+    let r = client.try_create_market(
+        &admin,
+        &String::from_str(&env, "ok"),
+        &empty,
+        &1000,
+        &100000,
+        &cfg,
+        &MarketTier::Basic,
+        &token,
+        &0,
+        &0,
+    );
+    assert_eq!(r, Err(Ok(ErrorCode::InsufficientOutcomes)));
+
+    let single = Vec::from_array(&env, [String::from_str(&env, "Only One")]);
+    let r = client.try_create_market(
+        &admin,
+        &String::from_str(&env, "ok"),
+        &single,
+        &1000,
+        &100000,
+        &cfg,
+        &MarketTier::Basic,
+        &token,
+        &0,
+        &0,
+    );
+    assert_eq!(r, Err(Ok(ErrorCode::InsufficientOutcomes)));
+}
+
+#[test]
+fn test_create_market_rejects_over_length_description() {
+    let (env, client, admin) = setup();
+    let (options, cfg, token) = creation_args(&env);
+
+    let r = client.try_create_market(
+        &admin,
+        &String::from_bytes(&env, &[b'a'; 1025]),
+        &options,
+        &1000,
+        &100000,
+        &cfg,
+        &MarketTier::Basic,
+        &token,
+        &0,
+        &0,
+    );
+    assert_eq!(r, Err(Ok(ErrorCode::DescriptionTooLong)));
+}
+
+#[test]
+fn test_create_market_rejects_empty_option_label() {
+    let (env, client, admin) = setup();
+    let (_options, cfg, token) = creation_args(&env);
+
+    let options = Vec::from_array(
+        &env,
+        [String::from_str(&env, ""), String::from_str(&env, "No")],
+    );
+
+    let r = client.try_create_market(
+        &admin,
+        &String::from_str(&env, "ok"),
+        &options,
+        &1000,
+        &100000,
+        &cfg,
+        &MarketTier::Basic,
+        &token,
+        &0,
+        &0,
+    );
+    assert_eq!(r, Err(Ok(ErrorCode::InvalidOptionLength)));
+}
+
+#[test]
+fn test_create_market_rejects_over_length_option_label() {
+    let (env, client, admin) = setup();
+    let (_options, cfg, token) = creation_args(&env);
+
+    let options = Vec::from_array(
+        &env,
+        [
+            String::from_bytes(&env, &[b'b'; 129]),
+            String::from_str(&env, "No"),
+        ],
+    );
+
+    let r = client.try_create_market(
+        &admin,
+        &String::from_str(&env, "ok"),
+        &options,
+        &1000,
+        &100000,
+        &cfg,
+        &MarketTier::Basic,
+        &token,
+        &0,
+        &0,
+    );
+    assert_eq!(r, Err(Ok(ErrorCode::InvalidOptionLength)));
+}
+
+#[test]
+fn test_create_market_accepts_valid_multi_outcome_market() {
+    let (env, client, admin) = setup();
+    let (_options, cfg, token) = creation_args(&env);
+
+    let options = Vec::from_array(
+        &env,
+        [
+            String::from_str(&env, "Yes"),
+            String::from_str(&env, "No"),
+            String::from_str(&env, "Maybe"),
+        ],
+    );
+
+    let r = client.try_create_market(
+        &admin,
+        &String::from_str(&env, "ok"),
+        &options,
+        &1000,
+        &100000,
+        &cfg,
+        &MarketTier::Basic,
+        &token,
+        &0,
+        &0,
+    );
+    assert!(r.is_ok());
+}
