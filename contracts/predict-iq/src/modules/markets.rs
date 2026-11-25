@@ -130,6 +130,9 @@ fn validate_oracle_config(e: &Env, cfg: &OracleConfig) -> Result<(), ErrorCode> 
     {
         return Err(ErrorCode::InvalidOracleConfig);
     }
+    if matches!(cfg.min_responses, Some(0)) {
+        return Err(ErrorCode::InvalidOracleConfig);
+    }
     Ok(())
 }
 
@@ -205,7 +208,7 @@ pub fn create_market_with_dispute_window(
         return Err(ErrorCode::TooManyOutcomes);
     }
     if options.len() < crate::types::MIN_OUTCOMES_PER_MARKET {
-        return Err(ErrorCode::InvalidOutcome);
+        return Err(ErrorCode::InsufficientOutcomes);
     }
     if description.len() > crate::types::MAX_DESCRIPTION_BYTES {
         return Err(ErrorCode::DescriptionTooLong);

@@ -5,9 +5,33 @@ mod errors;
 mod modules;
 pub mod pyth_client;
 #[cfg(test)]
+mod query_tests;
+#[cfg(test)]
 mod test;
 #[cfg(test)]
+mod test_cancellation;
+#[cfg(test)]
+mod test_cancellation_referral;
+#[cfg(test)]
+mod test_classic_assets;
+#[cfg(test)]
+mod test_deposit_tier_reputation;
+#[cfg(test)]
+mod test_disputes_winner_count;
+#[cfg(test)]
+mod test_multi_outcome_voting;
+#[cfg(test)]
+mod test_multi_token;
+#[cfg(test)]
+mod test_oracle_overflow;
+#[cfg(test)]
+mod test_payout_mode_immutability;
+#[cfg(test)]
 mod test_pyth_integration;
+#[cfg(test)]
+mod test_referral;
+#[cfg(test)]
+mod test_resolution_state_machine;
 pub mod types;
 
 use crate::errors::ErrorCode;

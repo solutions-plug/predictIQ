@@ -217,30 +217,47 @@ pub async fn request_validation_middleware(req: Request, next: Next) -> Response
 /// Expected length of a hex-encoded user address (e.g. a 20-byte EVM address).
 const USER_ADDRESS_HEX_LEN: usize = 40;
 
+/// Length of a Stellar strkey-encoded account address (`G...`), including the
+/// leading version byte character.
+const STELLAR_ACCOUNT_ADDRESS_LEN: usize = 56;
+
 /// Maximum accepted length of a market id.
 const MARKET_ID_MAX_LEN: usize = 64;
 
 /// Validate a user address path parameter.
 ///
-/// Accepts a `0x`-prefixed, 40-character hex string (case-insensitive). The
-/// value is returned unchanged on success so callers can use it directly as a
-/// cache key or RPC argument.
+/// Accepts either:
+/// - a `0x`-prefixed, 40-character hex string (case-insensitive), or
+/// - a Stellar strkey account address: a leading `G`, followed by 55 base32
+///   characters (`A`-`Z`, `2`-`7`).
+///
+/// The value is returned unchanged on success so callers can use it directly as
+/// a cache key or RPC argument. On failure a [`ValidationError`] is returned,
+/// which renders as HTTP 400.
 pub fn validate_user_address(value: &str) -> Result<String, ValidationError> {
     let trimmed = value.trim();
-    let hex = trimmed
-        .strip_prefix("0x")
-        .or_else(|| trimmed.strip_prefix("0X"));
 
-    let valid = match hex {
+    let is_hex = match trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+    {
         Some(h) => h.len() == USER_ADDRESS_HEX_LEN && h.chars().all(|c| c.is_ascii_hexdigit()),
         None => false,
     };
 
-    if !valid {
+    let is_strkey = trimmed.len() == STELLAR_ACCOUNT_ADDRESS_LEN
+        && trimmed.starts_with('G')
+        && trimmed
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || ('2'..='7').contains(&c));
+
+    if !is_hex && !is_strkey {
         return Err(ValidationError {
             error:   "invalid_user_address",
             field:   "user_address".to_string(),
-            message: "User address must be a 0x-prefixed 40-character hex string.".to_string(),
+            message: "User address must be a 0x-prefixed 40-character hex string or a \
+                      Stellar account address (G..., 56 characters)."
+                .to_string(),
         });
     }
 
@@ -449,6 +466,27 @@ mod tests {
     }
 
     #[test]
+    fn user_address_accepts_stellar_strkey() {
+        let addr = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+        assert_eq!(addr.len(), STELLAR_ACCOUNT_ADDRESS_LEN);
+        assert_eq!(validate_user_address(addr).unwrap(), addr);
+
+        // Wrong prefix, wrong length, and disallowed base32 characters.
+        assert!(validate_user_address("SAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF").is_err());
+        assert!(validate_user_address("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWH").is_err());
+        assert!(validate_user_address("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWH0").is_err());
+        assert!(validate_user_address("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHf").is_err());
+    }
+
+    #[test]
+    fn user_address_error_renders_as_bad_request() {
+        let err = validate_user_address("not-an-address").unwrap_err();
+        assert_eq!(err.error, "invalid_user_address");
+        assert_eq!(err.field, "user_address");
+        assert_eq!(err.into_response().status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
     fn market_id_accepts_valid_and_rejects_invalid() {
         assert_eq!(validate_market_id("market-1_A").unwrap(), "market-1_A");
 
@@ -456,6 +494,14 @@ mod tests {
         assert!(validate_market_id("bad id").is_err());
         assert!(validate_market_id("bad/id").is_err());
         assert!(validate_market_id(&"a".repeat(MARKET_ID_MAX_LEN + 1)).is_err());
+    }
+
+    #[test]
+    fn market_id_error_renders_as_bad_request() {
+        let err = validate_market_id("bad id").unwrap_err();
+        assert_eq!(err.error, "invalid_market_id");
+        assert_eq!(err.field, "market_id");
+        assert_eq!(err.into_response().status(), StatusCode::BAD_REQUEST);
     }
 
     #[test]

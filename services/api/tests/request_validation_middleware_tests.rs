@@ -296,6 +296,169 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn every_malformed_user_address_is_rejected_before_handler() {
+        // Values that must never reach the cache layer or the Stellar RPC.
+        let invalid = [
+            "0x",
+            "0x123",
+            "0xZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ",
+            "abcdefabcdefabcdefabcdefabcdefabcdefabcd",
+            "0xabcdefabcdefabcdefabcdefabcdefabcdefabcde",
+            "0xabcdefabcdefabcdefabcdefabcdefabcdefab-d",
+            "0xabcdefabcdefabcdefabcdefabcdefabcdefab'c",
+            "0xabcdefabcdefabcdefabcdefabcdefabcdefab;c",
+        ];
+
+        for address in invalid {
+            // Sanity-check the helper agrees this input is malformed.
+            assert!(
+                validate_user_address(address).is_err(),
+                "expected {address:?} to be rejected by validate_user_address"
+            );
+
+            let spy = HandlerSpy::new();
+            let response = app_with_spy(spy.clone())
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/users/{address}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(
+                response.status(),
+                StatusCode::BAD_REQUEST,
+                "expected 400 for malformed user address {address:?}"
+            );
+            assert!(
+                !spy.was_invoked(),
+                "handler must not run for malformed user address {address:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn every_malformed_market_id_is_rejected_before_handler() {
+        // Values that must never reach the cache layer or the Stellar RPC.
+        let invalid = [
+            "market 1",
+            "market'1",
+            "market;1",
+            "market--1",
+            "-market",
+            "_market",
+            "1 OR 1=1",
+            "1' OR '1'='1",
+            "<script>",
+            "market?1",
+            "market#1",
+            "market%201",
+        ];
+
+        for market_id in invalid {
+            // Sanity-check the helper agrees this input is malformed.
+            assert!(
+                validate_market_id(market_id).is_err(),
+                "expected {market_id:?} to be rejected by validate_market_id"
+            );
+
+            let spy = HandlerSpy::new();
+            let response = app_with_spy(spy.clone())
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/markets/{market_id}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(
+                response.status(),
+                StatusCode::BAD_REQUEST,
+                "expected 400 for malformed market id {market_id:?}"
+            );
+            assert!(
+                !spy.was_invoked(),
+                "handler must not run for malformed market id {market_id:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn every_valid_market_id_reaches_handler() {
+        let valid = ["1", "42", "0", "1234567890", "market-1", "market_1", "abc123"];
+
+        for market_id in valid {
+            assert!(
+                validate_market_id(market_id).is_ok(),
+                "expected {market_id:?} to be valid"
+            );
+
+            let spy = HandlerSpy::new();
+            let response = app_with_spy(spy.clone())
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/markets/{market_id}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "expected 200 for valid market id {market_id:?}"
+            );
+            assert!(
+                spy.was_invoked(),
+                "handler should run for valid market id {market_id:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn every_valid_user_address_reaches_handler() {
+        let valid = [
+            "0x0000000000000000000000000000000000000000",
+            "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+            "0xABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD",
+            VALID_STELLAR_ADDRESS,
+        ];
+
+        for address in valid {
+            assert!(
+                validate_user_address(address).is_ok(),
+                "expected {address:?} to be valid"
+            );
+
+            let spy = HandlerSpy::new();
+            let response = app_with_spy(spy.clone())
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/users/{address}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "expected 200 for valid user address {address:?}"
+            );
+            assert!(
+                spy.was_invoked(),
+                "handler should run for valid user address {address:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn well_formed_user_address_passes_validation() {
         let spy = HandlerSpy::new();
         let response = app_with_spy(spy.clone())
