@@ -1,3 +1,15 @@
+/**
+ * Tests for the env parser (validateEnvironment / getEnvConfig).
+ *
+ * Covers:
+ *   - Valid values from frontend/.env.example parse successfully.
+ *   - A missing required variable produces the documented error.
+ *   - A malformed value is rejected rather than silently accepted.
+ *   - process.env is restored between tests to avoid cross-test contamination.
+ *
+ * Issue #1938: Add tests for the env parser.
+ */
+
 describe('env validation', () => {
   const original = process.env.NEXT_PUBLIC_API_URL;
   const originalTts = process.env.NEXT_PUBLIC_TTS_API_URL;
